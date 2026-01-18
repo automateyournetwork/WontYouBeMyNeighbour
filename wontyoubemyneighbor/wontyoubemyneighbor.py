@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
 Won't You Be My Neighbor - Unified Routing Agent
-Supports OSPF (RFC 2328) and BGP-4 (RFC 4271) routing protocols
+Supports OSPFv2 (RFC 2328), OSPFv3 (RFC 5340), and BGP-4 (RFC 4271) routing protocols
 
-Usage - OSPF only:
+Usage - OSPFv2 only:
     sudo python3 wontyoubemyneighbor.py \\
         --router-id 10.255.255.99 \\
         --area 0.0.0.0 \\
         --interface eth0
+
+Usage - OSPFv3 only (IPv6):
+    sudo python3 wontyoubemyneighbor.py \\
+        --router-id 10.10.10.1 \\
+        --ospfv3-interface eth0 \\
+        --ospfv3-area 0.0.0.0 \\
+        --ospfv3-link-local fe80::1
 
 Usage - BGP only:
     python3 wontyoubemyneighbor.py \\
@@ -17,11 +24,14 @@ Usage - BGP only:
         --bgp-peer-as 65002 \\
         --bgp-network 10.2.2.2/32
 
-Usage - Both OSPF and BGP:
+Usage - OSPFv2, OSPFv3, and BGP together:
     sudo python3 wontyoubemyneighbor.py \\
         --router-id 10.0.1.1 \\
         --area 0.0.0.0 \\
         --interface eth0 \\
+        --ospfv3-interface eth0 \\
+        --ospfv3-area 0.0.0.0 \\
+        --ospfv3-link-local fe80::1 \\
         --bgp-local-as 65001 \\
         --bgp-peer 192.0.2.2 \\
         --bgp-peer-as 65002
@@ -56,6 +66,9 @@ from lib.kernel_routes import KernelRouteManager
 
 # BGP imports
 from bgp import BGPSpeaker
+
+# OSPFv3 imports
+from ospfv3.speaker import OSPFv3Speaker, OSPFv3Config
 
 
 class OSPFAgent:
@@ -849,28 +862,35 @@ async def run_unified_agent(args: argparse.Namespace):
     logger = logging.getLogger("UnifiedAgent")
 
     ospf_agent = None
+    ospfv3_speaker = None
     bgp_speaker = None
     tasks = []
 
     # Determine what protocols to run
-    run_ospf = args.interface is not None  # OSPF requires interface
+    run_ospf = args.interface is not None  # OSPFv2 requires interface
+    run_ospfv3 = args.ospfv3_interface is not None  # OSPFv3 requires interface
     run_bgp = args.bgp_local_as is not None  # BGP requires local AS
 
-    if not run_ospf and not run_bgp:
-        logger.error("Must specify either OSPF (--interface) or BGP (--bgp-local-as) configuration")
+    if not run_ospf and not run_ospfv3 and not run_bgp:
+        logger.error("Must specify OSPF (--interface), OSPFv3 (--ospfv3-interface), or BGP (--bgp-local-as)")
         sys.exit(1)
 
     # Determine agent type for banner
-    if run_ospf and run_bgp:
-        agent_type = "Unified OSPF+BGP Agent"
-    elif run_bgp:
-        agent_type = "BGP Agent"
-    else:
-        agent_type = "OSPF Agent"
+    protocols = []
+    if run_ospf:
+        protocols.append("OSPFv2")
+    if run_ospfv3:
+        protocols.append("OSPFv3")
+    if run_bgp:
+        protocols.append("BGP")
+
+    agent_type = "+".join(protocols) + " Agent"
 
     logger.info(f"Starting Won't You Be My Neighbor - {agent_type} - Router ID: {args.router_id}")
     if run_ospf:
-        logger.info(f"  OSPF: Enabled (Area {args.area}, Interface {args.interface})")
+        logger.info(f"  OSPFv2: Enabled (Area {args.area}, Interface {args.interface})")
+    if run_ospfv3:
+        logger.info(f"  OSPFv3: Enabled (Area {args.ospfv3_area}, Interface {args.ospfv3_interface})")
     if run_bgp:
         logger.info(f"  BGP: Enabled (AS {args.bgp_local_as}, {len(args.bgp_peers or [])} peers)")
 
@@ -894,9 +914,9 @@ async def run_unified_agent(args: argparse.Namespace):
         # Start forwarding monitor task
         tasks.append(asyncio.create_task(kernel_route_manager.monitor_forwarding(interval=30)))
 
-        # Initialize OSPF if requested
+        # Initialize OSPFv2 if requested
         if run_ospf:
-            logger.info("Initializing OSPF agent...")
+            logger.info("Initializing OSPFv2 agent...")
             ospf_agent = OSPFAgent(
                 router_id=args.router_id,
                 area_id=args.area,
@@ -909,6 +929,69 @@ async def run_unified_agent(args: argparse.Namespace):
                 kernel_route_manager=kernel_route_manager
             )
             tasks.append(asyncio.create_task(ospf_agent.start()))
+
+        # Initialize OSPFv3 if requested
+        if run_ospfv3:
+            logger.info("Initializing OSPFv3 speaker...")
+
+            # Create OSPFv3 configuration
+            ospfv3_config = OSPFv3Config(
+                router_id=args.router_id,
+                areas=[args.ospfv3_area],
+                log_level=args.log_level
+            )
+
+            ospfv3_speaker = OSPFv3Speaker(ospfv3_config)
+
+            # Get interface ID (use interface index)
+            import socket
+            try:
+                interface_id = socket.if_nametoindex(args.ospfv3_interface)
+            except OSError:
+                logger.error(f"Interface {args.ospfv3_interface} not found")
+                sys.exit(1)
+
+            # Determine link-local address
+            link_local = args.ospfv3_link_local
+            if not link_local:
+                # Try to auto-detect link-local address
+                import netifaces
+                try:
+                    addrs = netifaces.ifaddresses(args.ospfv3_interface)
+                    if netifaces.AF_INET6 in addrs:
+                        for addr_info in addrs[netifaces.AF_INET6]:
+                            addr = addr_info['addr'].split('%')[0]  # Remove scope ID
+                            if addr.startswith('fe80:'):
+                                link_local = addr
+                                break
+                except:
+                    pass
+
+                if not link_local:
+                    logger.error(f"Could not find link-local address for {args.ospfv3_interface}. "
+                               f"Please specify with --ospfv3-link-local")
+                    sys.exit(1)
+
+            logger.info(f"OSPFv3 using link-local address: {link_local}")
+
+            # Get global addresses
+            global_addresses = args.ospfv3_global_addresses or []
+
+            # Add interface to OSPFv3
+            ospfv3_speaker.add_interface(
+                interface_name=args.ospfv3_interface,
+                interface_id=interface_id,
+                link_local_address=link_local,
+                area_id=args.ospfv3_area,
+                global_addresses=global_addresses,
+                network_type=args.ospfv3_network_type,
+                hello_interval=args.ospfv3_hello_interval,
+                dead_interval=args.ospfv3_dead_interval,
+                router_priority=args.ospfv3_priority
+            )
+
+            # Start OSPFv3 speaker
+            tasks.append(asyncio.create_task(ospfv3_speaker.start()))
 
         # Get local IP from interface if available (for BGP next-hop)
         local_bgp_ip = None
@@ -1032,6 +1115,10 @@ async def run_unified_agent(args: argparse.Namespace):
         raise
     finally:
         # Cleanup
+        if ospfv3_speaker:
+            logger.info("Stopping OSPFv3 speaker...")
+            await ospfv3_speaker.stop()
+
         if bgp_speaker:
             logger.info("Stopping BGP speaker...")
             await bgp_speaker.stop()
@@ -1188,6 +1275,27 @@ Notes:
     ospf_group.add_argument("--unicast-peer", default=None,
                        help="OSPF Unicast peer IP for point-to-point")
 
+    # OSPFv3 arguments (IPv6)
+    ospfv3_group = parser.add_argument_group('OSPFv3 Options (IPv6)')
+    ospfv3_group.add_argument("--ospfv3-interface", default=None,
+                       help="Network interface for OSPFv3 (e.g., eth0, en0)")
+    ospfv3_group.add_argument("--ospfv3-area", default="0.0.0.0",
+                       help="OSPFv3 Area (default: 0.0.0.0)")
+    ospfv3_group.add_argument("--ospfv3-link-local", default=None,
+                       help="IPv6 link-local address for OSPFv3 (fe80::)")
+    ospfv3_group.add_argument("--ospfv3-global-address", dest="ospfv3_global_addresses",
+                       action="append",
+                       help="IPv6 global unicast address (can be specified multiple times)")
+    ospfv3_group.add_argument("--ospfv3-network-type", default="broadcast",
+                       choices=['broadcast', 'point-to-point', 'point-to-multipoint'],
+                       help="OSPFv3 Network type (default: broadcast)")
+    ospfv3_group.add_argument("--ospfv3-hello-interval", type=int, default=10,
+                       help="OSPFv3 Hello interval in seconds (default: 10)")
+    ospfv3_group.add_argument("--ospfv3-dead-interval", type=int, default=40,
+                       help="OSPFv3 Dead interval in seconds (default: 40)")
+    ospfv3_group.add_argument("--ospfv3-priority", type=int, default=1,
+                       help="OSPFv3 Router priority for DR election (default: 1)")
+
     # BGP arguments
     bgp_group = parser.add_argument_group('BGP Options')
     bgp_group.add_argument("--bgp-local-as", type=int, default=None,
@@ -1246,8 +1354,8 @@ Notes:
     setup_logging(args.log_level)
 
     # Validate configuration
-    if not args.interface and not args.bgp_local_as:
-        print("Error: Must specify either OSPF (--interface) or BGP (--bgp-local-as) configuration")
+    if not args.interface and not args.bgp_local_as and not args.ospfv3_interface:
+        print("Error: Must specify either OSPFv2 (--interface), OSPFv3 (--ospfv3-interface), or BGP (--bgp-local-as) configuration")
         parser.print_help()
         sys.exit(1)
 
