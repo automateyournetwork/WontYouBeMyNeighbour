@@ -8,6 +8,7 @@ import socket
 import struct
 import time
 import logging
+import ipaddress
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 from .constants import *
@@ -234,18 +235,20 @@ class OSPFv3Interface:
             loop = asyncio.get_event_loop()
 
             while True:
-                # Wait for data
-                data = await loop.sock_recv(self.socket, 65535)
+                # Wait for data with source address
+                data, addr_info = await loop.sock_recvfrom(self.socket, 65535)
 
                 if data:
-                    await self._process_packet(data)
+                    # Extract source address (IPv6 address is first element of tuple)
+                    src_addr = addr_info[0]
+                    await self._process_packet(data, src_addr)
 
         except asyncio.CancelledError:
             self.logger.info("Packet receiver stopped")
         except Exception as e:
             self.logger.error(f"Error in packet receiver: {e}")
 
-    async def _process_packet(self, data: bytes):
+    async def _process_packet(self, data: bytes, src_addr: str):
         """Process received OSPFv3 packet"""
         try:
             # Decode packet
@@ -267,7 +270,7 @@ class OSPFv3Interface:
 
             # Process based on packet type
             if header.packet_type == HELLO_PACKET:
-                await self._process_hello(packet)
+                await self._process_hello(packet, src_addr)
             elif header.packet_type == DATABASE_DESCRIPTION:
                 await self._process_database_description(packet)
             # TODO: Add other packet types
@@ -275,7 +278,7 @@ class OSPFv3Interface:
         except Exception as e:
             self.logger.error(f"Error processing packet: {e}")
 
-    async def _process_hello(self, hello: OSPFv3HelloPacket):
+    async def _process_hello(self, hello: OSPFv3HelloPacket, src_addr: str):
         """Process received Hello packet"""
         self.stats['hello_received'] += 1
         self.stats['last_hello_received'] = time.time()
@@ -292,7 +295,7 @@ class OSPFv3Interface:
             neighbor = OSPFv3Neighbor(
                 neighbor_id=neighbor_id,
                 neighbor_interface_id=hello.interface_id,
-                neighbor_address="::",  # TODO: Extract from packet source
+                neighbor_address=src_addr,  # Use source address from packet
                 priority=hello.router_priority,
                 designated_router=hello.designated_router,
                 backup_designated_router=hello.backup_designated_router,
@@ -308,6 +311,10 @@ class OSPFv3Interface:
         else:
             neighbor = self.neighbors[neighbor_id]
 
+            # Update neighbor address if it changed
+            if neighbor.neighbor_address != src_addr:
+                neighbor.neighbor_address = src_addr
+
             # Update neighbor from Hello
             neighbor.update_from_hello(hello)
 
@@ -322,6 +329,10 @@ class OSPFv3Interface:
 
                 neighbor.process_event(EVENT_2WAY_RECEIVED,
                                      should_form_adjacency=should_form_adjacency)
+
+                # If adjacency formed, initiate DD exchange
+                if neighbor.state == STATE_EXSTART:
+                    await self._send_dd_packet(neighbor)
 
                 # Run DR/BDR election if needed
                 if self.config.network_type == NETWORK_TYPE_BROADCAST:
@@ -468,11 +479,158 @@ class OSPFv3Interface:
 
         neighbor.dd_received += 1
 
-        # TODO: Implement DD exchange logic
         self.logger.debug(f"Received DD from {neighbor_id}: "
                         f"Seq={dd_packet.dd_sequence_number}, "
                         f"Flags=0x{dd_packet.flags:02x}, "
                         f"LSAs={len(dd_packet.lsa_headers)}")
+
+        # Process based on neighbor state
+        if neighbor.state == STATE_EXSTART:
+            await self._process_dd_exstart(neighbor, dd_packet)
+        elif neighbor.state == STATE_EXCHANGE:
+            await self._process_dd_exchange(neighbor, dd_packet)
+        elif neighbor.state == STATE_LOADING or neighbor.state == STATE_FULL:
+            await self._process_dd_stable(neighbor, dd_packet)
+
+    async def _process_dd_exstart(self, neighbor, dd_packet):
+        """Process DD packet in ExStart state - master/slave negotiation"""
+        # Determine master/slave based on Router ID
+        # Higher Router ID becomes master
+        my_router_id_int = int(ipaddress.IPv4Address(self.router_id))
+        neighbor_router_id_int = int(ipaddress.IPv4Address(neighbor.neighbor_id))
+
+        if my_router_id_int > neighbor_router_id_int:
+            # We are master
+            neighbor.is_master = False  # We are master, neighbor is slave
+
+            # Accept neighbor's DD if it acknowledges us as master
+            if not (dd_packet.flags & DD_FLAG_MS):
+                # Neighbor accepts us as master
+                neighbor.dd_sequence_number = dd_packet.dd_sequence_number
+                neighbor.last_received_dd_sequence = dd_packet.dd_sequence_number
+
+                # Move to Exchange state
+                neighbor.process_event(EVENT_NEGOTIATION_DONE)
+                self.logger.info(f"Negotiation done with {neighbor.neighbor_id}, we are MASTER")
+
+                # Send first DD in Exchange state
+                await self._send_dd_packet(neighbor)
+        else:
+            # Neighbor is master
+            neighbor.is_master = True  # Neighbor is master, we are slave
+
+            # Use neighbor's sequence number
+            neighbor.dd_sequence_number = dd_packet.dd_sequence_number
+            neighbor.last_received_dd_sequence = dd_packet.dd_sequence_number
+
+            # Move to Exchange state
+            neighbor.process_event(EVENT_NEGOTIATION_DONE)
+            self.logger.info(f"Negotiation done with {neighbor.neighbor_id}, we are SLAVE")
+
+            # Send response DD in Exchange state
+            await self._send_dd_packet(neighbor)
+
+    async def _process_dd_exchange(self, neighbor, dd_packet):
+        """Process DD packet in Exchange state - database exchange"""
+        # Verify sequence number
+        if neighbor.is_master:
+            # We are slave, neighbor is master - accept neighbor's sequence
+            if dd_packet.dd_sequence_number != neighbor.last_received_dd_sequence + 1:
+                self.logger.warning(f"DD sequence mismatch from master {neighbor.neighbor_id}")
+                return
+            neighbor.last_received_dd_sequence = dd_packet.dd_sequence_number
+            neighbor.dd_sequence_number = dd_packet.dd_sequence_number
+        else:
+            # We are master, neighbor is slave - sequence should match ours
+            if dd_packet.dd_sequence_number != neighbor.dd_sequence_number:
+                self.logger.warning(f"DD sequence mismatch from slave {neighbor.neighbor_id}")
+                return
+
+        # Process LSA headers from DD packet
+        # (In a full implementation, we would check against our LSDB and add missing LSAs to request list)
+        for lsa_header in dd_packet.lsa_headers:
+            # Simplified: just log for now
+            self.logger.debug(f"Received LSA header: type=0x{lsa_header.ls_type:04x}, "
+                            f"adv={lsa_header.advertising_router}")
+
+        # Check if exchange is complete (More bit not set)
+        if not (dd_packet.flags & DD_FLAG_M):
+            # Neighbor has sent all its LSAs
+            if len(neighbor.db_summary_list) == 0:
+                # We have also sent all our LSAs
+                self.logger.info(f"DD Exchange complete with {neighbor.neighbor_id}")
+
+                # Check if we need to load LSAs
+                if len(neighbor.link_state_request_list) > 0:
+                    neighbor.process_event(EVENT_EXCHANGE_DONE, need_loading=True)
+                else:
+                    neighbor.process_event(EVENT_EXCHANGE_DONE, need_loading=False)
+            else:
+                # Send next DD packet with our remaining LSAs
+                await self._send_dd_packet(neighbor)
+        else:
+            # Send response DD packet
+            await self._send_dd_packet(neighbor)
+
+    async def _process_dd_stable(self, neighbor, dd_packet):
+        """Process DD packet in Loading or Full state - duplicate/retransmission"""
+        # This is likely a retransmission, just acknowledge
+        self.logger.debug(f"Received duplicate DD from {neighbor.neighbor_id}")
+        # In a full implementation, we would resend our last DD packet
+        pass
+
+    async def _send_dd_packet(self, neighbor):
+        """Send Database Description packet to neighbor"""
+        try:
+            # Determine flags
+            flags = 0
+
+            if neighbor.state == STATE_EXSTART:
+                # Initial DD packet in ExStart
+                flags = DD_FLAG_I | DD_FLAG_M
+                if not neighbor.is_master:
+                    flags |= DD_FLAG_MS
+                # Use our own sequence number for initial packet
+                if neighbor.dd_sequence_number == 0:
+                    import random
+                    neighbor.dd_sequence_number = random.randint(1, 0xFFFFFFFF)
+            elif neighbor.state == STATE_EXCHANGE:
+                # Exchange state
+                if len(neighbor.db_summary_list) > 0:
+                    flags |= DD_FLAG_M
+                if not neighbor.is_master:
+                    flags |= DD_FLAG_MS
+                    # Increment sequence as master
+                    neighbor.dd_sequence_number += 1
+
+            # Build DD packet
+            dd = DatabaseDescriptionPacket(
+                header=OSPFv3Header(
+                    packet_type=DATABASE_DESCRIPTION,
+                    router_id=self.router_id,
+                    area_id=self.config.area_id,
+                    instance_id=self.config.instance_id
+                ),
+                options=self.config.options,
+                interface_mtu=1500,
+                flags=flags,
+                dd_sequence_number=neighbor.dd_sequence_number,
+                lsa_headers=[]  # Simplified: empty for now
+            )
+
+            # Encode and send
+            packet_bytes = dd.encode(
+                src_addr=self.config.link_local_address,
+                dst_addr=neighbor.neighbor_address
+            )
+
+            self.socket.sendto(packet_bytes, (neighbor.neighbor_address, 0))
+
+            self.logger.debug(f"Sent DD to {neighbor.neighbor_id}: "
+                            f"Seq={neighbor.dd_sequence_number}, Flags=0x{flags:02x}")
+
+        except Exception as e:
+            self.logger.error(f"Error sending DD packet: {e}")
 
     async def _neighbor_timer(self):
         """Check neighbor inactivity timers"""
