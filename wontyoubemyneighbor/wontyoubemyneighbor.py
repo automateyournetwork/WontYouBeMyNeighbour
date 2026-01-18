@@ -1,14 +1,30 @@
 #!/usr/bin/env python3
 """
-Won't You Be My Neighbor - OSPF Agent
-RFC 2328 compliant OSPF speaker that participates in OSPF routing
+Won't You Be My Neighbor - Unified Routing Agent
+Supports OSPF (RFC 2328) and BGP-4 (RFC 4271) routing protocols
 
-Usage:
+Usage - OSPF only:
     sudo python3 wontyoubemyneighbor.py \\
         --router-id 10.255.255.99 \\
         --area 0.0.0.0 \\
+        --interface eth0
+
+Usage - BGP only:
+    python3 wontyoubemyneighbor.py \\
+        --router-id 192.0.2.1 \\
+        --bgp-local-as 65001 \\
+        --bgp-peer 192.0.2.2 \\
+        --bgp-peer-as 65002 \\
+        --bgp-network 10.2.2.2/32
+
+Usage - Both OSPF and BGP:
+    sudo python3 wontyoubemyneighbor.py \\
+        --router-id 10.0.1.1 \\
+        --area 0.0.0.0 \\
         --interface eth0 \\
-        --source-ip 10.10.20.99  # Optional, for multi-IP interfaces
+        --bgp-local-as 65001 \\
+        --bgp-peer 192.0.2.2 \\
+        --bgp-peer-as 65002
 """
 
 import asyncio
@@ -16,8 +32,9 @@ import argparse
 import logging
 import signal
 import sys
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
+# OSPF imports
 from ospf.hello import HelloHandler
 from ospf.neighbor import OSPFNeighbor
 from ospf.lsdb import LinkStateDatabase
@@ -34,6 +51,9 @@ from ospf.constants import (
 )
 from lib.socket_handler import OSPFSocket
 from lib.interface import get_interface_info
+
+# BGP imports
+from bgp import BGPSpeaker
 
 
 class OSPFAgent:
@@ -796,72 +816,316 @@ def setup_logging(log_level: str = "INFO"):
     )
 
 
+async def run_unified_agent(args: argparse.Namespace):
+    """
+    Run OSPF, BGP, or both based on command-line arguments
+
+    Args:
+        args: Parsed command-line arguments
+    """
+    logger = logging.getLogger("UnifiedAgent")
+
+    ospf_agent = None
+    bgp_speaker = None
+    tasks = []
+
+    # Determine what protocols to run
+    run_ospf = args.interface is not None  # OSPF requires interface
+    run_bgp = args.bgp_local_as is not None  # BGP requires local AS
+
+    if not run_ospf and not run_bgp:
+        logger.error("Must specify either OSPF (--interface) or BGP (--bgp-local-as) configuration")
+        sys.exit(1)
+
+    # Determine agent type for banner
+    if run_ospf and run_bgp:
+        agent_type = "Unified OSPF+BGP Agent"
+    elif run_bgp:
+        agent_type = "BGP Agent"
+    else:
+        agent_type = "OSPF Agent"
+
+    logger.info(f"Starting Won't You Be My Neighbor - {agent_type} - Router ID: {args.router_id}")
+    if run_ospf:
+        logger.info(f"  OSPF: Enabled (Area {args.area}, Interface {args.interface})")
+    if run_bgp:
+        logger.info(f"  BGP: Enabled (AS {args.bgp_local_as}, {len(args.bgp_peers or [])} peers)")
+
+    try:
+        # Initialize OSPF if requested
+        if run_ospf:
+            logger.info("Initializing OSPF agent...")
+            ospf_agent = OSPFAgent(
+                router_id=args.router_id,
+                area_id=args.area,
+                interface=args.interface,
+                hello_interval=args.hello_interval,
+                dead_interval=args.dead_interval,
+                network_type=args.network_type,
+                source_ip=args.source_ip,
+                unicast_peer=args.unicast_peer
+            )
+            tasks.append(asyncio.create_task(ospf_agent.start()))
+
+        # Get local IP from interface if available (for BGP next-hop)
+        local_bgp_ip = None
+        if args.interface:
+            interface_info = get_interface_info(args.interface, args.source_ip if hasattr(args, 'source_ip') else None)
+            if interface_info:
+                local_bgp_ip = interface_info.ip_address
+                logger.info(f"Using interface {args.interface} IP {local_bgp_ip} for BGP")
+
+        # Initialize BGP if requested
+        if run_bgp:
+            logger.info("Initializing BGP speaker...")
+            bgp_speaker = BGPSpeaker(
+                local_as=args.bgp_local_as,
+                router_id=args.router_id,
+                listen_ip=args.bgp_listen_ip,
+                listen_port=args.bgp_listen_port,
+                log_level=args.log_level
+            )
+
+            # Enable route reflection if requested
+            if args.bgp_route_reflector:
+                cluster_id = args.bgp_cluster_id if args.bgp_cluster_id else args.router_id
+                bgp_speaker.enable_route_reflection(cluster_id=cluster_id)
+                logger.info(f"BGP route reflection enabled (cluster ID: {cluster_id})")
+
+            # Add BGP peers
+            if args.bgp_peers:
+                for i, peer_ip in enumerate(args.bgp_peers):
+                    # Get corresponding peer AS
+                    if args.bgp_peer_as_list and i < len(args.bgp_peer_as_list):
+                        peer_as = args.bgp_peer_as_list[i]
+                    else:
+                        peer_as = args.bgp_local_as  # Default to iBGP
+
+                    # Check if passive
+                    passive = peer_ip in (args.bgp_passive or [])
+
+                    # Check if route reflector client
+                    rr_client = peer_ip in (args.bgp_rr_clients or [])
+
+                    peer_type = "iBGP" if peer_as == args.bgp_local_as else "eBGP"
+                    mode = "passive" if passive else "active"
+                    rr_status = " (RR client)" if rr_client else ""
+
+                    logger.info(f"Adding BGP peer {peer_ip}: {peer_type}, {mode}{rr_status}")
+
+                    bgp_speaker.add_peer(
+                        peer_ip=peer_ip,
+                        peer_as=peer_as,
+                        local_ip=local_bgp_ip,  # Use interface IP for next-hop
+                        passive=passive,
+                        route_reflector_client=rr_client,
+                        hold_time=args.bgp_hold_time,
+                        connect_retry_time=args.bgp_connect_retry
+                    )
+
+            # Start BGP speaker
+            await bgp_speaker.start()
+
+            # Originate local networks if specified
+            if args.bgp_networks:
+                logger.info(f"Originating {len(args.bgp_networks)} local network(s)...")
+                for network in args.bgp_networks:
+                    if bgp_speaker.agent.originate_route(network):
+                        logger.info(f"  ✓ Originated: {network}")
+                    else:
+                        logger.error(f"  ✗ Failed to originate: {network}")
+
+            # Add BGP monitoring task
+            tasks.append(asyncio.create_task(monitor_bgp(bgp_speaker, args.bgp_stats_interval)))
+
+        # Setup signal handlers for graceful shutdown
+        loop = asyncio.get_event_loop()
+
+        def signal_handler(signum):
+            logger.info(f"Received signal {signum}, shutting down...")
+            for task in tasks:
+                task.cancel()
+            if bgp_speaker:
+                asyncio.create_task(bgp_speaker.stop())
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, lambda s=sig: signal_handler(s))
+
+        # Wait for all tasks
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        raise
+    finally:
+        # Cleanup
+        if bgp_speaker:
+            logger.info("Stopping BGP speaker...")
+            await bgp_speaker.stop()
+
+        logger.info("Shutdown complete")
+
+
+async def monitor_bgp(speaker: BGPSpeaker, interval: int):
+    """
+    Monitor BGP speaker and print statistics periodically
+
+    Args:
+        speaker: BGP speaker instance
+        interval: Statistics interval in seconds
+    """
+    logger = logging.getLogger("BGPMonitor")
+
+    while speaker.agent.running:
+        await asyncio.sleep(interval)
+
+        try:
+            stats = speaker.get_statistics()
+            logger.info("=" * 60)
+            logger.info(f"BGP Statistics:")
+            logger.info(f"  Total Peers:       {stats['total_peers']}")
+            logger.info(f"  Established Peers: {stats['established_peers']}")
+            logger.info(f"  Loc-RIB Routes:    {stats['loc_rib_routes']}")
+
+            if 'route_reflector' in stats:
+                rr_stats = stats['route_reflector']
+                logger.info(f"  RR Clients:        {rr_stats['clients']}")
+        except Exception as e:
+            logger.error(f"Error getting BGP statistics: {e}")
+
+
 def main():
     """
     Main entry point
     """
     parser = argparse.ArgumentParser(
-        description="Won't You Be My Neighbor - OSPF Agent",
+        description="Won't You Be My Neighbor - Unified Routing Agent (OSPF + BGP)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Example:
+Examples:
+
+  # OSPF only:
   sudo python3 wontyoubemyneighbor.py \\
       --router-id 10.255.255.99 \\
       --area 0.0.0.0 \\
-      --interface utun5 \\
-      --source-ip 10.10.20.99
+      --interface eth0
 
-Note:
-  - Requires root privileges for raw sockets
-  - Use --source-ip for interfaces with multiple IP addresses
+  # BGP only (iBGP):
+  python3 wontyoubemyneighbor.py \\
+      --router-id 192.0.2.1 \\
+      --bgp-local-as 65001 \\
+      --bgp-peer 192.0.2.2 \\
+      --bgp-peer-as 65001
+
+  # BGP only (eBGP):
+  python3 wontyoubemyneighbor.py \\
+      --router-id 192.0.2.1 \\
+      --bgp-local-as 65001 \\
+      --bgp-peer 192.0.2.2 \\
+      --bgp-peer-as 65002
+
+  # Both OSPF and BGP:
+  sudo python3 wontyoubemyneighbor.py \\
+      --router-id 10.0.1.1 \\
+      --area 0.0.0.0 \\
+      --interface eth0 \\
+      --bgp-local-as 65001 \\
+      --bgp-peer 192.0.2.2 \\
+      --bgp-peer-as 65002
+
+  # BGP Route Reflector with clients:
+  python3 wontyoubemyneighbor.py \\
+      --router-id 192.0.2.1 \\
+      --bgp-local-as 65001 \\
+      --bgp-route-reflector \\
+      --bgp-peer 192.0.2.2 --bgp-peer-as 65001 --bgp-rr-client 192.0.2.2 --bgp-passive 192.0.2.2 \\
+      --bgp-peer 192.0.2.3 --bgp-peer-as 65001 --bgp-rr-client 192.0.2.3 --bgp-passive 192.0.2.3
+
+Notes:
+  - OSPF requires root privileges for raw sockets
+  - BGP uses TCP port 179 (requires root for ports < 1024)
+  - At least one protocol (OSPF or BGP) must be specified
         """
     )
 
+    # Common arguments
     parser.add_argument("--router-id", required=True,
-                       help="Router ID (e.g., 10.255.255.99)")
-    parser.add_argument("--area", default="0.0.0.0",
-                       help="OSPF Area (default: 0.0.0.0)")
-    parser.add_argument("--interface", required=True,
-                       help="Network interface (e.g., eth0, en0)")
-    parser.add_argument("--source-ip", default=None,
-                       help="Source IP address (optional, for multi-IP interfaces)")
-    parser.add_argument("--hello-interval", type=int, default=10,
-                       help="Hello interval in seconds (default: 10)")
-    parser.add_argument("--dead-interval", type=int, default=40,
-                       help="Dead interval in seconds (default: 40)")
-    parser.add_argument("--network-type", default="broadcast",
-                       choices=['broadcast', 'point-to-multipoint', 'point-to-point', 'nbma'],
-                       help="Network type (default: broadcast)")
-    parser.add_argument("--unicast-peer", default=None,
-                       help="Unicast peer IP for point-to-point (bypasses multicast)")
+                       help="Router ID in IPv4 format (e.g., 10.255.255.99)")
     parser.add_argument("--log-level", default="INFO",
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                        help="Log level (default: INFO)")
+
+    # OSPF arguments
+    ospf_group = parser.add_argument_group('OSPF Options')
+    ospf_group.add_argument("--area", default="0.0.0.0",
+                       help="OSPF Area (default: 0.0.0.0)")
+    ospf_group.add_argument("--interface", default=None,
+                       help="Network interface for OSPF (e.g., eth0, en0)")
+    ospf_group.add_argument("--source-ip", default=None,
+                       help="Source IP address (optional, for multi-IP interfaces)")
+    ospf_group.add_argument("--hello-interval", type=int, default=10,
+                       help="OSPF Hello interval in seconds (default: 10)")
+    ospf_group.add_argument("--dead-interval", type=int, default=40,
+                       help="OSPF Dead interval in seconds (default: 40)")
+    ospf_group.add_argument("--network-type", default="broadcast",
+                       choices=['broadcast', 'point-to-multipoint', 'point-to-point', 'nbma'],
+                       help="OSPF Network type (default: broadcast)")
+    ospf_group.add_argument("--unicast-peer", default=None,
+                       help="OSPF Unicast peer IP for point-to-point")
+
+    # BGP arguments
+    bgp_group = parser.add_argument_group('BGP Options')
+    bgp_group.add_argument("--bgp-local-as", type=int, default=None,
+                       help="BGP Local AS number (e.g., 65001)")
+    bgp_group.add_argument("--bgp-peer", dest="bgp_peers", action="append",
+                       help="BGP Peer IP address (can be specified multiple times)")
+    bgp_group.add_argument("--bgp-peer-as", dest="bgp_peer_as_list", type=int, action="append",
+                       help="BGP Peer AS number for corresponding --bgp-peer")
+    bgp_group.add_argument("--bgp-passive", dest="bgp_passive", action="append",
+                       help="Mark BGP peer as passive (wait for incoming connection)")
+    bgp_group.add_argument("--bgp-route-reflector", action="store_true",
+                       help="Enable BGP route reflection")
+    bgp_group.add_argument("--bgp-cluster-id", default=None,
+                       help="BGP Route reflector cluster ID (default: router-id)")
+    bgp_group.add_argument("--bgp-rr-client", dest="bgp_rr_clients", action="append",
+                       help="Mark BGP peer as route reflector client")
+    bgp_group.add_argument("--bgp-listen-ip", default="0.0.0.0",
+                       help="BGP Listen IP address (default: 0.0.0.0)")
+    bgp_group.add_argument("--bgp-listen-port", type=int, default=179,
+                       help="BGP TCP port to listen on (default: 179)")
+    bgp_group.add_argument("--bgp-hold-time", type=int, default=180,
+                       help="BGP Hold time in seconds (default: 180)")
+    bgp_group.add_argument("--bgp-connect-retry", type=int, default=120,
+                       help="BGP Connect retry time in seconds (default: 120)")
+    bgp_group.add_argument("--bgp-stats-interval", type=int, default=30,
+                       help="BGP Statistics display interval in seconds (default: 30)")
+    bgp_group.add_argument("--bgp-network", dest="bgp_networks", action="append",
+                       help="BGP Network to originate/advertise (can be specified multiple times)")
 
     args = parser.parse_args()
 
     # Setup logging
     setup_logging(args.log_level)
 
-    # Create and run agent
-    try:
-        agent = OSPFAgent(
-            router_id=args.router_id,
-            area_id=args.area,
-            interface=args.interface,
-            hello_interval=args.hello_interval,
-            dead_interval=args.dead_interval,
-            network_type=args.network_type,
-            source_ip=args.source_ip,
-            unicast_peer=args.unicast_peer
-        )
-
-        # Run asyncio event loop
-        asyncio.run(agent.start())
-
-    except ValueError as e:
-        print(f"Error: {e}")
+    # Validate configuration
+    if not args.interface and not args.bgp_local_as:
+        print("Error: Must specify either OSPF (--interface) or BGP (--bgp-local-as) configuration")
+        parser.print_help()
         sys.exit(1)
+
+    if args.bgp_local_as and not args.bgp_peers:
+        print("Error: BGP requires at least one peer (--bgp-peer)")
+        sys.exit(1)
+
+    if args.bgp_peer_as_list and len(args.bgp_peer_as_list) != len(args.bgp_peers or []):
+        print("Error: Number of --bgp-peer-as must match number of --bgp-peer")
+        sys.exit(1)
+
+    # Run unified agent
+    try:
+        asyncio.run(run_unified_agent(args))
     except KeyboardInterrupt:
         print("\nShutting down...")
         sys.exit(0)

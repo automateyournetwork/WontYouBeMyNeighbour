@@ -1,0 +1,1 @@
+{"branch":"path-attributes","created_at":"2026-01-17T10:47:37","kind":"auto","message":"RALPH Turn 7: Attributes integrated with UPDATE, 54 tests passing","meta":{},"parents":["6409bd41158914a3e5af94d8dd78f6723f4755044c235dd129015edb0db25737"],"schema":"gait.commit.v0","snapshot_id":null,"turn_ids":["bff1014ed2658d0232d1899feeacc8dac5024c356e67026f93d11322633c62b4"]}

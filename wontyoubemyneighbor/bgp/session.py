@@ -1,0 +1,641 @@
+"""
+BGP Session Management
+
+Manages BGP peer sessions with TCP transport, FSM integration,
+and message send/receive over the wire.
+
+Each BGPSession represents a single BGP peering session, managing:
+- TCP connection establishment (active or passive)
+- Message encoding/decoding from wire format
+- FSM event processing
+- RIB management and route exchange
+- Timers (ConnectRetry, Hold, Keepalive)
+"""
+
+import asyncio
+import logging
+import struct
+import time
+from typing import Optional, Callable, Dict, List, Any
+from dataclasses import dataclass
+
+from .constants import *
+from .messages import BGPMessage, BGPOpen, BGPUpdate, BGPKeepalive, BGPNotification, BGPCapability
+from .fsm import BGPFSM, BGPEvent
+from .rib import AdjRIBIn, LocRIB, AdjRIBOut, BGPRoute
+from .capabilities import CapabilityManager, build_capability_list, parse_capabilities_from_open
+from .attributes import PathAttribute
+
+
+@dataclass
+class BGPSessionConfig:
+    """Configuration for a BGP session"""
+    # Required fields (no defaults)
+    local_as: int
+    local_router_id: str
+    local_ip: str
+    peer_as: int
+    peer_ip: str
+
+    # Optional fields (with defaults)
+    local_port: int = BGP_PORT
+    peer_port: int = BGP_PORT
+    peer_router_id: Optional[str] = None  # Learned from OPEN
+
+    hold_time: int = 180
+    keepalive_time: int = 60
+    connect_retry_time: int = 120
+
+    passive: bool = False  # True for passive/listen mode
+
+    # Route Reflection
+    route_reflector_client: bool = False
+    cluster_id: Optional[str] = None
+
+    # Policy
+    import_policy: Optional[str] = None
+    export_policy: Optional[str] = None
+
+
+class BGPSession:
+    """
+    BGP Session Manager
+
+    Manages a single BGP peer session including TCP transport,
+    FSM, RIBs, and message processing.
+    """
+
+    def __init__(self, config: BGPSessionConfig):
+        """
+        Initialize BGP session
+
+        Args:
+            config: Session configuration
+        """
+        self.config = config
+        self.logger = logging.getLogger(f"BGPSession[{config.peer_ip}]")
+
+        # Session identifiers
+        self.session_id = f"{config.local_ip}:{config.local_port}-{config.peer_ip}:{config.peer_port}"
+        self.peer_id = config.peer_router_id or config.peer_ip
+
+        # TCP transport
+        self.reader: Optional[asyncio.StreamReader] = None
+        self.writer: Optional[asyncio.StreamWriter] = None
+        self.connection_task: Optional[asyncio.Task] = None
+
+        # FSM
+        self.fsm = BGPFSM(
+            peer_id=self.peer_id,
+            local_as=config.local_as,
+            peer_as=config.peer_as,
+            hold_time=config.hold_time,
+            connect_retry_time=config.connect_retry_time
+        )
+
+        # Wire FSM callbacks
+        self.fsm.send_message_callback = self._send_message
+        self.fsm.on_state_change = self._on_fsm_state_change
+        self.fsm.on_send_open = self._on_fsm_send_open
+        self.fsm.on_send_keepalive = self._on_fsm_send_keepalive
+        self.fsm.on_send_notification = self._on_fsm_send_notification
+        self.fsm.on_tcp_connect = self._on_fsm_tcp_connect
+        self.fsm.on_tcp_disconnect = self._on_fsm_tcp_disconnect
+
+        # Capabilities
+        self.capabilities = CapabilityManager(config.local_as)
+
+        # RIBs
+        self.adj_rib_in = AdjRIBIn()
+        self.adj_rib_out = AdjRIBOut()
+        self.loc_rib: Optional[LocRIB] = None  # Shared Loc-RIB (set by BGPAgent)
+
+        # Statistics
+        self.stats = {
+            'messages_sent': 0,
+            'messages_received': 0,
+            'updates_sent': 0,
+            'updates_received': 0,
+            'routes_received': 0,
+            'routes_advertised': 0,
+            'last_error': None,
+            'uptime': 0,
+            'established_time': None
+        }
+
+        # Tasks
+        self.message_reader_task: Optional[asyncio.Task] = None
+        self.running = False
+
+    async def start(self) -> None:
+        """Start BGP session"""
+        self.logger.info(f"Starting BGP session to {self.config.peer_ip}")
+        self.running = True
+
+        # Initialize capabilities
+        self._configure_capabilities()
+
+        # Start FSM with appropriate event
+        if self.config.passive:
+            self.logger.info("Passive mode - waiting for incoming connection")
+            # Start FSM in passive mode
+            await self.fsm.process_event(BGPEvent.ManualStart_with_PassiveTcpEstablishment)
+        else:
+            # Active mode - initiate connection
+            self.logger.info("Active mode - initiating connection")
+            await self.fsm.process_event(BGPEvent.ManualStart)
+
+    async def stop(self, error_code: Optional[int] = None, error_subcode: Optional[int] = None,
+                   error_data: bytes = b'') -> None:
+        """
+        Stop BGP session
+
+        Args:
+            error_code: Optional NOTIFICATION error code
+            error_subcode: Optional NOTIFICATION error subcode
+            error_data: Optional error data
+        """
+        self.logger.info(f"Stopping BGP session to {self.config.peer_ip}")
+        self.running = False
+
+        # Send NOTIFICATION if error specified
+        if error_code is not None:
+            try:
+                notification = BGPNotification(error_code, error_subcode, error_data)
+                await self._send_message(notification)
+            except Exception as e:
+                self.logger.error(f"Error sending NOTIFICATION: {e}")
+
+        # Stop FSM
+        await self.fsm.stop()
+
+        # Close connection
+        await self._close_connection()
+
+        # Cancel tasks
+        if self.message_reader_task and not self.message_reader_task.done():
+            self.message_reader_task.cancel()
+        if self.connection_task and not self.connection_task.done():
+            self.connection_task.cancel()
+
+    async def connect(self) -> bool:
+        """
+        Establish TCP connection to peer (active mode)
+
+        Returns:
+            True if connection successful
+        """
+        try:
+            self.logger.info(f"Connecting to {self.config.peer_ip}:{self.config.peer_port}")
+
+            # Open TCP connection
+            self.reader, self.writer = await asyncio.wait_for(
+                asyncio.open_connection(self.config.peer_ip, self.config.peer_port),
+                timeout=30.0
+            )
+
+            self.logger.info(f"TCP connection established to {self.config.peer_ip}")
+
+            # Start message reader
+            self.message_reader_task = asyncio.create_task(self._message_reader())
+
+            # Notify FSM
+            await self.fsm.process_event(BGPEvent.TcpConnectionConfirmed)
+
+            return True
+
+        except asyncio.TimeoutError:
+            self.logger.error(f"Connection timeout to {self.config.peer_ip}")
+            await self.fsm.process_event(BGPEvent.TcpConnectionFails)
+            return False
+        except Exception as e:
+            self.logger.error(f"Connection failed to {self.config.peer_ip}: {e}")
+            await self.fsm.process_event(BGPEvent.TcpConnectionFails)
+            return False
+
+    async def accept_connection(self, reader: asyncio.StreamReader,
+                               writer: asyncio.StreamWriter) -> None:
+        """
+        Accept incoming TCP connection (passive mode)
+
+        Args:
+            reader: Stream reader
+            writer: Stream writer
+        """
+        self.logger.info(f"Accepted connection from {self.config.peer_ip}")
+
+        self.reader = reader
+        self.writer = writer
+
+        # Start message reader
+        self.message_reader_task = asyncio.create_task(self._message_reader())
+
+        # Notify FSM
+        await self.fsm.process_event(BGPEvent.TcpConnectionConfirmed)
+
+    async def _close_connection(self) -> None:
+        """Close TCP connection"""
+        if self.writer:
+            try:
+                self.writer.close()
+                await self.writer.wait_closed()
+            except Exception as e:
+                self.logger.error(f"Error closing connection: {e}")
+            finally:
+                self.writer = None
+                self.reader = None
+
+    async def _send_message(self, message: BGPMessage) -> None:
+        """
+        Send BGP message over TCP
+
+        Args:
+            message: BGP message to send
+        """
+        msg_name = MESSAGE_TYPE_NAMES.get(message.msg_type, f"UNKNOWN({message.msg_type})")
+
+        if not self.writer:
+            self.logger.error(f"Cannot send {msg_name} - writer is None")
+            return
+
+        try:
+            # Check if writer is closing
+            if self.writer.is_closing():
+                self.logger.error(f"Cannot send {msg_name} - writer is closing")
+                return
+
+            # Encode message
+            data = message.encode()
+
+            # Enhanced debug logging
+            self.logger.debug(f"Sending {msg_name} ({len(data)} bytes)")
+            self.logger.debug(f"Message hex dump: {data.hex()}")
+
+            # Check connection before write
+            try:
+                sock = self.writer.get_extra_info('socket')
+                if sock:
+                    self.logger.debug(f"Socket state: connected={sock.fileno() != -1}")
+            except Exception as e:
+                self.logger.debug(f"Could not get socket info: {e}")
+
+            # Send over TCP
+            self.logger.debug(f"Writing {len(data)} bytes to stream...")
+            self.writer.write(data)
+
+            self.logger.debug(f"Draining writer buffer...")
+            await self.writer.drain()
+
+            self.logger.debug(f"Successfully sent {msg_name}")
+
+            # Update statistics
+            self.stats['messages_sent'] += 1
+            if message.msg_type == MSG_UPDATE:
+                self.stats['updates_sent'] += 1
+
+        except ConnectionResetError as e:
+            self.logger.error(f"Connection reset while sending {msg_name}: {e}")
+            await self.fsm.process_event(BGPEvent.TcpConnectionFails)
+        except BrokenPipeError as e:
+            self.logger.error(f"Broken pipe while sending {msg_name}: {e}")
+            await self.fsm.process_event(BGPEvent.TcpConnectionFails)
+        except Exception as e:
+            self.logger.error(f"Error sending {msg_name}: {type(e).__name__}: {e}", exc_info=True)
+            await self.fsm.process_event(BGPEvent.TcpConnectionFails)
+
+    async def _message_reader(self) -> None:
+        """Read and process BGP messages from TCP stream"""
+        self.logger.info("Message reader started")
+
+        try:
+            while self.running and self.reader:
+                # Check EOF before reading
+                if self.reader.at_eof():
+                    self.logger.warning("Reader at EOF - connection closed by peer")
+                    break
+
+                # Log before attempting to read
+                self.logger.debug("Waiting for BGP message header (19 bytes)...")
+
+                # Read BGP message header (19 bytes)
+                try:
+                    header = await self.reader.readexactly(BGP_HEADER_SIZE)
+                    self.logger.debug(f"Received header: {header.hex()}")
+                except asyncio.IncompleteReadError as e:
+                    self.logger.warning(f"Incomplete read for header: expected {BGP_HEADER_SIZE} bytes, got {len(e.partial)} bytes")
+                    self.logger.warning("Connection closed by peer while reading header")
+                    break
+
+                # Parse header
+                marker, length, msg_type = struct.unpack('!16sHB', header)
+
+                msg_name = MESSAGE_TYPE_NAMES.get(msg_type, f"UNKNOWN({msg_type})")
+                self.logger.debug(f"Header parsed: type={msg_name}, length={length}")
+
+                # Validate marker
+                if marker != BGP_MARKER:
+                    self.logger.error(f"Invalid BGP marker: {marker.hex()}")
+                    await self.fsm.process_event(BGPEvent.BGPHeaderErr)
+                    return
+
+                # Validate length
+                if length < BGP_HEADER_SIZE or length > BGP_MAX_MESSAGE_SIZE:
+                    self.logger.error(f"Invalid message length: {length} (must be {BGP_HEADER_SIZE}-{BGP_MAX_MESSAGE_SIZE})")
+                    await self.fsm.process_event(BGPEvent.BGPHeaderErr)
+                    return
+
+                # Read message body
+                body_length = length - BGP_HEADER_SIZE
+                if body_length > 0:
+                    self.logger.debug(f"Reading message body ({body_length} bytes)...")
+                    try:
+                        body = await self.reader.readexactly(body_length)
+                        self.logger.debug(f"Received body: {body.hex()}")
+                    except asyncio.IncompleteReadError as e:
+                        self.logger.warning(f"Incomplete read for body: expected {body_length} bytes, got {len(e.partial)} bytes")
+                        self.logger.warning("Connection closed by peer while reading body")
+                        break
+                else:
+                    body = b''
+
+                # Decode message
+                full_message = header + body
+                self.logger.debug(f"Decoding {msg_name} message ({len(full_message)} bytes)")
+
+                message = BGPMessage.decode(full_message)
+
+                if message:
+                    self.logger.debug(f"Successfully decoded {msg_name}")
+
+                    # Update statistics
+                    self.stats['messages_received'] += 1
+
+                    # Process message
+                    await self._process_message(message)
+                else:
+                    self.logger.error(f"Failed to decode {msg_name} message")
+                    self.logger.error(f"Message hex: {full_message.hex()}")
+                    await self.fsm.process_event(BGPEvent.BGPHeaderErr)
+                    return
+
+        except asyncio.IncompleteReadError as e:
+            self.logger.info(f"Connection closed by peer (IncompleteReadError): expected={e.expected}, partial={len(e.partial)}")
+            await self.fsm.process_event(BGPEvent.TcpConnectionFails)
+        except ConnectionResetError as e:
+            self.logger.warning(f"Connection reset by peer: {e}")
+            await self.fsm.process_event(BGPEvent.TcpConnectionFails)
+        except Exception as e:
+            self.logger.error(f"Error reading message: {type(e).__name__}: {e}", exc_info=True)
+            await self.fsm.process_event(BGPEvent.TcpConnectionFails)
+        finally:
+            self.logger.info("Message reader stopped")
+
+    async def _process_message(self, message: BGPMessage) -> None:
+        """
+        Process received BGP message
+
+        Args:
+            message: Received BGP message
+        """
+        msg_type = message.msg_type
+
+        if msg_type == MSG_OPEN:
+            await self._process_open(message)
+        elif msg_type == MSG_UPDATE:
+            await self._process_update(message)
+        elif msg_type == MSG_KEEPALIVE:
+            await self._process_keepalive(message)
+        elif msg_type == MSG_NOTIFICATION:
+            await self._process_notification(message)
+        elif msg_type == MSG_ROUTE_REFRESH:
+            await self._process_route_refresh(message)
+        else:
+            self.logger.warning(f"Unknown message type: {msg_type}")
+
+    async def _process_open(self, message: BGPOpen) -> None:
+        """Process OPEN message"""
+        self.logger.info(f"Received OPEN: AS={message.my_as}, ID={message.bgp_identifier}, "
+                        f"HoldTime={message.hold_time}")
+
+        # Store peer router ID
+        self.config.peer_router_id = message.bgp_identifier
+        self.peer_id = message.bgp_identifier
+
+        # Negotiate hold time (use minimum of local and peer)
+        negotiated_hold_time = self.fsm.negotiate_hold_time(message.hold_time)
+        self.logger.info(f"Negotiated hold time: {negotiated_hold_time} seconds "
+                        f"(local={self.config.hold_time}, peer={message.hold_time})")
+
+        # Parse peer capabilities
+        peer_caps = {}
+        for cap in message.capabilities:
+            peer_caps[cap.code] = cap.value
+        self.capabilities.set_peer_capabilities(peer_caps)
+
+        self.logger.info(f"Peer capabilities: {list(peer_caps.keys())}")
+
+        # Notify FSM
+        await self.fsm.process_event(BGPEvent.BGPOpen)
+
+    async def _process_update(self, message: BGPUpdate) -> None:
+        """Process UPDATE message"""
+        self.stats['updates_received'] += 1
+
+        # Process withdrawn routes
+        if message.withdrawn_routes:
+            self.logger.debug(f"Withdrawn routes: {len(message.withdrawn_routes)}")
+            for prefix in message.withdrawn_routes:
+                self.adj_rib_in.remove_route(prefix, self.peer_id)
+                self.stats['routes_received'] -= 1
+
+        # Process advertised routes
+        if message.nlri:
+            self.logger.debug(f"Advertised routes: {len(message.nlri)}, "
+                            f"attributes: {len(message.path_attributes)}")
+
+            # Build route with path attributes
+            for prefix in message.nlri:
+                route = self._build_route_from_update(prefix, message.path_attributes)
+                if route:
+                    self.adj_rib_in.add_route(route)
+                    self.stats['routes_received'] += 1
+
+    async def _process_keepalive(self, message: BGPKeepalive) -> None:
+        """Process KEEPALIVE message"""
+        self.logger.debug("Received KEEPALIVE")
+        await self.fsm.process_event(BGPEvent.KeepAliveMsg)
+
+    async def _process_notification(self, message: BGPNotification) -> None:
+        """Process NOTIFICATION message"""
+        error_name = ERROR_CODE_NAMES.get(message.error_code, f"UNKNOWN({message.error_code})")
+        self.logger.warning(f"Received NOTIFICATION: {error_name} "
+                          f"(code={message.error_code}, subcode={message.error_subcode})")
+
+        self.stats['last_error'] = f"{error_name} ({message.error_code}/{message.error_subcode})"
+
+        await self.fsm.process_event(BGPEvent.NotifMsg)
+
+    async def _process_route_refresh(self, message) -> None:
+        """Process ROUTE-REFRESH message"""
+        self.logger.info("Received ROUTE-REFRESH - re-advertising routes")
+        # Re-send all routes in Adj-RIB-Out
+        # This will be implemented when we add the advertisement logic
+
+    def _build_route_from_update(self, prefix: str, attributes: Dict[int, Any]) -> Optional[BGPRoute]:
+        """
+        Build BGPRoute from UPDATE message
+
+        Args:
+            prefix: Prefix string
+            attributes: Path attributes dictionary (type_code -> value)
+
+        Returns:
+            BGPRoute or None
+        """
+        try:
+            # Parse prefix
+            if '/' in prefix:
+                prefix_str, prefix_len_str = prefix.split('/')
+                prefix_len = int(prefix_len_str)
+            else:
+                prefix_str = prefix
+                prefix_len = 32  # Default for IPv4
+
+            # attributes is already a dict from UPDATE decode
+            # No need to rebuild it
+
+            # Create route
+            route = BGPRoute(
+                prefix=prefix,
+                prefix_len=prefix_len,
+                path_attributes=attributes,
+                peer_id=self.peer_id,
+                peer_ip=self.config.peer_ip,
+                timestamp=time.time(),
+                afi=AFI_IPV4,
+                safi=SAFI_UNICAST
+            )
+
+            return route
+
+        except Exception as e:
+            self.logger.error(f"Error building route from UPDATE: {e}", exc_info=True)
+            return None
+
+    def _configure_capabilities(self) -> None:
+        """Configure local capabilities"""
+        # Enable IPv4 unicast capability (required for route exchange with FRR)
+        self.capabilities.enable_multiprotocol(AFI_IPV4, SAFI_UNICAST)
+
+        # Keep other capabilities disabled for now to avoid encoding issues
+        # TODO: Re-enable these after verifying IPv4 unicast works:
+        # self.capabilities.enable_four_octet_as()
+        # self.capabilities.enable_route_refresh()
+        # self.capabilities.enable_multiprotocol(AFI_IPV6, SAFI_UNICAST)
+
+        self.logger.info(f"Configured {len(self.capabilities.local_capabilities)} capabilities: {list(self.capabilities.local_capabilities.keys())}")
+
+    async def _on_fsm_state_change(self, old_state: int, new_state: int) -> None:
+        """
+        Handle FSM state changes
+
+        Args:
+            old_state: Previous state
+            new_state: New state
+        """
+        from .fsm import FSM_STATE_NAMES
+
+        self.logger.info(f"FSM state: {FSM_STATE_NAMES[old_state]} → {FSM_STATE_NAMES[new_state]}")
+
+        # Handle Established state
+        if new_state == STATE_ESTABLISHED and old_state != STATE_ESTABLISHED:
+            self.stats['established_time'] = time.time()
+            self.logger.info(f"BGP session ESTABLISHED with {self.config.peer_ip}")
+
+            # Call on_established callback if registered
+            if hasattr(self, 'on_established') and self.on_established:
+                self.on_established()
+
+        # Handle connection loss
+        if old_state == STATE_ESTABLISHED and new_state != STATE_ESTABLISHED:
+            if self.stats['established_time']:
+                uptime = time.time() - self.stats['established_time']
+                self.stats['uptime'] += uptime
+                self.stats['established_time'] = None
+            self.logger.warning(f"BGP session DOWN with {self.config.peer_ip}")
+
+    def _on_fsm_send_open(self) -> None:
+        """FSM callback to send OPEN message"""
+        asyncio.create_task(self._send_open())
+
+    def _on_fsm_send_keepalive(self) -> None:
+        """FSM callback to send KEEPALIVE message"""
+        asyncio.create_task(self._send_keepalive())
+
+    def _on_fsm_send_notification(self, error_code: int, error_subcode: int) -> None:
+        """FSM callback to send NOTIFICATION message"""
+        asyncio.create_task(self._send_notification(error_code, error_subcode))
+
+    def _on_fsm_tcp_connect(self) -> None:
+        """FSM callback to initiate TCP connection"""
+        asyncio.create_task(self.connect())
+
+    def _on_fsm_tcp_disconnect(self) -> None:
+        """FSM callback to close TCP connection"""
+        asyncio.create_task(self._disconnect())
+
+    async def _send_open(self) -> None:
+        """Send OPEN message"""
+        open_msg = BGPOpen(
+            version=BGP_VERSION,
+            my_as=self.config.local_as,
+            hold_time=self.config.hold_time,
+            bgp_identifier=self.config.local_router_id,
+            capabilities=build_capability_list(self.capabilities)
+        )
+        await self._send_message(open_msg)
+
+    async def _send_keepalive(self) -> None:
+        """Send KEEPALIVE message"""
+        keepalive_msg = BGPKeepalive()
+        await self._send_message(keepalive_msg)
+
+    async def _send_notification(self, error_code: int, error_subcode: int, data: bytes = b'') -> None:
+        """Send NOTIFICATION message"""
+        notif_msg = BGPNotification(
+            error_code=error_code,
+            error_subcode=error_subcode,
+            data=data
+        )
+        await self._send_message(notif_msg)
+
+    async def _disconnect(self) -> None:
+        """Close TCP connection"""
+        await self._close_connection()
+
+    def is_established(self) -> bool:
+        """Check if session is in Established state"""
+        return self.fsm.state == STATE_ESTABLISHED
+
+    def get_statistics(self) -> Dict:
+        """
+        Get session statistics
+
+        Returns:
+            Dictionary with statistics
+        """
+        stats = self.stats.copy()
+
+        # Add current uptime if established
+        if self.stats['established_time']:
+            stats['current_uptime'] = time.time() - self.stats['established_time']
+
+        # Add FSM state
+        from .fsm import FSM_STATE_NAMES
+        stats['fsm_state'] = FSM_STATE_NAMES.get(self.fsm.state, f"UNKNOWN({self.fsm.state})")
+
+        # Add RIB statistics
+        stats['adj_rib_in_routes'] = self.adj_rib_in.size()
+        stats['adj_rib_out_routes'] = self.adj_rib_out.size()
+
+        return stats
