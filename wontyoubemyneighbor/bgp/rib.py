@@ -100,6 +100,20 @@ class BGPRoute:
         if attr_type in self.path_attributes:
             del self.path_attributes[attr_type]
 
+    @property
+    def next_hop(self) -> Optional[str]:
+        """
+        Get BGP next hop from NEXT_HOP path attribute
+
+        Returns:
+            Next hop IP address string or None
+        """
+        from .constants import ATTR_NEXT_HOP
+        attr = self.get_attribute(ATTR_NEXT_HOP)
+        if attr and hasattr(attr, 'next_hop'):
+            return attr.next_hop
+        return None
+
 
 class AdjRIBIn:
     """

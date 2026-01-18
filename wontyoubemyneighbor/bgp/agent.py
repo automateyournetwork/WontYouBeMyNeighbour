@@ -37,7 +37,7 @@ class BGPAgent:
     """
 
     def __init__(self, local_as: int, router_id: str, listen_ip: str = "0.0.0.0",
-                 listen_port: int = BGP_PORT):
+                 listen_port: int = BGP_PORT, kernel_route_manager=None):
         """
         Initialize BGP agent
 
@@ -46,11 +46,13 @@ class BGPAgent:
             router_id: Local router ID (IPv4 address format)
             listen_ip: IP address to listen on for passive connections
             listen_port: TCP port to listen on
+            kernel_route_manager: Optional kernel route manager for installing routes
         """
         self.local_as = local_as
         self.router_id = router_id
         self.listen_ip = listen_ip
         self.listen_port = listen_port
+        self.kernel_route_manager = kernel_route_manager
 
         self.logger = logging.getLogger(f"BGPAgent[AS{local_as}]")
 
@@ -456,11 +458,23 @@ class BGPAgent:
                 changed_prefixes.append(prefix)
                 self.logger.debug(f"Installed new best path for {prefix} via {best_route.peer_id}")
 
+                # Install route into kernel
+                if self.kernel_route_manager and best_route.next_hop:
+                    self.kernel_route_manager.install_route(
+                        prefix, best_route.next_hop, protocol="bgp"
+                    )
+
             elif current_best.peer_id != best_route.peer_id:
                 # Best path changed
                 self.loc_rib.install_route(best_route)
                 changed_prefixes.append(prefix)
                 self.logger.info(f"Best path changed for {prefix}: {current_best.peer_id} → {best_route.peer_id}")
+
+                # Install route into kernel
+                if self.kernel_route_manager and best_route.next_hop:
+                    self.kernel_route_manager.install_route(
+                        prefix, best_route.next_hop, protocol="bgp"
+                    )
 
         # If best paths changed, trigger route advertisement
         if changed_prefixes:
@@ -631,6 +645,12 @@ class BGPAgent:
                 if session.config.peer_as != self.local_as:  # eBGP
                     as_path_copy.prepend(self.local_as)
                 modified.append(as_path_copy)
+
+            elif attr.type_code == ATTR_LOCAL_PREF:
+                # LOCAL_PREF: Only include for iBGP, strip for eBGP
+                if session.config.peer_as == self.local_as:  # iBGP
+                    modified.append(attr)
+                # else: skip for eBGP
 
             else:
                 # Keep other attributes as-is

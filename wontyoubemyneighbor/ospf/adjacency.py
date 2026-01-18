@@ -146,7 +146,7 @@ class AdjacencyManager:
 
         return bytes(packet)
 
-    def process_dbd(self, packet_data: bytes, neighbor: OSPFNeighbor) -> Tuple[bool, List]:
+    def process_dbd(self, packet_data: bytes, neighbor: OSPFNeighbor) -> Tuple[bool, List, bool]:
         """
         Process received Database Description packet
 
@@ -155,7 +155,8 @@ class AdjacencyManager:
             neighbor: Neighbor who sent the packet
 
         Returns:
-            Tuple of (success, list of LSAs we need to request)
+            Tuple of (success, list of LSAs we need to request, exchange_complete)
+            exchange_complete=True when neighbor has sent all DBD packets
         """
         try:
             # Parse packet
@@ -174,7 +175,8 @@ class AdjacencyManager:
 
             # Handle ExStart state
             if current_state == STATE_EXSTART:
-                return self._process_dbd_exstart(dbd, neighbor)
+                success, lsa_headers = self._process_dbd_exstart(dbd, neighbor)
+                return (success, lsa_headers, False)  # Not complete yet in ExStart
 
             # Handle Exchange state
             elif current_state == STATE_EXCHANGE:
@@ -182,11 +184,11 @@ class AdjacencyManager:
 
             else:
                 logger.warning(f"Received DBD in unexpected state: {neighbor.get_state_name()}")
-                return (False, [])
+                return (False, [], False)
 
         except Exception as e:
             logger.error(f"Error processing DBD from {neighbor.router_id}: {e}")
-            return (False, [])
+            return (False, [], False)
 
     def _process_dbd_exstart(self, dbd: OSPFDBDescription,
                              neighbor: OSPFNeighbor) -> Tuple[bool, List]:
@@ -296,16 +298,18 @@ class AdjacencyManager:
                            f"AdvRouter {lsa_header.advertising_router}")
 
         # Check if exchange is complete
-        if not is_more:
+        exchange_complete = not is_more
+        if exchange_complete:
             # Neighbor has no more LSAs to send
             logger.info(f"DBD exchange complete with {neighbor.router_id}, "
                        f"need {len(lsa_headers_needed)} LSAs")
-            neighbor.exchange_done()
+            # BUGFIX: Don't call exchange_done() here! Return exchange_complete flag so caller
+            # can add lsa_headers_needed to ls_request_list first, then call exchange_done().
 
         # Do NOT increment here - we increment before sending next DBD
         # (see _send_dbd in wontyoubemyneighbor.py)
 
-        return (True, lsa_headers_needed)
+        return (True, lsa_headers_needed, exchange_complete)
 
     def start_adjacency(self, neighbor: OSPFNeighbor):
         """

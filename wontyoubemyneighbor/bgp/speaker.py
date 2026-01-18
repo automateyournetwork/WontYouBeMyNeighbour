@@ -42,7 +42,7 @@ class BGPSpeaker:
 
     def __init__(self, local_as: int, router_id: str,
                  listen_ip: str = "0.0.0.0", listen_port: int = BGP_PORT,
-                 log_level: str = "INFO"):
+                 log_level: str = "INFO", kernel_route_manager=None):
         """
         Initialize BGP speaker
 
@@ -52,6 +52,7 @@ class BGPSpeaker:
             listen_ip: IP to listen on (default: all interfaces)
             listen_port: Port to listen on (default: 179)
             log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+            kernel_route_manager: Optional kernel route manager for installing routes
         """
         self.local_as = local_as
         self.router_id = router_id
@@ -67,7 +68,7 @@ class BGPSpeaker:
         self.logger = logging.getLogger(f"BGPSpeaker[AS{local_as}]")
 
         # Create BGP agent
-        self.agent = BGPAgent(local_as, router_id, listen_ip, listen_port)
+        self.agent = BGPAgent(local_as, router_id, listen_ip, listen_port, kernel_route_manager)
 
         # Peer configurations
         self.peer_configs: Dict[str, BGPSessionConfig] = {}

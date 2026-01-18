@@ -32,6 +32,7 @@ import argparse
 import logging
 import signal
 import sys
+import subprocess
 from typing import Dict, Optional, List
 
 # OSPF imports
@@ -51,6 +52,7 @@ from ospf.constants import (
 )
 from lib.socket_handler import OSPFSocket
 from lib.interface import get_interface_info
+from lib.kernel_routes import KernelRouteManager
 
 # BGP imports
 from bgp import BGPSpeaker
@@ -65,7 +67,8 @@ class OSPFAgent:
                  hello_interval: int = 10, dead_interval: int = 40,
                  network_type: str = DEFAULT_NETWORK_TYPE,
                  source_ip: Optional[str] = None,
-                 unicast_peer: Optional[str] = None):
+                 unicast_peer: Optional[str] = None,
+                 kernel_route_manager: Optional[KernelRouteManager] = None):
         """
         Initialize OSPF agent
 
@@ -78,6 +81,7 @@ class OSPFAgent:
             network_type: Network type (broadcast, point-to-multipoint, point-to-point)
             source_ip: Optional specific source IP to use (for multi-IP interfaces)
             unicast_peer: Optional unicast peer IP for point-to-point (bypasses multicast)
+            kernel_route_manager: Optional kernel route manager for installing routes
         """
         self.router_id = router_id
         self.area_id = area_id
@@ -86,6 +90,7 @@ class OSPFAgent:
         self.dead_interval = dead_interval
         self.network_type = network_type
         self.unicast_peer = unicast_peer
+        self.kernel_route_manager = kernel_route_manager
 
         # Get interface info (with optional source IP)
         self.interface_info = get_interface_info(interface, source_ip)
@@ -403,7 +408,7 @@ class OSPFAgent:
 
     async def _run_spf(self):
         """
-        Run SPF calculation
+        Run SPF calculation and install routes into kernel
         """
         try:
             self.spf_calc.calculate()
@@ -415,6 +420,16 @@ class OSPFAgent:
             # Print routing table
             if stats['routes'] > 0:
                 self.spf_calc.print_routing_table()
+
+            # Install routes into kernel if route manager is available
+            if self.kernel_route_manager and stats['routes'] > 0:
+                for prefix, route_info in self.spf_calc.routing_table.items():
+                    next_hop = route_info.next_hop
+                    cost = route_info.cost
+                    if next_hop and next_hop != self.source_ip:
+                        self.kernel_route_manager.install_route(
+                            prefix, next_hop, metric=cost, protocol="ospf"
+                        )
 
         except Exception as e:
             self.logger.error(f"SPF calculation error: {e}")
@@ -591,7 +606,7 @@ class OSPFAgent:
         current_state = neighbor.get_state()
 
         # Process DBD
-        success, lsa_headers_needed = self.adjacency_mgr.process_dbd(data, neighbor)
+        success, lsa_headers_needed, exchange_complete = self.adjacency_mgr.process_dbd(data, neighbor)
 
         if not success:
             self.logger.warning(f"Failed to process DBD from {neighbor_id}")
@@ -600,6 +615,14 @@ class OSPFAgent:
         # Add needed LSAs to request list
         if lsa_headers_needed:
             neighbor.ls_request_list.extend(lsa_headers_needed)
+            self.logger.info(f"Added {len(lsa_headers_needed)} LSAs to request list for {neighbor_id}")
+            self.logger.info(f"ls_request_list now has {len(neighbor.ls_request_list)} LSAs")
+
+        # CRITICAL FIX: Call exchange_done() AFTER populating ls_request_list
+        # This ensures the correct state transition (Exchange -> Loading if LSAs needed, or -> Full if not)
+        if exchange_complete:
+            self.logger.info(f"Calling exchange_done() for {neighbor_id}, ls_request_list size={len(neighbor.ls_request_list)}")
+            neighbor.exchange_done()
 
         # Handle state transitions
         new_state = neighbor.get_state()
@@ -852,6 +875,25 @@ async def run_unified_agent(args: argparse.Namespace):
         logger.info(f"  BGP: Enabled (AS {args.bgp_local_as}, {len(args.bgp_peers or [])} peers)")
 
     try:
+        # Create kernel route manager for installing routes
+        kernel_route_manager = KernelRouteManager()
+
+        # Enable IP forwarding in kernel
+        try:
+            subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"],
+                          capture_output=True, timeout=5)
+            logger.info("✓ IP forwarding enabled")
+        except Exception as e:
+            logger.warning(f"Could not enable IP forwarding: {e}")
+
+        # Setup forwarding logging for loopback routes
+        kernel_route_manager.setup_forwarding_logging(
+            specific_prefixes=["10.10.10.1/32", "20.20.20.1/32"]
+        )
+
+        # Start forwarding monitor task
+        tasks.append(asyncio.create_task(kernel_route_manager.monitor_forwarding(interval=30)))
+
         # Initialize OSPF if requested
         if run_ospf:
             logger.info("Initializing OSPF agent...")
@@ -863,7 +905,8 @@ async def run_unified_agent(args: argparse.Namespace):
                 dead_interval=args.dead_interval,
                 network_type=args.network_type,
                 source_ip=args.source_ip,
-                unicast_peer=args.unicast_peer
+                unicast_peer=args.unicast_peer,
+                kernel_route_manager=kernel_route_manager
             )
             tasks.append(asyncio.create_task(ospf_agent.start()))
 
@@ -883,7 +926,8 @@ async def run_unified_agent(args: argparse.Namespace):
                 router_id=args.router_id,
                 listen_ip=args.bgp_listen_ip,
                 listen_port=args.bgp_listen_port,
-                log_level=args.log_level
+                log_level=args.log_level,
+                kernel_route_manager=kernel_route_manager
             )
 
             # Enable route reflection if requested
@@ -992,6 +1036,48 @@ async def monitor_bgp(speaker: BGPSpeaker, interval: int):
             if 'route_reflector' in stats:
                 rr_stats = stats['route_reflector']
                 logger.info(f"  RR Clients:        {rr_stats['clients']}")
+
+            # Display routing table (like "show ip route bgp")
+            routes = speaker.agent.loc_rib.get_all_routes()
+            if routes:
+                logger.info("")
+                logger.info("BGP Routing Table:")
+                logger.info(f"{'Network':<20} {'Next Hop':<16} {'Path':<20} {'Source':<10}")
+                logger.info("-" * 70)
+
+                # Sort routes by prefix for consistent display
+                sorted_routes = sorted(routes, key=lambda r: r.prefix)
+
+                for route in sorted_routes[:20]:  # Show first 20 routes
+                    # Extract next-hop from attributes
+                    next_hop = "N/A"
+                    if 3 in route.path_attributes:  # ATTR_NEXT_HOP
+                        nh_attr = route.path_attributes[3]
+                        if hasattr(nh_attr, 'next_hop'):
+                            next_hop = nh_attr.next_hop
+
+                    # Extract AS_PATH
+                    as_path = ""
+                    if 2 in route.path_attributes:  # ATTR_AS_PATH
+                        path_attr = route.path_attributes[2]
+                        if hasattr(path_attr, 'segments'):
+                            try:
+                                # Handle both object and tuple segments
+                                as_list = []
+                                for seg in path_attr.segments:
+                                    if hasattr(seg, 'asns'):
+                                        as_list.extend(str(asn) for asn in seg.asns)
+                                    elif isinstance(seg, tuple):
+                                        # Segment is (type, [asns])
+                                        as_list.extend(str(asn) for asn in seg[1])
+                                as_path = " ".join(as_list)
+                            except Exception:
+                                as_path = "?"
+
+                    logger.info(f"{route.prefix:<20} {next_hop:<16} {as_path:<20} {route.source:<10}")
+
+                if len(routes) > 20:
+                    logger.info(f"... and {len(routes) - 20} more routes")
         except Exception as e:
             logger.error(f"Error getting BGP statistics: {e}")
 

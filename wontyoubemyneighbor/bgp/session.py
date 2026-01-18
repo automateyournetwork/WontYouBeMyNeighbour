@@ -434,7 +434,8 @@ class BGPSession:
 
         self.logger.info(f"Peer capabilities: {list(peer_caps.keys())}")
 
-        # Notify FSM
+        # Notify FSM (will trigger KEEPALIVE send via callback)
+        # The FSM will automatically send KEEPALIVE and transition to OpenConfirm
         await self.fsm.process_event(BGPEvent.BGPOpen)
 
     async def _process_update(self, message: BGPUpdate) -> None:

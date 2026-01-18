@@ -171,6 +171,12 @@ class LSAFloodingManager:
 
             for lsa in lsas:
                 try:
+                    # DETAILED DEBUGGING: Show exactly what we're processing
+                    logger.info(f"Processing LSA from packet: Type={lsa.header.ls_type}, "
+                              f"LinkStateID={lsa.header.link_state_id}, "
+                              f"AdvRouter={lsa.header.advertising_router}, "
+                              f"Seq={hex(lsa.header.ls_sequence_number)}")
+
                     # Check if this is a newer LSA
                     is_newer = self.lsdb.is_lsa_newer(lsa.header)
 

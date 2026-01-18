@@ -87,7 +87,8 @@ class OSPFNeighbor:
 
         # Transitions from Exchange
         self.fsm.add_transition(STATE_EXCHANGE, EVENT_EXCHANGE_DONE, STATE_LOADING)
-        self.fsm.add_transition(STATE_EXCHANGE, EVENT_EXCHANGE_DONE, STATE_FULL)  # If no LSAs needed
+        # BUGFIX: Removed duplicate transition to STATE_FULL - exchange_done() handles this by
+        # triggering EVENT_LOADING_DONE immediately if ls_request_list is empty
 
         # Transitions from Loading
         self.fsm.add_transition(STATE_LOADING, EVENT_LOADING_DONE, STATE_FULL)

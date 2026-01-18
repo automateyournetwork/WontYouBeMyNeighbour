@@ -300,8 +300,9 @@ class BGPFSM:
             # Negotiate hold time (minimum of local and peer)
             # (Hold time negotiation handled by caller)
 
-            # Stop hold timer, start keepalive timer
-            self._stop_hold_timer()
+            # CRITICAL FIX: Restart hold timer (not stop!), start keepalive timer
+            # Per RFC 4271, hold timer must continue running in OpenConfirm state
+            self._start_hold_timer()  # Restart hold timer with negotiated hold time
             self._start_keepalive_timer()
 
             # Send KEEPALIVE
