@@ -487,6 +487,317 @@ class ClusterListAttribute(PathAttribute):
         return f"CLUSTER_LIST({', '.join(self.cluster_list)})"
 
 
+class MPReachNLRIAttribute(PathAttribute):
+    """
+    MP_REACH_NLRI Attribute (Type 14, RFC 4760 Section 3)
+
+    Used to advertise reachable destinations with next hops for
+    multiprotocol extensions (e.g., IPv6, VPNs, etc.)
+
+    Format:
+    - AFI (2 bytes): Address Family Identifier
+    - SAFI (1 byte): Subsequent Address Family Identifier
+    - Next Hop Length (1 byte)
+    - Next Hop (variable)
+    - Reserved (1 byte)
+    - NLRI (variable)
+    """
+
+    def __init__(self, afi: int = AFI_IPV6, safi: int = SAFI_UNICAST,
+                 next_hop: str = "", nlri: List[str] = None):
+        # Optional non-transitive
+        flags = ATTR_FLAG_OPTIONAL
+        super().__init__(ATTR_MP_REACH_NLRI, flags)
+        self.afi = afi
+        self.safi = safi
+        self.next_hop = next_hop
+        self.nlri = nlri or []  # List of prefix strings (e.g., ["2001:db8::/32"])
+
+    def encode_value(self) -> bytes:
+        """Encode MP_REACH_NLRI value"""
+        data = b''
+
+        # AFI (2 bytes) + SAFI (1 byte)
+        data += struct.pack('!HB', self.afi, self.safi)
+
+        # Next Hop
+        if self.afi == AFI_IPV6:
+            # IPv6 next hop (16 bytes)
+            try:
+                nh_bytes = socket.inet_pton(socket.AF_INET6, self.next_hop)
+                data += struct.pack('!B', len(nh_bytes))  # Next hop length
+                data += nh_bytes
+            except:
+                # Default to ::
+                data += struct.pack('!B', 16)
+                data += b'\x00' * 16
+        elif self.afi == AFI_IPV4:
+            # IPv4 next hop (4 bytes)
+            try:
+                nh_bytes = socket.inet_pton(socket.AF_INET, self.next_hop)
+                data += struct.pack('!B', len(nh_bytes))
+                data += nh_bytes
+            except:
+                data += struct.pack('!B', 4)
+                data += b'\x00' * 4
+
+        # Reserved (1 byte)
+        data += b'\x00'
+
+        # NLRI
+        for prefix_str in self.nlri:
+            nlri_bytes = self._encode_nlri_prefix(prefix_str, self.afi)
+            data += nlri_bytes
+
+        return data
+
+    def decode_value(self, data: bytes) -> bool:
+        """Decode MP_REACH_NLRI value"""
+        try:
+            if len(data) < 5:  # Minimum: AFI(2) + SAFI(1) + NH_Len(1) + Reserved(1)
+                return False
+
+            offset = 0
+
+            # Parse AFI and SAFI
+            self.afi = struct.unpack('!H', data[offset:offset+2])[0]
+            offset += 2
+            self.safi = data[offset]
+            offset += 1
+
+            # Parse Next Hop Length
+            nh_length = data[offset]
+            offset += 1
+
+            if len(data) < offset + nh_length + 1:  # +1 for reserved byte
+                return False
+
+            # Parse Next Hop
+            nh_bytes = data[offset:offset+nh_length]
+            if self.afi == AFI_IPV6 and nh_length >= 16:
+                # IPv6 next hop
+                self.next_hop = socket.inet_ntop(socket.AF_INET6, nh_bytes[:16])
+            elif self.afi == AFI_IPV4 and nh_length >= 4:
+                # IPv4 next hop
+                self.next_hop = socket.inet_ntop(socket.AF_INET, nh_bytes[:4])
+            else:
+                return False
+
+            offset += nh_length
+
+            # Reserved byte
+            offset += 1
+
+            # Parse NLRI
+            self.nlri = []
+            while offset < len(data):
+                prefix_str, consumed = self._decode_nlri_prefix(data[offset:], self.afi)
+                if not prefix_str:
+                    break
+                self.nlri.append(prefix_str)
+                offset += consumed
+
+            return True
+
+        except Exception as e:
+            return False
+
+    def _encode_nlri_prefix(self, prefix_str: str, afi: int) -> bytes:
+        """
+        Encode NLRI prefix
+
+        Format:
+        - Length (1 byte): Prefix length in bits
+        - Prefix (variable): Only significant octets
+        """
+        try:
+            if '/' in prefix_str:
+                addr, length_str = prefix_str.split('/')
+                prefix_len = int(length_str)
+            else:
+                # Assume /32 for IPv4, /128 for IPv6
+                addr = prefix_str
+                prefix_len = 32 if afi == AFI_IPV4 else 128
+
+            # Convert address to bytes
+            if afi == AFI_IPV6:
+                addr_bytes = socket.inet_pton(socket.AF_INET6, addr)
+            else:
+                addr_bytes = socket.inet_pton(socket.AF_INET, addr)
+
+            # Calculate number of significant octets
+            num_octets = (prefix_len + 7) // 8
+
+            # Build NLRI
+            nlri = struct.pack('!B', prefix_len) + addr_bytes[:num_octets]
+            return nlri
+
+        except:
+            return b''
+
+    def _decode_nlri_prefix(self, data: bytes, afi: int) -> Tuple[str, int]:
+        """
+        Decode NLRI prefix
+
+        Returns:
+            (prefix_string, bytes_consumed) or ("", 0)
+        """
+        try:
+            if len(data) < 1:
+                return ("", 0)
+
+            # Parse prefix length
+            prefix_len = data[0]
+
+            # Calculate number of octets
+            num_octets = (prefix_len + 7) // 8
+
+            if len(data) < 1 + num_octets:
+                return ("", 0)
+
+            # Parse prefix bytes
+            prefix_bytes = data[1:1+num_octets]
+
+            # Pad to full address length
+            if afi == AFI_IPV6:
+                # Pad to 16 bytes for IPv6
+                prefix_bytes += b'\x00' * (16 - len(prefix_bytes))
+                addr_str = socket.inet_ntop(socket.AF_INET6, prefix_bytes)
+            else:
+                # Pad to 4 bytes for IPv4
+                prefix_bytes += b'\x00' * (4 - len(prefix_bytes))
+                addr_str = socket.inet_ntop(socket.AF_INET, prefix_bytes)
+
+            prefix_str = f"{addr_str}/{prefix_len}"
+            return (prefix_str, 1 + num_octets)
+
+        except Exception:
+            return ("", 0)
+
+    def __repr__(self) -> str:
+        afi_name = AFI_NAMES.get(self.afi, self.afi)
+        safi_name = SAFI_NAMES.get(self.safi, self.safi)
+        return f"MP_REACH_NLRI({afi_name}/{safi_name}, NH={self.next_hop}, {len(self.nlri)} prefixes)"
+
+
+class MPUnreachNLRIAttribute(PathAttribute):
+    """
+    MP_UNREACH_NLRI Attribute (Type 15, RFC 4760 Section 4)
+
+    Used to withdraw unfeasible routes for multiprotocol extensions
+
+    Format:
+    - AFI (2 bytes): Address Family Identifier
+    - SAFI (1 byte): Subsequent Address Family Identifier
+    - Withdrawn Routes (variable)
+    """
+
+    def __init__(self, afi: int = AFI_IPV6, safi: int = SAFI_UNICAST,
+                 withdrawn_routes: List[str] = None):
+        # Optional non-transitive
+        flags = ATTR_FLAG_OPTIONAL
+        super().__init__(ATTR_MP_UNREACH_NLRI, flags)
+        self.afi = afi
+        self.safi = safi
+        self.withdrawn_routes = withdrawn_routes or []
+
+    def encode_value(self) -> bytes:
+        """Encode MP_UNREACH_NLRI value"""
+        data = b''
+
+        # AFI (2 bytes) + SAFI (1 byte)
+        data += struct.pack('!HB', self.afi, self.safi)
+
+        # Withdrawn Routes
+        for prefix_str in self.withdrawn_routes:
+            nlri_bytes = self._encode_nlri_prefix(prefix_str, self.afi)
+            data += nlri_bytes
+
+        return data
+
+    def decode_value(self, data: bytes) -> bool:
+        """Decode MP_UNREACH_NLRI value"""
+        try:
+            if len(data) < 3:  # Minimum: AFI(2) + SAFI(1)
+                return False
+
+            offset = 0
+
+            # Parse AFI and SAFI
+            self.afi = struct.unpack('!H', data[offset:offset+2])[0]
+            offset += 2
+            self.safi = data[offset]
+            offset += 1
+
+            # Parse Withdrawn Routes
+            self.withdrawn_routes = []
+            while offset < len(data):
+                prefix_str, consumed = self._decode_nlri_prefix(data[offset:], self.afi)
+                if not prefix_str:
+                    break
+                self.withdrawn_routes.append(prefix_str)
+                offset += consumed
+
+            return True
+
+        except Exception:
+            return False
+
+    def _encode_nlri_prefix(self, prefix_str: str, afi: int) -> bytes:
+        """Encode NLRI prefix (same as MP_REACH_NLRI)"""
+        try:
+            if '/' in prefix_str:
+                addr, length_str = prefix_str.split('/')
+                prefix_len = int(length_str)
+            else:
+                addr = prefix_str
+                prefix_len = 32 if afi == AFI_IPV4 else 128
+
+            if afi == AFI_IPV6:
+                addr_bytes = socket.inet_pton(socket.AF_INET6, addr)
+            else:
+                addr_bytes = socket.inet_pton(socket.AF_INET, addr)
+
+            num_octets = (prefix_len + 7) // 8
+            nlri = struct.pack('!B', prefix_len) + addr_bytes[:num_octets]
+            return nlri
+
+        except:
+            return b''
+
+    def _decode_nlri_prefix(self, data: bytes, afi: int) -> Tuple[str, int]:
+        """Decode NLRI prefix (same as MP_REACH_NLRI)"""
+        try:
+            if len(data) < 1:
+                return ("", 0)
+
+            prefix_len = data[0]
+            num_octets = (prefix_len + 7) // 8
+
+            if len(data) < 1 + num_octets:
+                return ("", 0)
+
+            prefix_bytes = data[1:1+num_octets]
+
+            if afi == AFI_IPV6:
+                prefix_bytes += b'\x00' * (16 - len(prefix_bytes))
+                addr_str = socket.inet_ntop(socket.AF_INET6, prefix_bytes)
+            else:
+                prefix_bytes += b'\x00' * (4 - len(prefix_bytes))
+                addr_str = socket.inet_ntop(socket.AF_INET, prefix_bytes)
+
+            prefix_str = f"{addr_str}/{prefix_len}"
+            return (prefix_str, 1 + num_octets)
+
+        except Exception:
+            return ("", 0)
+
+    def __repr__(self) -> str:
+        afi_name = AFI_NAMES.get(self.afi, self.afi)
+        safi_name = SAFI_NAMES.get(self.safi, self.safi)
+        return f"MP_UNREACH_NLRI({afi_name}/{safi_name}, {len(self.withdrawn_routes)} withdrawn)"
+
+
 class AttributeFactory:
     """Factory for creating path attribute instances"""
 
@@ -514,6 +825,8 @@ class AttributeFactory:
             ATTR_COMMUNITIES: CommunitiesAttribute,
             ATTR_ORIGINATOR_ID: OriginatorIDAttribute,
             ATTR_CLUSTER_LIST: ClusterListAttribute,
+            ATTR_MP_REACH_NLRI: MPReachNLRIAttribute,
+            ATTR_MP_UNREACH_NLRI: MPUnreachNLRIAttribute,
         }
 
         attr_class = attr_classes.get(type_code)
@@ -542,6 +855,10 @@ class AttributeFactory:
             attr = OriginatorIDAttribute("0.0.0.0")
         elif type_code == ATTR_CLUSTER_LIST:
             attr = ClusterListAttribute()
+        elif type_code == ATTR_MP_REACH_NLRI:
+            attr = MPReachNLRIAttribute()
+        elif type_code == ATTR_MP_UNREACH_NLRI:
+            attr = MPUnreachNLRIAttribute()
         else:
             return None
 

@@ -103,12 +103,18 @@ class BGPRoute:
     @property
     def next_hop(self) -> Optional[str]:
         """
-        Get BGP next hop from NEXT_HOP path attribute
+        Get BGP next hop from NEXT_HOP path attribute or IPv6 next hop
 
         Returns:
             Next hop IP address string or None
         """
-        from .constants import ATTR_NEXT_HOP
+        from .constants import ATTR_NEXT_HOP, AFI_IPV6
+
+        # For IPv6 routes, check the stored IPv6 next hop first
+        if self.afi == AFI_IPV6 and '_ipv6_next_hop' in self.path_attributes:
+            return self.path_attributes['_ipv6_next_hop']
+
+        # For IPv4 routes, check NEXT_HOP attribute
         attr = self.get_attribute(ATTR_NEXT_HOP)
         if attr and hasattr(attr, 'next_hop'):
             return attr.next_hop

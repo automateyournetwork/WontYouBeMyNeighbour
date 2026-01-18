@@ -28,8 +28,8 @@ class KernelRouteManager:
         Install route into kernel routing table
 
         Args:
-            prefix: Route prefix (e.g., "10.10.10.1/32")
-            next_hop: Next-hop IP address
+            prefix: Route prefix (e.g., "10.10.10.1/32" or "2001:db8::/32")
+            next_hop: Next-hop IP address (IPv4 or IPv6)
             metric: Route metric/preference
             protocol: Source protocol (ospf, bgp, static)
 
@@ -46,14 +46,29 @@ class KernelRouteManager:
                     # Next-hop changed, remove old route first
                     self.remove_route(prefix)
 
-            # Build ip route command
-            cmd = ["ip", "route", "add", prefix, "via", next_hop, "metric", str(metric)]
+            # Detect IPv6 by presence of ':' in the prefix
+            is_ipv6 = ':' in prefix
+
+            # Handle IPv4-mapped IPv6 addresses (::ffff:a.b.c.d)
+            # These occur when IPv6 routes are exchanged over IPv4 BGP sessions
+            if is_ipv6 and next_hop.startswith('::ffff:'):
+                # Extract IPv4 address from IPv4-mapped IPv6 address
+                ipv4_part = next_hop[7:]  # Remove '::ffff:' prefix
+                self.logger.info(f"IPv6 route with IPv4-mapped next hop: using {ipv4_part} instead of {next_hop}")
+                next_hop = ipv4_part
+
+            # Build ip route command (IPv4 or IPv6)
+            if is_ipv6:
+                cmd = ["ip", "-6", "route", "add", prefix, "via", next_hop, "metric", str(metric)]
+            else:
+                cmd = ["ip", "route", "add", prefix, "via", next_hop, "metric", str(metric)]
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
 
             if result.returncode == 0:
                 self.installed_routes[prefix] = next_hop
-                self.logger.info(f"✓ Installed kernel route: {prefix} via {next_hop} ({protocol})")
+                proto_type = "IPv6" if is_ipv6 else "IPv4"
+                self.logger.info(f"✓ Installed {proto_type} kernel route: {prefix} via {next_hop} ({protocol})")
                 return True
             elif "File exists" in result.stderr:
                 # Route already exists (maybe from another process)
@@ -76,20 +91,28 @@ class KernelRouteManager:
         Remove route from kernel routing table
 
         Args:
-            prefix: Route prefix to remove
+            prefix: Route prefix to remove (IPv4 or IPv6)
 
         Returns:
             True if successful, False otherwise
         """
         try:
-            cmd = ["ip", "route", "del", prefix]
+            # Detect IPv6 by presence of ':' in the prefix
+            is_ipv6 = ':' in prefix
+
+            # Build ip route command (IPv4 or IPv6)
+            if is_ipv6:
+                cmd = ["ip", "-6", "route", "del", prefix]
+            else:
+                cmd = ["ip", "route", "del", prefix]
 
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
 
             if result.returncode == 0:
                 if prefix in self.installed_routes:
                     del self.installed_routes[prefix]
-                self.logger.info(f"✓ Removed kernel route: {prefix}")
+                proto_type = "IPv6" if is_ipv6 else "IPv4"
+                self.logger.info(f"✓ Removed {proto_type} kernel route: {prefix}")
                 return True
             elif "No such process" in result.stderr or "not found" in result.stderr:
                 # Route doesn't exist

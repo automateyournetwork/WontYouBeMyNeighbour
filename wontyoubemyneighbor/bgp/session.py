@@ -442,24 +442,51 @@ class BGPSession:
         """Process UPDATE message"""
         self.stats['updates_received'] += 1
 
-        # Process withdrawn routes
+        # Process IPv4 withdrawn routes
         if message.withdrawn_routes:
-            self.logger.debug(f"Withdrawn routes: {len(message.withdrawn_routes)}")
+            self.logger.debug(f"IPv4 withdrawn routes: {len(message.withdrawn_routes)}")
             for prefix in message.withdrawn_routes:
                 self.adj_rib_in.remove_route(prefix, self.peer_id)
                 self.stats['routes_received'] -= 1
 
-        # Process advertised routes
+        # Process IPv4 advertised routes
         if message.nlri:
-            self.logger.debug(f"Advertised routes: {len(message.nlri)}, "
+            self.logger.debug(f"IPv4 advertised routes: {len(message.nlri)}, "
                             f"attributes: {len(message.path_attributes)}")
 
             # Build route with path attributes
             for prefix in message.nlri:
-                route = self._build_route_from_update(prefix, message.path_attributes)
+                route = self._build_route_from_update(prefix, message.path_attributes, AFI_IPV4)
                 if route:
                     self.adj_rib_in.add_route(route)
                     self.stats['routes_received'] += 1
+
+        # Process MP_REACH_NLRI for IPv6 (and other address families)
+        if ATTR_MP_REACH_NLRI in message.path_attributes:
+            mp_reach = message.path_attributes[ATTR_MP_REACH_NLRI]
+            if mp_reach.afi == AFI_IPV6 and mp_reach.safi == SAFI_UNICAST:
+                self.logger.info(f"IPv6 MP_REACH_NLRI: {len(mp_reach.nlri)} routes, next_hop={mp_reach.next_hop}")
+
+                # Add next hop to attributes for route building
+                modified_attrs = message.path_attributes.copy()
+
+                for prefix in mp_reach.nlri:
+                    route = self._build_route_from_update(prefix, modified_attrs, AFI_IPV6, mp_reach.next_hop)
+                    if route:
+                        self.adj_rib_in.add_route(route)
+                        self.stats['routes_received'] += 1
+                        self.logger.info(f"Added IPv6 route: {prefix} via {mp_reach.next_hop}")
+
+        # Process MP_UNREACH_NLRI for IPv6 withdrawals
+        if ATTR_MP_UNREACH_NLRI in message.path_attributes:
+            mp_unreach = message.path_attributes[ATTR_MP_UNREACH_NLRI]
+            if mp_unreach.afi == AFI_IPV6 and mp_unreach.safi == SAFI_UNICAST:
+                self.logger.info(f"IPv6 MP_UNREACH_NLRI: {len(mp_unreach.withdrawn_routes)} withdrawn")
+
+                for prefix in mp_unreach.withdrawn_routes:
+                    self.adj_rib_in.remove_route(prefix, self.peer_id)
+                    self.stats['routes_received'] -= 1
+                    self.logger.info(f"Withdrew IPv6 route: {prefix}")
 
     async def _process_keepalive(self, message: BGPKeepalive) -> None:
         """Process KEEPALIVE message"""
@@ -482,13 +509,16 @@ class BGPSession:
         # Re-send all routes in Adj-RIB-Out
         # This will be implemented when we add the advertisement logic
 
-    def _build_route_from_update(self, prefix: str, attributes: Dict[int, Any]) -> Optional[BGPRoute]:
+    def _build_route_from_update(self, prefix: str, attributes: Dict[int, Any],
+                                 afi: int = AFI_IPV4, mp_next_hop: Optional[str] = None) -> Optional[BGPRoute]:
         """
         Build BGPRoute from UPDATE message
 
         Args:
             prefix: Prefix string
             attributes: Path attributes dictionary (type_code -> value)
+            afi: Address Family Identifier (AFI_IPV4 or AFI_IPV6)
+            mp_next_hop: Multiprotocol next hop (for IPv6)
 
         Returns:
             BGPRoute or None
@@ -500,20 +530,24 @@ class BGPSession:
                 prefix_len = int(prefix_len_str)
             else:
                 prefix_str = prefix
-                prefix_len = 32  # Default for IPv4
+                prefix_len = 32 if afi == AFI_IPV4 else 128
 
-            # attributes is already a dict from UPDATE decode
-            # No need to rebuild it
+            # For IPv6, store the next hop from MP_REACH_NLRI in path attributes
+            # so it can be retrieved later for route installation
+            route_attributes = attributes.copy()
+            if afi == AFI_IPV6 and mp_next_hop:
+                # Store IPv6 next hop as a pseudo-attribute for easy access
+                route_attributes['_ipv6_next_hop'] = mp_next_hop
 
             # Create route
             route = BGPRoute(
                 prefix=prefix,
                 prefix_len=prefix_len,
-                path_attributes=attributes,
+                path_attributes=route_attributes,
                 peer_id=self.peer_id,
                 peer_ip=self.config.peer_ip,
                 timestamp=time.time(),
-                afi=AFI_IPV4,
+                afi=afi,
                 safi=SAFI_UNICAST
             )
 
@@ -528,11 +562,12 @@ class BGPSession:
         # Enable IPv4 unicast capability (required for route exchange with FRR)
         self.capabilities.enable_multiprotocol(AFI_IPV4, SAFI_UNICAST)
 
-        # Keep other capabilities disabled for now to avoid encoding issues
-        # TODO: Re-enable these after verifying IPv4 unicast works:
-        # self.capabilities.enable_four_octet_as()
-        # self.capabilities.enable_route_refresh()
-        # self.capabilities.enable_multiprotocol(AFI_IPV6, SAFI_UNICAST)
+        # Enable additional standard capabilities
+        self.capabilities.enable_four_octet_as()
+        self.capabilities.enable_route_refresh()
+
+        # Enable IPv6 unicast for dual-stack support
+        self.capabilities.enable_multiprotocol(AFI_IPV6, SAFI_UNICAST)
 
         self.logger.info(f"Configured {len(self.capabilities.local_capabilities)} capabilities: {list(self.capabilities.local_capabilities.keys())}")
 
