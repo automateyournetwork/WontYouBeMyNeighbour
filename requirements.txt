@@ -1,4 +1,4 @@
-# Won't You Be My Neighbor - OSPF Agent Dependencies
+# Won't You Be My Neighbor - OSPF/BGP/Agentic Agent Dependencies
 
 # Packet crafting and parsing
 scapy>=2.5.0
@@ -9,5 +9,20 @@ networkx>=3.0
 # Network interface information
 netifaces>=0.11.0
 
-# Testing (optional)
+# Testing
 pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
+# Agentic LLM Interface Dependencies
+# LLM Providers
+openai>=1.0.0
+anthropic>=0.18.0
+google-generativeai>=0.3.0
+
+# REST API
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+
+# Async support
+aiohttp>=3.9.0
