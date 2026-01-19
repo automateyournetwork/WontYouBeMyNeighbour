@@ -271,9 +271,9 @@ class ActionExecutor:
             peers = []
             for peer in self.bgp_speaker.agent.sessions.values():
                 peers.append({
-                    "peer": str(peer.peer_addr),
-                    "as": peer.peer_as,
-                    "state": peer.state
+                    "peer": str(peer.config.peer_ip),
+                    "as": peer.config.peer_as,
+                    "state": peer.fsm.get_state_name()
                 })
             return {"protocol": "bgp", "peers": peers}
 

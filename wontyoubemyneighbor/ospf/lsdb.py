@@ -153,10 +153,32 @@ class LinkStateDatabase:
         """
         Get headers of all LSAs (for DBD exchange)
 
+        For DBD exchange, we need to return headers with correct length values.
+        The length should be the full LSA length (header + body).
+
         Returns:
-            List of LSA headers
+            List of LSA headers with correct length values
         """
-        return [lsa.header for lsa in self.database.values()]
+        headers = []
+        for lsa in self.database.values():
+            # Build a complete LSA to get correct length
+            full_lsa = lsa.header / lsa.body
+            full_lsa_bytes = bytes(full_lsa)
+            lsa_length = len(full_lsa_bytes)
+
+            # Create a new header with the correct length
+            header = LSAHeader(
+                ls_age=lsa.age,
+                options=lsa.header.options,
+                ls_type=lsa.header.ls_type,
+                link_state_id=lsa.header.link_state_id,
+                advertising_router=lsa.header.advertising_router,
+                ls_sequence_number=lsa.header.ls_sequence_number,
+                ls_checksum=lsa.header.ls_checksum,  # Keep original checksum
+                length=lsa_length
+            )
+            headers.append(header)
+        return headers
 
     def age_lsas(self) -> int:
         """

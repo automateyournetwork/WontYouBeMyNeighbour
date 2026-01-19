@@ -619,7 +619,7 @@ class OSPFAgent:
         current_state = neighbor.get_state()
 
         # Process DBD
-        success, lsa_headers_needed, exchange_complete = self.adjacency_mgr.process_dbd(data, neighbor)
+        success, lsa_headers_needed, neighbor_dbd_complete = self.adjacency_mgr.process_dbd(data, neighbor)
 
         if not success:
             self.logger.warning(f"Failed to process DBD from {neighbor_id}")
@@ -631,11 +631,14 @@ class OSPFAgent:
             self.logger.info(f"Added {len(lsa_headers_needed)} LSAs to request list for {neighbor_id}")
             self.logger.info(f"ls_request_list now has {len(neighbor.ls_request_list)} LSAs")
 
-        # CRITICAL FIX: Call exchange_done() AFTER populating ls_request_list
-        # This ensures the correct state transition (Exchange -> Loading if LSAs needed, or -> Full if not)
-        if exchange_complete:
-            self.logger.info(f"Calling exchange_done() for {neighbor_id}, ls_request_list size={len(neighbor.ls_request_list)}")
-            neighbor.exchange_done()
+        # Track neighbor's DBD completion (M=0 received)
+        if neighbor_dbd_complete:
+            neighbor.mark_neighbor_dbd_complete()
+            self.logger.info(f"Received final DBD from {neighbor_id} (M=0)")
+            # Check if exchange is complete (both sides finished)
+            if neighbor.is_exchange_complete():
+                self.logger.info(f"Exchange complete with {neighbor_id}, transitioning state")
+                neighbor.exchange_done()
 
         # Handle state transitions
         new_state = neighbor.get_state()
@@ -644,8 +647,18 @@ class OSPFAgent:
                            f"{STATE_NAMES[current_state]} → {STATE_NAMES[new_state]}")
 
             if new_state == STATE_EXCHANGE:
-                # Start sending our DBD packets
-                await self._send_dbd(neighbor)
+                # Transitioning from ExStart to Exchange
+                # If we're slave, we need to send a slave acknowledgment DBD first
+                if current_state == STATE_EXSTART and not neighbor.is_master:
+                    # Send slave acknowledgment DBD (empty, with M=1)
+                    self.logger.info(f"Sending slave ack DBD to {neighbor_id}")
+                    slave_ack = self.adjacency_mgr.build_slave_ack_dbd_packet(
+                        neighbor, self.area_id
+                    )
+                    self.socket.send(slave_ack, dest=neighbor.ip_address)
+                else:
+                    # Start sending our DBD packets (with LSA headers)
+                    await self._send_dbd(neighbor)
 
             elif new_state == STATE_LOADING:
                 # Start requesting LSAs
@@ -659,12 +672,15 @@ class OSPFAgent:
 
         # Continue exchanging DBD packets if still in Exchange state
         elif new_state == STATE_EXCHANGE:
-            # Check if we still have more LSA headers to send
-            if hasattr(neighbor, 'db_summary_list') and len(neighbor.db_summary_list) > 0:
-                # We have more LSAs to send, continue exchange
-                self.logger.debug(f"Continuing DBD exchange with {neighbor_id}, "
-                                f"{len(neighbor.db_summary_list)} headers remaining")
-                await self._send_dbd(neighbor)
+            # In Exchange state, we must respond to each received DBD
+            # This is the request/response nature of OSPF DBD exchange
+            await self._send_dbd(neighbor)
+
+        # Handle duplicate DBD in Loading/Full (retransmission from master)
+        elif new_state in (STATE_LOADING, STATE_FULL) and success:
+            # We're slave and received a duplicate DBD - respond to acknowledge
+            self.logger.info(f"Responding to duplicate DBD from {neighbor_id}")
+            await self._send_dbd(neighbor)
 
     async def _process_lsr(self, data: bytes, neighbor_id: str):
         """
@@ -802,6 +818,15 @@ class OSPFAgent:
         self.socket.send(dbd_packet, dest=neighbor.ip_address)
         self.logger.debug(f"Sent DBD to {neighbor.router_id} "
                         f"(headers: {len(lsa_headers)}, more: {has_more})")
+
+        # Track our DBD completion
+        if not has_more:
+            neighbor.mark_our_dbd_complete()
+            self.logger.info(f"Sent final DBD to {neighbor.router_id} (M=0)")
+            # Check if exchange is complete (both sides finished)
+            if neighbor.is_exchange_complete():
+                self.logger.info(f"Exchange complete with {neighbor.router_id}, transitioning state")
+                neighbor.exchange_done()
 
     async def _send_lsr(self, neighbor: OSPFNeighbor):
         """

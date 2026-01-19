@@ -275,10 +275,9 @@ class BGPAgent:
 
         try:
             await session.start()
-
-            # If active mode, initiate connection
-            if not session.config.passive:
-                await session.connect()
+            # Note: FSM handles TCP connection initiation via on_tcp_connect callback
+            # No need to call session.connect() explicitly - it's already triggered
+            # by the ManualStart event processing in the FSM
 
             return True
 
@@ -515,6 +514,12 @@ class BGPAgent:
                 best_route = self.loc_rib.lookup(prefix)
 
                 if best_route:
+                    # CRITICAL: Only advertise IPv4 routes in standard UPDATE messages
+                    # IPv6 routes require MP_BGP extensions which we don't fully support yet
+                    if ':' in prefix:
+                        self.logger.debug(f"Skipping IPv6 route {prefix} - MP_BGP not implemented")
+                        continue
+
                     # Check if we should advertise this route to this peer
                     if self._should_advertise_to_peer(best_route, session):
                         # Apply export policy
@@ -526,7 +531,9 @@ class BGPAgent:
                             nlri.append(prefix)
                 else:
                     # Route withdrawn
-                    withdrawn.append(prefix)
+                    # Only withdraw IPv4 routes
+                    if ':' not in prefix:
+                        withdrawn.append(prefix)
 
             # Send UPDATE if there are changes
             if nlri or withdrawn:
@@ -630,6 +637,7 @@ class BGPAgent:
         Prepare path attributes for advertisement to peer
 
         Modifies attributes as needed:
+        - Ensure ORIGIN, AS_PATH, NEXT_HOP are present (required)
         - Update NEXT_HOP to self
         - Prepend AS_PATH with local AS (for eBGP)
         - Set LOCAL_PREF (for iBGP)
@@ -641,14 +649,25 @@ class BGPAgent:
         Returns:
             Modified attributes
         """
+        # Track which required attributes we've seen
+        has_origin = False
+        has_as_path = False
+        has_next_hop = False
+
         # Create copies to avoid modifying originals
         modified = []
 
         for attr in attributes:
             # Create a copy
-            if attr.type_code == ATTR_NEXT_HOP:
+            if attr.type_code == ATTR_ORIGIN:
+                # Keep ORIGIN as-is
+                modified.append(attr)
+                has_origin = True
+
+            elif attr.type_code == ATTR_NEXT_HOP:
                 # Update NEXT_HOP to self
                 modified.append(NextHopAttribute(session.config.local_ip))
+                has_next_hop = True
 
             elif attr.type_code == ATTR_AS_PATH:
                 # Create a copy of AS_PATH attribute
@@ -660,6 +679,7 @@ class BGPAgent:
                 if session.config.peer_as != self.local_as:  # eBGP
                     as_path_copy.prepend(self.local_as)
                 modified.append(as_path_copy)
+                has_as_path = True
 
             elif attr.type_code == ATTR_LOCAL_PREF:
                 # LOCAL_PREF: Only include for iBGP, strip for eBGP
@@ -670,6 +690,28 @@ class BGPAgent:
             else:
                 # Keep other attributes as-is
                 modified.append(attr)
+
+        # Ensure all required well-known mandatory attributes are present
+        # Add them at the beginning of the list in order: ORIGIN, AS_PATH, NEXT_HOP
+        if not has_origin:
+            modified.insert(0, OriginAttribute(ORIGIN_IGP))
+
+        if not has_as_path:
+            as_path = ASPathAttribute([])
+            if session.config.peer_as != self.local_as:  # eBGP
+                as_path.prepend(self.local_as)
+            # Insert after ORIGIN if present
+            insert_pos = 1 if has_origin else 0
+            modified.insert(insert_pos, as_path)
+
+        if not has_next_hop:
+            # Insert after ORIGIN and AS_PATH if present
+            insert_pos = 0
+            if has_origin:
+                insert_pos += 1
+            if has_as_path:
+                insert_pos += 1
+            modified.insert(insert_pos, NextHopAttribute(session.config.local_ip))
 
         # Add LOCAL_PREF for iBGP if not present
         if session.config.peer_as == self.local_as:  # iBGP

@@ -28,14 +28,14 @@ class BGPConnector:
         peers = []
         for peer in self.speaker.agent.sessions.values():
             peers.append({
-                "peer": str(peer.peer_addr),
-                "peer_as": peer.peer_as,
-                "state": peer.state,
-                "local_addr": str(getattr(peer, "local_addr", "")),
-                "is_ibgp": peer.peer_as == self.speaker.local_as,
+                "peer": str(peer.config.peer_ip),
+                "peer_as": peer.config.peer_as,
+                "state": peer.fsm.get_state_name(),
+                "local_addr": str(peer.config.local_ip),
+                "is_ibgp": peer.config.peer_as == self.speaker.local_as,
                 "uptime": getattr(peer, "uptime", 0),
-                "prefixes_received": getattr(peer, "prefixes_received", 0),
-                "prefixes_sent": getattr(peer, "prefixes_sent", 0)
+                "prefixes_received": peer.adj_rib_in.size(),
+                "prefixes_sent": peer.adj_rib_out.size()
             })
         return peers
 
@@ -204,7 +204,7 @@ class BGPConnector:
         if peer:
             # Graceful shutdown specific peer
             for bgp_peer in self.speaker.agent.sessions.values():
-                if str(bgp_peer.peer_addr) == peer:
+                if str(bgp_peer.config.peer_ip) == peer:
                     # Send NOTIFICATION with Cease code
                     # In real implementation, would send proper BGP message
                     return {

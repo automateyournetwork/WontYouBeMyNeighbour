@@ -139,11 +139,11 @@ class NetworkStateManager:
         peers = []
         for peer in self.bgp_speaker.agent.sessions.values():
             peers.append({
-                "peer": str(peer.peer_addr),
-                "peer_as": peer.peer_as,
-                "state": peer.state,
-                "local_addr": str(getattr(peer, "local_addr", "")),
-                "is_ibgp": peer.peer_as == self.bgp_speaker.local_as,
+                "peer": str(peer.config.peer_ip),
+                "peer_as": peer.config.peer_as,
+                "state": peer.fsm.get_state_name(),
+                "local_addr": str(peer.config.local_ip),
+                "is_ibgp": peer.config.peer_as == self.bgp_speaker.local_as,
                 "uptime": getattr(peer, "uptime", 0),
                 "message_stats": getattr(peer, "message_stats", {})
             })
