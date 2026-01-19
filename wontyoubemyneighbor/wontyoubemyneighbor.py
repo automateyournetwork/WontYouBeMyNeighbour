@@ -864,6 +864,7 @@ async def run_unified_agent(args: argparse.Namespace):
     ospf_agent = None
     ospfv3_speaker = None
     bgp_speaker = None
+    agentic_api_server = None
     tasks = []
 
     # Determine what protocols to run
@@ -1092,6 +1093,71 @@ async def run_unified_agent(args: argparse.Namespace):
             # Add BGP monitoring task
             tasks.append(asyncio.create_task(monitor_bgp(bgp_speaker, args.bgp_stats_interval)))
 
+        # Initialize Agentic LLM Interface if requested
+        if args.agentic_api:
+            logger.info("Initializing Agentic LLM Interface...")
+
+            # Check if at least one LLM API key is provided
+            if not args.openai_key and not args.claude_key and not args.gemini_key:
+                logger.warning("Agentic interface enabled but no LLM API keys provided. "
+                             "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GOOGLE_API_KEY environment variables "
+                             "or use --openai-key, --claude-key, or --gemini-key flags.")
+
+            # Import agentic modules
+            from agentic.integration.bridge import AgenticBridge
+            from agentic.integration.ospf_connector import OSPFConnector
+            from agentic.integration.bgp_connector import BGPConnector
+            from agentic.api.server import AgenticAPIServer
+
+            # Determine Ralph ID
+            ralph_id = args.ralph_id if args.ralph_id else f"ralph-{args.router_id.replace('.', '-')}"
+
+            # Create agentic bridge
+            bridge = AgenticBridge(
+                ralph_id=ralph_id,
+                openai_key=args.openai_key,
+                claude_key=args.claude_key,
+                gemini_key=args.gemini_key,
+                autonomous_mode=args.autonomous_mode
+            )
+
+            # Connect OSPF if available
+            if ospf_agent:
+                connector = OSPFConnector(ospf_agent)
+                bridge.set_ospf_connector(connector)
+                logger.info(f"✓ Connected OSPF agent to agentic interface")
+
+            # Connect OSPFv3 if available
+            if ospfv3_speaker:
+                # Note: OSPFv3 connector would need to be implemented
+                logger.info(f"  OSPFv3 connector not yet implemented for agentic interface")
+
+            # Connect BGP if available
+            if bgp_speaker:
+                connector = BGPConnector(bgp_speaker)
+                bridge.set_bgp_connector(connector)
+                logger.info(f"✓ Connected BGP speaker to agentic interface")
+
+            # Initialize bridge
+            await bridge.initialize()
+            await bridge.start()
+
+            # Create and start API server
+            agentic_api_server = AgenticAPIServer(
+                bridge=bridge,
+                host=args.agentic_api_host,
+                port=args.agentic_api_port
+            )
+
+            # Start API server as background task
+            tasks.append(asyncio.create_task(agentic_api_server.start()))
+
+            logger.info(f"✓ Agentic LLM Interface API started at http://{args.agentic_api_host}:{args.agentic_api_port}")
+            logger.info(f"  Documentation: http://{args.agentic_api_host}:{args.agentic_api_port}/docs")
+            logger.info(f"  Ralph ID: {ralph_id}")
+            if args.autonomous_mode:
+                logger.warning(f"  ⚠ AUTONOMOUS MODE ENABLED - Actions may execute without approval")
+
         # Setup signal handlers for graceful shutdown
         loop = asyncio.get_event_loop()
 
@@ -1122,6 +1188,10 @@ async def run_unified_agent(args: argparse.Namespace):
         if bgp_speaker:
             logger.info("Stopping BGP speaker...")
             await bgp_speaker.stop()
+
+        if agentic_api_server:
+            logger.info("Stopping Agentic API server...")
+            await agentic_api_server.stop()
 
         logger.info("Shutdown complete")
 
@@ -1347,6 +1417,25 @@ Notes:
 
     bgp_group.add_argument("--bgp-enable-flowspec", action="store_true",
                        help="Enable BGP FlowSpec for traffic filtering (RFC 5575)")
+
+    # Agentic LLM Interface arguments
+    agentic_group = parser.add_argument_group('Agentic LLM Interface Options')
+    agentic_group.add_argument("--agentic-api", action="store_true",
+                       help="Enable agentic LLM interface API server")
+    agentic_group.add_argument("--agentic-api-host", default="0.0.0.0",
+                       help="Agentic API host to bind to (default: 0.0.0.0)")
+    agentic_group.add_argument("--agentic-api-port", type=int, default=8080,
+                       help="Agentic API port to listen on (default: 8080)")
+    agentic_group.add_argument("--openai-key", default=None,
+                       help="OpenAI API key for agentic interface")
+    agentic_group.add_argument("--claude-key", default=None,
+                       help="Anthropic Claude API key for agentic interface")
+    agentic_group.add_argument("--gemini-key", default=None,
+                       help="Google Gemini API key for agentic interface")
+    agentic_group.add_argument("--autonomous-mode", action="store_true",
+                       help="Enable autonomous mode for agentic interface (dangerous actions without approval)")
+    agentic_group.add_argument("--ralph-id", default=None,
+                       help="Ralph instance ID for agentic interface (default: based on router-id)")
 
     args = parser.parse_args()
 

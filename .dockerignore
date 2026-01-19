@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Tests
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Documentation
+docs/_build/
+*.md
+
+# Examples (keep for runtime)
+!examples/
+
+# GAIT
+.gait/

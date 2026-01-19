@@ -1,0 +1,59 @@
+# Dockerfile for Ralph Agentic Network Router
+# Multi-stage build for optimized production image
+
+FROM python:3.11-slim as builder
+
+# Set working directory
+WORKDIR /app
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    make \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY wontyoubemyneighbor/agentic/requirements.txt /app/requirements.txt
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Production stage
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Copy Python dependencies from builder
+COPY --from=builder /root/.local /root/.local
+
+# Copy application code
+COPY wontyoubemyneighbor /app/wontyoubemyneighbor
+COPY examples /app/examples
+
+# Make sure scripts are in PATH
+ENV PATH=/root/.local/bin:$PATH
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Create non-root user
+RUN useradd -m -u 1000 ralph && \
+    chown -R ralph:ralph /app
+
+# Switch to non-root user
+USER ralph
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Default command (can be overridden)
+CMD ["python", "-m", "wontyoubemyneighbor.agentic", "--help"]
+
+# Labels
+LABEL maintainer="wontyoubemyneighbor"
+LABEL version="1.0.0"
+LABEL description="Ralph: Agentic Network Router with LLM-powered natural language interface"

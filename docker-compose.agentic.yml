@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # Ralph API Server
+  ralph-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.agentic
+    container_name: ralph-api
+    command: python -m wontyoubemyneighbor.agentic api --host 0.0.0.0 --port 8080
+    ports:
+      - "8080:8080"
+    environment:
+      - RALPH_ID=ralph-api-1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - AUTONOMOUS_MODE=false
+    networks:
+      - ralph-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Ralph CLI (for interactive use)
+  ralph-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile.agentic
+    container_name: ralph-cli
+    command: python -m wontyoubemyneighbor.agentic cli --ralph-id ralph-cli-1
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    networks:
+      - ralph-network
+    stdin_open: true
+    tty: true
+    profiles:
+      - cli  # Only start with: docker-compose --profile cli up
+
+  # Second Ralph instance for multi-agent demo
+  ralph-api-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.agentic
+    container_name: ralph-api-2
+    command: python -m wontyoubemyneighbor.agentic api --host 0.0.0.0 --port 8080 --ralph-id ralph-api-2
+    ports:
+      - "8081:8080"
+    environment:
+      - RALPH_ID=ralph-api-2
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    networks:
+      - ralph-network
+    restart: unless-stopped
+    profiles:
+      - multi-agent  # Only start with: docker-compose --profile multi-agent up
+
+  # Demo runner
+  ralph-demo:
+    build:
+      context: .
+      dockerfile: Dockerfile.agentic
+    container_name: ralph-demo
+    command: python -m wontyoubemyneighbor.agentic demo
+    networks:
+      - ralph-network
+    profiles:
+      - demo  # Only start with: docker-compose --profile demo up
+
+networks:
+  ralph-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  ralph-data:
+    driver: local
