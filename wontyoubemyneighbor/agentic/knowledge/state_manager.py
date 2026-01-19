@@ -137,7 +137,7 @@ class NetworkStateManager:
 
         # Gather peer state
         peers = []
-        for peer in self.bgp_speaker.peers.values():
+        for peer in self.bgp_speaker.agent.sessions.values():
             peers.append({
                 "peer": str(peer.peer_addr),
                 "peer_as": peer.peer_as,
@@ -150,19 +150,18 @@ class NetworkStateManager:
 
         # Gather RIB statistics
         rib_stats = {
-            "total_routes": len(self.bgp_speaker.rib) if hasattr(self.bgp_speaker, "rib") else 0,
+            "total_routes": self.bgp_speaker.agent.loc_rib.size(),
             "ipv4_routes": 0,
             "ipv6_routes": 0
         }
 
-        if hasattr(self.bgp_speaker, "rib"):
-            for route_key in self.bgp_speaker.rib.keys():
-                # route_key is (prefix, prefix_len, afi, safi)
-                afi = route_key[2] if len(route_key) > 2 else 1
-                if afi == 1:
-                    rib_stats["ipv4_routes"] += 1
-                elif afi == 2:
-                    rib_stats["ipv6_routes"] += 1
+        # Count IPv4 vs IPv6 routes
+        for route in self.bgp_speaker.agent.loc_rib.get_all_routes():
+            # Check if prefix contains ':' for IPv6
+            if ':' in route.prefix:
+                rib_stats["ipv6_routes"] += 1
+            else:
+                rib_stats["ipv4_routes"] += 1
 
         return {
             "local_as": self.bgp_speaker.local_as,

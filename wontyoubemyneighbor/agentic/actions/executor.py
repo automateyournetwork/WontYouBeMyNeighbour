@@ -269,7 +269,7 @@ class ActionExecutor:
         elif protocol == "bgp" and self.bgp_speaker:
             # Get BGP peers
             peers = []
-            for peer in self.bgp_speaker.peers.values():
+            for peer in self.bgp_speaker.agent.sessions.values():
                 peers.append({
                     "peer": str(peer.peer_addr),
                     "as": peer.peer_as,
