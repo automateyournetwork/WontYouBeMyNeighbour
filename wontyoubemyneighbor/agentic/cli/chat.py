@@ -1,5 +1,5 @@
 """
-Ralph CLI Chat Interface
+RubberBand CLI Chat Interface
 
 Interactive command-line interface for natural language network management.
 """
@@ -17,9 +17,9 @@ except ImportError:
     READLINE_AVAILABLE = False
 
 
-class RalphCLI:
+class RubberBandCLI:
     """
-    Interactive CLI for chatting with Ralph.
+    Interactive CLI for chatting with RubberBand.
 
     Features:
     - Natural language queries
@@ -52,9 +52,9 @@ class RalphCLI:
         """Print welcome banner"""
         print()
         print("=" * 60)
-        print("       Ralph - Your Agentic Network Router")
+        print("       RubberBand - Your Agentic Network Router")
         print("=" * 60)
-        print(f"  Ralph ID: {self.bridge.ralph_id}")
+        print(f"  RubberBand ID: {self.bridge.rubberband_id}")
         print(f"  LLM Providers: {len(self.bridge.llm.providers)}")
         print(f"  Turn Limit: {self.bridge.llm.max_turns}")
         print()
@@ -72,7 +72,7 @@ class RalphCLI:
 
     async def _cmd_help(self, args):
         """Show help"""
-        print("\nRalph CLI Commands:")
+        print("\nRubberBand CLI Commands:")
         print()
         print("  /help       - Show this help")
         print("  /stats      - Show statistics")
@@ -93,7 +93,7 @@ class RalphCLI:
         """Show statistics"""
         stats = self.bridge.get_statistics()
 
-        print("\nRalph Statistics:")
+        print("\nRubberBand Statistics:")
         print()
         print(f"LLM:")
         print(f"  Turns: {stats['llm']['turns']}/{stats['llm']['max_turns']}")
@@ -180,7 +180,7 @@ class RalphCLI:
         # Regular query
         try:
             print()
-            print("Ralph: ", end="", flush=True)
+            print("RubberBand: ", end="", flush=True)
 
             response = await self.bridge.query(user_input)
 
@@ -240,7 +240,7 @@ class RalphCLI:
 
             response = await self.bridge.query(query)
 
-            print(f"Ralph: {response}\n")
+            print(f"RubberBand: {response}\n")
 
             await asyncio.sleep(0.5)  # Small delay between queries
 
@@ -249,13 +249,13 @@ class RalphCLI:
 
 async def run_cli():
     """
-    Run Ralph CLI from command line.
+    Run RubberBand CLI from command line.
 
     Usage:
         python -m wontyoubemyneighbor.agentic.cli.chat
     """
-    parser = argparse.ArgumentParser(description="Ralph Network Agent CLI")
-    parser.add_argument("--ralph-id", default="ralph-cli", help="Ralph instance ID")
+    parser = argparse.ArgumentParser(description="RubberBand Network Agent CLI")
+    parser.add_argument("--rubberband-id", default="rubberband-cli", help="RubberBand instance ID")
     parser.add_argument("--openai-key", help="OpenAI API key")
     parser.add_argument("--claude-key", help="Anthropic Claude API key")
     parser.add_argument("--gemini-key", help="Google Gemini API key")
@@ -269,7 +269,7 @@ async def run_cli():
 
     # Create agentic bridge
     bridge = AgenticBridge(
-        ralph_id=args.ralph_id,
+        rubberband_id=args.rubberband_id,
         openai_key=args.openai_key,
         claude_key=args.claude_key,
         gemini_key=args.gemini_key,
@@ -277,14 +277,14 @@ async def run_cli():
     )
 
     # Initialize
-    print("Initializing Ralph...")
+    print("Initializing RubberBand...")
     await bridge.initialize()
 
     # Start bridge
     await bridge.start()
 
     # Create CLI
-    cli = RalphCLI(bridge)
+    cli = RubberBandCLI(bridge)
 
     try:
         if args.batch:

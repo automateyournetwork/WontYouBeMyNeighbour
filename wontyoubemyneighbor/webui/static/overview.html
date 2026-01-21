@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Overview - Won't You Be My Neighbor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-tertiary: #0d1117;
+            --border-color: #2a2a4e;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --accent-cyan: #00d9ff;
+            --accent-green: #4ade80;
+            --accent-yellow: #facc15;
+            --accent-red: #ef4444;
+            --accent-purple: #a78bfa;
+            --accent-pink: #f472b6;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 0;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 25px;
+        }
+
+        .logo h1 {
+            color: var(--accent-cyan);
+            font-size: 1.6rem;
+        }
+
+        .logo .subtitle {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-link {
+            background: transparent;
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            padding: 8px 16px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: all 0.3s;
+        }
+
+        .nav-link:hover, .nav-link.active {
+            background: var(--accent-cyan);
+            color: var(--bg-primary);
+        }
+
+        /* Global Stats Bar */
+        .global-stats {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .stat-card {
+            background: var(--bg-secondary);
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+        }
+
+        .stat-card.networks::before { background: var(--accent-cyan); }
+        .stat-card.agents::before { background: var(--accent-purple); }
+        .stat-card.ospf::before { background: var(--accent-green); }
+        .stat-card.bgp::before { background: var(--accent-yellow); }
+        .stat-card.routes::before { background: var(--accent-pink); }
+        .stat-card.health::before { background: var(--accent-green); }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            line-height: 1;
+            margin-bottom: 5px;
+        }
+
+        .stat-card.networks .stat-value { color: var(--accent-cyan); }
+        .stat-card.agents .stat-value { color: var(--accent-purple); }
+        .stat-card.ospf .stat-value { color: var(--accent-green); }
+        .stat-card.bgp .stat-value { color: var(--accent-yellow); }
+        .stat-card.routes .stat-value { color: var(--accent-pink); }
+        .stat-card.health .stat-value { color: var(--accent-green); }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Main Layout */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            gap: 20px;
+        }
+
+        /* Section */
+        .section {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .section-header h2 {
+            color: var(--accent-cyan);
+            font-size: 1.1rem;
+        }
+
+        /* Network Topology Visualization */
+        #global-topology {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            min-height: 400px;
+            position: relative;
+        }
+
+        .topology-legend {
+            position: absolute;
+            bottom: 15px;
+            left: 15px;
+            display: flex;
+            gap: 15px;
+            background: rgba(22, 33, 62, 0.9);
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+
+        .legend-color.ospf { background: var(--accent-cyan); }
+        .legend-color.bgp { background: var(--accent-purple); }
+        .legend-color.isis { background: var(--accent-yellow); }
+
+        /* Networks List */
+        .network-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .network-item {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+            border-left: 3px solid transparent;
+        }
+
+        .network-item:hover {
+            transform: translateX(5px);
+            border-left-color: var(--accent-cyan);
+        }
+
+        .network-item.selected {
+            border-left-color: var(--accent-cyan);
+            background: rgba(0, 217, 255, 0.1);
+        }
+
+        .network-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .network-item-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .network-item-status {
+            font-size: 0.7rem;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .network-item-status.running {
+            background: rgba(74, 222, 128, 0.2);
+            color: var(--accent-green);
+        }
+
+        .network-item-status.stopped {
+            background: rgba(136, 136, 136, 0.2);
+            color: var(--text-secondary);
+        }
+
+        .network-item-stats {
+            display: flex;
+            gap: 15px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .network-item-stat {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* Protocol Distribution */
+        .protocol-dist {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+
+        .protocol-dist-item {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .protocol-dist-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .protocol-dist-item.ospf .protocol-dist-value { color: var(--accent-cyan); }
+        .protocol-dist-item.bgp .protocol-dist-value { color: var(--accent-purple); }
+        .protocol-dist-item.isis .protocol-dist-value { color: var(--accent-yellow); }
+        .protocol-dist-item.mpls .protocol-dist-value { color: var(--accent-green); }
+        .protocol-dist-item.vxlan .protocol-dist-value { color: var(--accent-pink); }
+
+        .protocol-dist-label {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+
+        /* Agent Summary */
+        .agent-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 10px;
+        }
+
+        .agent-summary-item {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .agent-summary-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .agent-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .agent-dot.running {
+            background: var(--accent-green);
+            box-shadow: 0 0 6px var(--accent-green);
+        }
+
+        .agent-dot.stopped { background: var(--text-secondary); }
+        .agent-dot.error { background: var(--accent-red); }
+
+        .agent-summary-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .agent-summary-name {
+            font-weight: 500;
+            font-size: 0.85rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .agent-summary-ip {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-family: monospace;
+        }
+
+        /* Health Status */
+        .health-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+        }
+
+        .health-item {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .health-icon {
+            font-size: 1.5rem;
+        }
+
+        .health-info {
+            flex: 1;
+        }
+
+        .health-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .health-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        .health-value.good { color: var(--accent-green); }
+        .health-value.warning { color: var(--accent-yellow); }
+        .health-value.bad { color: var(--accent-red); }
+
+        /* Recent Events */
+        .events-list {
+            max-height: 250px;
+            overflow-y: auto;
+        }
+
+        .event-item {
+            display: flex;
+            gap: 10px;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.85rem;
+        }
+
+        .event-item:last-child {
+            border-bottom: none;
+        }
+
+        .event-time {
+            color: var(--text-secondary);
+            font-family: monospace;
+            flex-shrink: 0;
+            font-size: 0.75rem;
+        }
+
+        .event-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-top: 4px;
+        }
+
+        .event-dot.info { background: var(--accent-cyan); }
+        .event-dot.success { background: var(--accent-green); }
+        .event-dot.warning { background: var(--accent-yellow); }
+        .event-dot.error { background: var(--accent-red); }
+
+        .event-message {
+            flex: 1;
+        }
+
+        /* Button */
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: var(--accent-cyan);
+            color: var(--bg-primary);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .global-stats {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .global-stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-tertiary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <h1>Network Overview</h1>
+                <span class="subtitle">Won't You Be My Neighbor - Multi-Agent Network Simulation</span>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">Builder</a>
+                <a href="/realtime" class="nav-link">Real-Time</a>
+                <a href="/overview" class="nav-link active">Overview</a>
+                <a href="/monitor" class="nav-link">Monitor</a>
+            </div>
+        </header>
+
+        <!-- Global Statistics -->
+        <div class="global-stats">
+            <div class="stat-card networks">
+                <div class="stat-value" id="total-networks">0</div>
+                <div class="stat-label">Networks</div>
+            </div>
+            <div class="stat-card agents">
+                <div class="stat-value" id="total-agents">0</div>
+                <div class="stat-label">Agents</div>
+            </div>
+            <div class="stat-card ospf">
+                <div class="stat-value" id="total-ospf">0</div>
+                <div class="stat-label">OSPF Neighbors</div>
+            </div>
+            <div class="stat-card bgp">
+                <div class="stat-value" id="total-bgp">0</div>
+                <div class="stat-label">BGP Peers</div>
+            </div>
+            <div class="stat-card routes">
+                <div class="stat-value" id="total-routes">0</div>
+                <div class="stat-label">Total Routes</div>
+            </div>
+            <div class="stat-card health">
+                <div class="stat-value" id="health-score">100%</div>
+                <div class="stat-label">Health Score</div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-grid">
+            <div class="left-column">
+                <!-- Global Topology -->
+                <div class="section">
+                    <div class="section-header">
+                        <h2>Network Topology</h2>
+                        <button class="btn btn-secondary" onclick="refreshTopology()">Refresh</button>
+                    </div>
+                    <div id="global-topology">
+                        <svg id="topology-svg" width="100%" height="400"></svg>
+                        <div class="topology-legend">
+                            <div class="legend-item">
+                                <div class="legend-color ospf"></div>
+                                <span>OSPF</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="legend-color bgp"></div>
+                                <span>BGP</span>
+                            </div>
+                            <div class="legend-item">
+                                <div class="legend-color isis"></div>
+                                <span>IS-IS</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Protocol Distribution -->
+                <div class="section">
+                    <div class="section-header">
+                        <h2>Protocol Distribution</h2>
+                    </div>
+                    <div class="protocol-dist">
+                        <div class="protocol-dist-item ospf">
+                            <div class="protocol-dist-value" id="proto-ospf">0</div>
+                            <div class="protocol-dist-label">OSPF Instances</div>
+                        </div>
+                        <div class="protocol-dist-item bgp">
+                            <div class="protocol-dist-value" id="proto-bgp">0</div>
+                            <div class="protocol-dist-label">BGP Speakers</div>
+                        </div>
+                        <div class="protocol-dist-item isis">
+                            <div class="protocol-dist-value" id="proto-isis">0</div>
+                            <div class="protocol-dist-label">IS-IS Routers</div>
+                        </div>
+                        <div class="protocol-dist-item mpls">
+                            <div class="protocol-dist-value" id="proto-mpls">0</div>
+                            <div class="protocol-dist-label">MPLS Enabled</div>
+                        </div>
+                        <div class="protocol-dist-item vxlan">
+                            <div class="protocol-dist-value" id="proto-vxlan">0</div>
+                            <div class="protocol-dist-label">VXLAN VTEPs</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Agent Summary -->
+                <div class="section">
+                    <div class="section-header">
+                        <h2>Agents</h2>
+                        <a href="/realtime" class="btn btn-secondary">View Details</a>
+                    </div>
+                    <div class="agent-summary" id="agent-summary">
+                        <div class="empty-state">No agents deployed</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="right-column">
+                <!-- Networks List -->
+                <div class="section">
+                    <div class="section-header">
+                        <h2>Deployed Networks</h2>
+                        <a href="/" class="btn btn-primary">+ New</a>
+                    </div>
+                    <div class="network-list" id="network-list">
+                        <div class="empty-state">No networks deployed</div>
+                    </div>
+                </div>
+
+                <!-- Health Status -->
+                <div class="section">
+                    <div class="section-header">
+                        <h2>Health Status</h2>
+                    </div>
+                    <div class="health-grid">
+                        <div class="health-item">
+                            <div class="health-icon">&#10003;</div>
+                            <div class="health-info">
+                                <div class="health-label">Adjacencies</div>
+                                <div class="health-value good" id="health-adjacencies">0/0</div>
+                            </div>
+                        </div>
+                        <div class="health-item">
+                            <div class="health-icon">&#8634;</div>
+                            <div class="health-info">
+                                <div class="health-label">Convergence</div>
+                                <div class="health-value good" id="health-convergence">OK</div>
+                            </div>
+                        </div>
+                        <div class="health-item">
+                            <div class="health-icon">&#9889;</div>
+                            <div class="health-info">
+                                <div class="health-label">Packet Loss</div>
+                                <div class="health-value good" id="health-loss">0%</div>
+                            </div>
+                        </div>
+                        <div class="health-item">
+                            <div class="health-icon">&#128337;</div>
+                            <div class="health-info">
+                                <div class="health-label">Uptime</div>
+                                <div class="health-value" id="health-uptime">--</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Events -->
+                <div class="section">
+                    <div class="section-header">
+                        <h2>Recent Events</h2>
+                    </div>
+                    <div class="events-list" id="events-list">
+                        <div class="event-item">
+                            <span class="event-time">--:--</span>
+                            <span class="event-dot info"></span>
+                            <span class="event-message">Waiting for events...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/overview.js"></script>
+</body>
+</html>

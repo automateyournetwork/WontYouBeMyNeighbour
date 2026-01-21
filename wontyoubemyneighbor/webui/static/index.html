@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RubberBand Dashboard - Won't You Be My Neighbor</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1 id="agent-name">RubberBand Dashboard</h1>
+                <span class="subtitle">Won't You Be My Neighbor</span>
+                <span class="container-name" id="container-name" style="font-size: 0.9rem; color: var(--accent-cyan); margin-left: 15px;"></span>
+            </div>
+            <div class="header-right">
+                <button class="wizard-btn" onclick="toggleLogs()" style="background: var(--accent-green);">Logs</button>
+                <span class="router-id" id="router-id">--</span>
+                <span class="connection-status" id="connection-status">Connecting...</span>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <main class="main-content">
+            <!-- Left panel: Chat -->
+            <section class="panel chat-panel">
+                <div class="panel-header">
+                    <h2>Chat with RubberBand</h2>
+                    <span class="provider-badge" id="provider-badge">--</span>
+                </div>
+                <div class="chat-messages" id="chat-messages">
+                    <div class="message system-message">
+                        <p>Welcome! Ask me about your routing protocols, neighbors, or routes.</p>
+                        <p class="hint">Try: "How many neighbors do I have?" or "Show me the BGP routes"</p>
+                    </div>
+                </div>
+                <div class="chat-input-container">
+                    <input type="text" id="chat-input" placeholder="Ask RubberBand something..." autocomplete="off">
+                    <button id="send-btn" class="send-btn">Send</button>
+                </div>
+            </section>
+
+            <!-- Right panel: Status & Logs -->
+            <section class="panel status-panel">
+                <!-- Tabs -->
+                <div class="tabs">
+                    <button class="tab active" data-tab="status">Status</button>
+                    <button class="tab" data-tab="routes">Routes</button>
+                    <button class="tab" data-tab="logs">Logs</button>
+                </div>
+
+                <!-- Status Tab -->
+                <div class="tab-content active" id="tab-status">
+                    <!-- Dynamic Protocol Cards -->
+                    <div class="status-grid" id="protocol-cards">
+                        <div class="status-card" id="loading-card">
+                            <div class="card-body">
+                                <p class="muted">Loading agent configuration...</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Interfaces Section -->
+                    <div class="status-grid" style="margin-top: 15px;">
+                        <div class="status-card wide" id="interfaces-card">
+                            <div class="card-header">
+                                <h3>Interfaces</h3>
+                            </div>
+                            <div class="card-body" id="interfaces-body">
+                                <p class="muted">No interfaces</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Neighbors/Peers Section -->
+                    <div class="status-grid" style="margin-top: 15px;">
+                        <div class="status-card wide" id="neighbors-card">
+                            <div class="card-header">
+                                <h3>Neighbors & Peers</h3>
+                            </div>
+                            <div class="card-body" id="neighbors-body">
+                                <p class="muted">No neighbors</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- MCP Section -->
+                    <div class="status-grid" style="margin-top: 15px;" id="mcp-section">
+                        <div class="status-card wide" id="mcp-card">
+                            <div class="card-header">
+                                <h3>MCP Servers</h3>
+                            </div>
+                            <div class="card-body" id="mcp-body">
+                                <p class="muted">No MCPs configured</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Routes Tab -->
+                <div class="tab-content" id="tab-routes">
+                    <div class="routes-container" id="routes-container">
+                        <p class="muted">Loading routes...</p>
+                    </div>
+                </div>
+
+                <!-- Logs Tab -->
+                <div class="tab-content" id="tab-logs">
+                    <div class="logs-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--card-bg); border-bottom: 1px solid var(--border-color); margin-bottom: 0;">
+                        <span id="logs-status" style="font-size: 0.85rem; color: var(--text-muted);">Live</span>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="logs-pause-btn" onclick="toggleLogsPause()" style="padding: 6px 12px; background: var(--accent-yellow); color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">⏸ Pause</button>
+                            <button onclick="clearLogs()" style="padding: 6px 12px; background: var(--accent-red); color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">🗑 Clear</button>
+                        </div>
+                    </div>
+                    <div class="logs-container" id="logs-container">
+                        <div class="log-entry info">
+                            <span class="log-time">--:--:--</span>
+                            <span class="log-level">INFO</span>
+                            <span class="log-message">Waiting for logs...</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

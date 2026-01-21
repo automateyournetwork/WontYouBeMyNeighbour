@@ -507,6 +507,12 @@ class BGPFSM:
         self._stop_hold_timer()
         self._stop_keepalive_timer()
 
+    async def stop(self) -> None:
+        """Stop the FSM and clean up resources"""
+        self._stop_all_timers()
+        self.state = STATE_IDLE
+        self.logger.info("FSM stopped")
+
     async def _timer_task(self, delay: int, event: BGPEvent) -> None:
         """
         Timer task that fires an event after delay

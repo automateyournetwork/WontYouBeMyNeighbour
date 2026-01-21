@@ -6,6 +6,7 @@ Implements OpenAI API integration for wontyoubemyneighbor agentic layer.
 
 from typing import List, Dict, Any, Optional
 import os
+import asyncio
 
 try:
     from openai import AsyncOpenAI
@@ -38,14 +39,20 @@ class OpenAIProvider(BaseLLMProvider):
 
         try:
             self.client = AsyncOpenAI(api_key=api_key)
-            # Test with simple completion
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": "test"}],
-                max_tokens=5
+            # Test with simple completion (with 10 second timeout)
+            response = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": "test"}],
+                    max_tokens=5
+                ),
+                timeout=10.0
             )
             self.available = True
             return True
+        except asyncio.TimeoutError:
+            print(f"[OpenAI] Initialization timed out (API key may be invalid)")
+            return False
         except Exception as e:
             print(f"[OpenAI] Initialization failed: {e}")
             return False

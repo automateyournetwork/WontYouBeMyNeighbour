@@ -18,7 +18,7 @@ async def example_basic_queries():
 
     # Create agentic bridge
     bridge = AgenticBridge(
-        ralph_id="ralph-demo",
+        rubberband_id="rubberband-demo",
         autonomous_mode=False  # Require approval for actions
     )
 
@@ -37,7 +37,7 @@ async def example_basic_queries():
     print("\nExample queries:")
     for query in queries:
         print(f"\nUser: {query}")
-        print("Ralph: [Would process via LLM and return structured response]")
+        print("RubberBand: [Would process via LLM and return structured response]")
 
 
 async def example_with_ospf():
@@ -132,7 +132,7 @@ async def example_full_integration():
             self.rib = {}
 
     # Create agentic bridge
-    bridge = AgenticBridge(ralph_id="ralph-full-demo")
+    bridge = AgenticBridge(rubberband_id="rubberband-full-demo")
 
     # Create connectors
     ospf_conn = OSPFConnector(MockOSPFInterface())
@@ -147,7 +147,7 @@ async def example_full_integration():
     # Get statistics
     stats = bridge.get_statistics()
     print("\nBridge Statistics:")
-    print(f"  Ralph ID: {stats['ralph_id']}")
+    print(f"  RubberBand ID: {stats['rubberband_id']}")
     print(f"  LLM Turns: {stats['llm']['turns']}/{stats['llm']['max_turns']}")
     print(f"  State Snapshots: {stats['state']['snapshots']}")
     print(f"  Completed Actions: {stats['actions']['completed']}")
@@ -160,12 +160,12 @@ async def example_autonomous_decision():
     print("=" * 60)
 
     bridge = AgenticBridge(
-        ralph_id="ralph-auto",
+        rubberband_id="rubberband-auto",
         autonomous_mode=True  # Allow autonomous actions
     )
 
     print("\n✓ Autonomous mode enabled")
-    print("\nRalph can now make safe decisions autonomously:")
+    print("\nRubberBand can now make safe decisions autonomously:")
     print("  ✓ Small metric adjustments")
     print("  ✓ Anomaly detection and alerting")
     print("  ✓ Route analytics and recommendations")
@@ -175,30 +175,30 @@ async def example_autonomous_decision():
     print("  ⚠ Graceful shutdown")
 
 
-async def example_multi_ralph():
-    """Example: Multiple Ralph instances with coordination"""
+async def example_multi_rubberband():
+    """Example: Multiple RubberBand instances with coordination"""
     print("\n" + "=" * 60)
-    print("Multi-Ralph Coordination Example")
+    print("Multi-RubberBand Coordination Example")
     print("=" * 60)
 
-    # Create three Ralph instances
-    ralph1 = AgenticBridge(ralph_id="ralph-1")
-    ralph2 = AgenticBridge(ralph_id="ralph-2")
-    ralph3 = AgenticBridge(ralph_id="ralph-3")
+    # Create three RubberBand instances
+    rubberband1 = AgenticBridge(rubberband_id="rubberband-1")
+    rubberband2 = AgenticBridge(rubberband_id="rubberband-2")
+    rubberband3 = AgenticBridge(rubberband_id="rubberband-3")
 
     # Register as gossip peers
-    ralph1.gossip.register_peer("ralph-2", "192.168.1.2")
-    ralph1.gossip.register_peer("ralph-3", "192.168.1.3")
+    rubberband1.gossip.register_peer("rubberband-2", "192.168.1.2")
+    rubberband1.gossip.register_peer("rubberband-3", "192.168.1.3")
 
-    ralph2.gossip.register_peer("ralph-1", "192.168.1.1")
-    ralph2.gossip.register_peer("ralph-3", "192.168.1.3")
+    rubberband2.gossip.register_peer("rubberband-1", "192.168.1.1")
+    rubberband2.gossip.register_peer("rubberband-3", "192.168.1.3")
 
-    ralph3.gossip.register_peer("ralph-1", "192.168.1.1")
-    ralph3.gossip.register_peer("ralph-2", "192.168.1.2")
+    rubberband3.gossip.register_peer("rubberband-1", "192.168.1.1")
+    rubberband3.gossip.register_peer("rubberband-2", "192.168.1.2")
 
-    print("\n✓ Three Ralph instances configured")
+    print("\n✓ Three RubberBand instances configured")
     print("✓ Gossip protocol mesh established")
-    print("\nRalphs can now:")
+    print("\nRubberBands can now:")
     print("  • Share network state via gossip")
     print("  • Coordinate decisions via consensus")
     print("  • Alert each other of anomalies")
@@ -212,7 +212,7 @@ async def main():
     await example_with_bgp()
     await example_full_integration()
     await example_autonomous_decision()
-    await example_multi_ralph()
+    await example_multi_rubberband()
 
     print("\n" + "=" * 60)
     print("Integration Examples Complete!")
@@ -221,7 +221,7 @@ async def main():
     print("  1. Configure LLM API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY)")
     print("  2. Connect to real OSPF/BGP instances")
     print("  3. Start the agentic bridge")
-    print("  4. Query Ralph via natural language!")
+    print("  4. Query RubberBand via natural language!")
 
 
 if __name__ == "__main__":

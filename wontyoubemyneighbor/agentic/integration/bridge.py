@@ -5,7 +5,7 @@ Main integration point between the agentic layer and protocol implementations.
 Orchestrates LLM queries, decision-making, and autonomous actions.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import asyncio
 
 from ..llm.interface import LLMInterface, LLMProvider
@@ -28,13 +28,13 @@ class AgenticBridge:
 
     def __init__(
         self,
-        ralph_id: str,
+        rubberband_id: str,
         openai_key: Optional[str] = None,
         claude_key: Optional[str] = None,
         gemini_key: Optional[str] = None,
         autonomous_mode: bool = False
     ):
-        self.ralph_id = ralph_id
+        self.rubberband_id = rubberband_id
 
         # Initialize LLM interface
         self.llm = LLMInterface(
@@ -59,12 +59,16 @@ class AgenticBridge:
         self.analytics = NetworkAnalytics(self.state_manager)
 
         # Initialize multi-agent layer
-        self.gossip = GossipProtocol(ralph_id=ralph_id)
-        self.consensus = ConsensusEngine(ralph_id=ralph_id, gossip_protocol=self.gossip)
+        self.gossip = GossipProtocol(rubberband_id=rubberband_id)
+        self.consensus = ConsensusEngine(rubberband_id=rubberband_id, gossip_protocol=self.gossip)
 
         # Protocol connectors (set via dependency injection)
         self.ospf_connector = None
         self.bgp_connector = None
+
+        # Full agent configuration (interfaces, protocols, etc.)
+        self.agent_config: Optional[Dict[str, Any]] = None
+        self.interfaces: List[Dict[str, Any]] = []
 
         # State update task
         self._state_update_task: Optional[asyncio.Task] = None
@@ -72,7 +76,7 @@ class AgenticBridge:
 
     async def initialize(self):
         """Initialize all agentic components"""
-        print(f"[AgenticBridge] Initializing Ralph {self.ralph_id}...")
+        print(f"[AgenticBridge] Initializing RubberBand {self.rubberband_id}...")
 
         # Initialize LLM providers
         await self.llm.initialize_providers()
@@ -93,6 +97,41 @@ class AgenticBridge:
         self.bgp_connector = connector
         self.state_manager.set_protocol_handlers(bgp_speaker=connector.speaker)
         self.executor.set_protocol_handlers(bgp_speaker=connector.speaker)
+
+    def set_agent_config(self, config: Dict[str, Any]):
+        """
+        Set full agent configuration for LLM visibility.
+
+        This gives the LLM access to all interfaces, protocols, and config.
+        """
+        self.agent_config = config
+
+        # Extract interfaces (support both 'ifs' and 'interfaces' keys)
+        raw_ifs = config.get('ifs') or config.get('interfaces', [])
+        self.interfaces = []
+        for iface in raw_ifs:
+            self.interfaces.append({
+                'id': iface.get('id') or iface.get('n'),
+                'name': iface.get('n') or iface.get('name'),
+                'type': iface.get('t') or iface.get('type', 'eth'),
+                'addresses': iface.get('a') or iface.get('addresses', []),
+                'status': iface.get('s') or iface.get('status', 'up'),
+                'mtu': iface.get('mtu', 1500),
+                'description': iface.get('description', '')
+            })
+
+        # Pass interfaces to state manager
+        self.state_manager.set_interfaces(self.interfaces)
+
+        print(f"[AgenticBridge] Loaded agent config with {len(self.interfaces)} interfaces")
+
+    async def process_message(self, user_message: str) -> str:
+        """
+        Process natural language message (alias for query).
+
+        This is the WebUI entry point for chat messages.
+        """
+        return await self.query(user_message)
 
     async def query(self, user_message: str) -> str:
         """
@@ -140,6 +179,42 @@ class AgenticBridge:
 
         elif intent.intent_type == IntentType.ACTION_INJECT_ROUTE:
             return await self._handle_action_inject_route(intent)
+
+        elif intent.intent_type == IntentType.QUERY_ROUTER_ID:
+            return await self._handle_query_router_id(intent)
+
+        elif intent.intent_type == IntentType.QUERY_LSA:
+            return await self._handle_query_lsa(intent)
+
+        elif intent.intent_type == IntentType.QUERY_STATISTICS:
+            return await self._handle_query_statistics(intent)
+
+        elif intent.intent_type == IntentType.QUERY_INTERFACE:
+            return await self._handle_query_interface(intent)
+
+        elif intent.intent_type == IntentType.ANALYZE_HEALTH:
+            return await self._handle_analyze_health(intent)
+
+        elif intent.intent_type == IntentType.QUERY_PROTOCOL_STATUS:
+            return await self._handle_query_protocol_status(intent)
+
+        elif intent.intent_type == IntentType.QUERY_CAPABILITIES:
+            return await self._handle_query_capabilities(intent)
+
+        elif intent.intent_type == IntentType.QUERY_FIB:
+            return await self._handle_query_fib(intent)
+
+        elif intent.intent_type == IntentType.QUERY_CHANGES:
+            return await self._handle_query_changes(intent)
+
+        elif intent.intent_type == IntentType.QUERY_METRICS:
+            return await self._handle_query_metrics(intent)
+
+        elif intent.intent_type == IntentType.DIAGNOSTIC_PING:
+            return await self._handle_ping(intent)
+
+        elif intent.intent_type == IntentType.DIAGNOSTIC_TRACEROUTE:
+            return await self._handle_traceroute(intent)
 
         else:
             # Use LLM for complex queries
@@ -269,9 +344,77 @@ class AgenticBridge:
         return report
 
     async def _handle_explain_decision(self, intent) -> str:
-        """Explain last routing decision"""
+        """Explain routing decisions"""
+        lines = ["Routing Decision Explanation:", ""]
+
+        # First check decision engine history
         explanation = self.decision_engine.explain_last_decision()
-        return explanation or "No recent decisions to explain."
+        if explanation and explanation != "No decisions made yet.":
+            lines.append("Recent Agentic Decision:")
+            lines.append(f"  {explanation}")
+            lines.append("")
+
+        # Also explain BGP path selection for installed routes
+        if self.bgp_connector and self.bgp_connector.speaker:
+            routes = self.bgp_connector.speaker.agent.loc_rib.get_all_routes()
+            if routes:
+                lines.append("BGP Path Selection:")
+                lines.append("  Decision process follows these steps:")
+                lines.append("    1. Highest LOCAL_PREF (prefer routes with higher local preference)")
+                lines.append("    2. Shortest AS_PATH (prefer routes with fewer AS hops)")
+                lines.append("    3. Lowest ORIGIN (IGP < EGP < Incomplete)")
+                lines.append("    4. Lowest MED (Multi-Exit Discriminator)")
+                lines.append("    5. eBGP over iBGP (prefer external routes)")
+                lines.append("    6. Lowest IGP metric to next-hop")
+                lines.append("    7. Lowest Router ID (tiebreaker)")
+                lines.append("")
+
+                # Show a sample decision
+                if routes:
+                    route = routes[0]
+                    lines.append(f"  Example: Route {route.prefix}")
+                    lines.append(f"    Learned from: {route.peer_id}")
+
+                    # AS Path
+                    as_path = route.path_attributes.get(2)
+                    if as_path and hasattr(as_path, 'get_as_list'):
+                        path_list = as_path.get_as_list()
+                        lines.append(f"    AS Path: {' '.join(map(str, path_list)) or '(local)'}")
+                        lines.append(f"    AS Path Length: {len(path_list)}")
+
+                    # Local Pref
+                    local_pref = route.path_attributes.get(5)
+                    if local_pref:
+                        val = local_pref.value
+                        if isinstance(val, (int, float)):
+                            lines.append(f"    Local Pref: {val}")
+
+                    # Origin
+                    origin = route.path_attributes.get(1)
+                    if origin:
+                        val = origin.value
+                        if isinstance(val, int):
+                            origin_names = {0: "IGP", 1: "EGP", 2: "Incomplete"}
+                            lines.append(f"    Origin: {origin_names.get(val, 'Unknown')}")
+
+        # OSPF path selection
+        if self.ospf_connector and self.ospf_connector.interface:
+            lines.append("")
+            lines.append("OSPF Path Selection:")
+            lines.append("  Routes are selected based on:")
+            lines.append("    1. Intra-area routes preferred over inter-area")
+            lines.append("    2. Inter-area routes preferred over external")
+            lines.append("    3. Lowest cumulative cost (SPF algorithm)")
+
+            ospf_state = self.state_manager._current_ospf_state
+            if ospf_state:
+                lsdb = ospf_state.get('lsdb', {})
+                lines.append(f"  Current LSDB has {lsdb.get('total_lsas', 0)} LSAs for SPF computation")
+
+        if len(lines) == 2:
+            return "No routing decisions to explain - no protocols running."
+
+        return "\n".join(lines)
 
     async def _handle_action_adjust_metric(self, intent) -> str:
         """Handle metric adjustment action"""
@@ -317,6 +460,498 @@ class AgenticBridge:
         else:
             return f"✗ Action failed: {result.error}"
 
+    async def _handle_query_router_id(self, intent) -> str:
+        """Handle router ID query"""
+        await self.state_manager.update_state()
+
+        lines = ["Router ID Information:", ""]
+
+        # OSPF Router ID
+        ospf_state = self.state_manager._current_ospf_state
+        if ospf_state:
+            lines.append(f"  OSPF Router ID: {ospf_state.get('router_id', 'N/A')}")
+            lines.append(f"  OSPF Area: {ospf_state.get('area_id', 'N/A')}")
+
+        # BGP Router ID
+        bgp_state = self.state_manager._current_bgp_state
+        if bgp_state:
+            lines.append(f"  BGP Router ID: {bgp_state.get('router_id', 'N/A')}")
+            lines.append(f"  BGP Local AS: {bgp_state.get('local_as', 'N/A')}")
+
+        if len(lines) == 2:
+            return "No router ID information available."
+
+        return "\n".join(lines)
+
+    async def _handle_query_lsa(self, intent) -> str:
+        """Handle LSA/LSDB query"""
+        await self.state_manager.update_state()
+
+        ospf_state = self.state_manager._current_ospf_state
+        if not ospf_state:
+            return "No OSPF state available."
+
+        lsdb = ospf_state.get("lsdb", {})
+        lines = ["OSPF Link State Database:", ""]
+        lines.append(f"  Router LSAs: {lsdb.get('router_lsas', 0)}")
+        lines.append(f"  Network LSAs: {lsdb.get('network_lsas', 0)}")
+        lines.append(f"  Summary LSAs: {lsdb.get('summary_lsas', 0)}")
+        lines.append(f"  External LSAs: {lsdb.get('external_lsas', 0)}")
+        lines.append(f"  Total LSAs: {lsdb.get('total_lsas', 0)}")
+
+        return "\n".join(lines)
+
+    async def _handle_query_statistics(self, intent) -> str:
+        """Handle statistics query"""
+        stats = self.get_statistics()
+        await self.state_manager.update_state()
+
+        lines = ["Network Statistics:", ""]
+
+        # OSPF stats
+        ospf_state = self.state_manager._current_ospf_state
+        if ospf_state:
+            lines.append("OSPF:")
+            lines.append(f"  Neighbors: {ospf_state.get('neighbor_count', 0)}")
+            lines.append(f"  Full Adjacencies: {ospf_state.get('full_neighbors', 0)}")
+            lines.append(f"  Total LSAs: {ospf_state.get('lsdb', {}).get('total_lsas', 0)}")
+            lines.append("")
+
+        # BGP stats
+        bgp_state = self.state_manager._current_bgp_state
+        if bgp_state:
+            lines.append("BGP:")
+            lines.append(f"  Total Peers: {bgp_state.get('peer_count', 0)}")
+            lines.append(f"  Established Peers: {bgp_state.get('established_peers', 0)}")
+            lines.append(f"  Total Routes: {bgp_state.get('route_count', 0)}")
+            lines.append("")
+
+        # LLM stats
+        lines.append("Agentic Layer:")
+        lines.append(f"  LLM Turns: {stats['llm']['turns']}/{stats['llm']['max_turns']}")
+        lines.append(f"  Actions Completed: {stats['actions']['completed']}")
+        lines.append(f"  State Snapshots: {stats['state']['snapshots']}")
+
+        return "\n".join(lines)
+
+    async def _handle_query_interface(self, intent) -> str:
+        """Handle interface query"""
+        await self.state_manager.update_state()
+
+        lines = ["Interface Information:", ""]
+
+        # Show ALL configured interfaces
+        if self.interfaces:
+            lines.append(f"Configured Interfaces ({len(self.interfaces)} total):")
+            lines.append("")
+            for iface in self.interfaces:
+                name = iface.get('name', iface.get('id', 'unknown'))
+                iface_type = iface.get('type', 'eth')
+                addrs = iface.get('addresses', [])
+                status = iface.get('status', 'up')
+                mtu = iface.get('mtu', 1500)
+
+                type_names = {
+                    'eth': 'Ethernet',
+                    'lo': 'Loopback',
+                    'vlan': 'VLAN',
+                    'tun': 'Tunnel',
+                    'sub': 'Sub-Interface'
+                }
+                type_display = type_names.get(iface_type, iface_type)
+
+                lines.append(f"  • {name} ({type_display})")
+                if addrs:
+                    lines.append(f"      IP: {', '.join(addrs)}")
+                else:
+                    lines.append(f"      IP: Not configured")
+                lines.append(f"      Status: {status}, MTU: {mtu}")
+                lines.append("")
+        else:
+            lines.append("  No interfaces configured in agent config.")
+            lines.append("")
+
+        # Also show protocol-specific interface info
+        ospf_state = self.state_manager._current_ospf_state
+        if ospf_state:
+            lines.append("Protocol Interface Bindings:")
+            lines.append(f"  OSPF bound to: {ospf_state.get('interface_name', 'N/A')}")
+            lines.append(f"  OSPF Router ID: {ospf_state.get('router_id', 'N/A')}")
+            lines.append(f"  OSPF Area: {ospf_state.get('area_id', 'N/A')}")
+
+        if len(lines) == 2:
+            return "No interface information available."
+
+        return "\n".join(lines)
+
+    async def _handle_analyze_health(self, intent) -> str:
+        """Handle network health analysis"""
+        await self.state_manager.update_state()
+
+        issues = []
+
+        # Check OSPF health
+        ospf_state = self.state_manager._current_ospf_state
+        if ospf_state:
+            neighbor_count = ospf_state.get('neighbor_count', 0)
+            full_neighbors = ospf_state.get('full_neighbors', 0)
+            if neighbor_count > 0 and full_neighbors < neighbor_count:
+                issues.append(f"OSPF: Only {full_neighbors}/{neighbor_count} neighbors in Full state")
+
+        # Check BGP health
+        bgp_state = self.state_manager._current_bgp_state
+        if bgp_state:
+            peer_count = bgp_state.get('peer_count', 0)
+            established = bgp_state.get('established_peers', 0)
+            if peer_count > 0 and established < peer_count:
+                issues.append(f"BGP: Only {established}/{peer_count} peers Established")
+
+        if not issues:
+            lines = ["Network Health: ✓ HEALTHY", ""]
+            if ospf_state:
+                lines.append(f"  OSPF: {ospf_state.get('full_neighbors', 0)} Full neighbors")
+            if bgp_state:
+                lines.append(f"  BGP: {bgp_state.get('established_peers', 0)} Established peers, {bgp_state.get('route_count', 0)} routes")
+            return "\n".join(lines)
+        else:
+            lines = ["Network Health: ⚠ ISSUES DETECTED", ""]
+            for issue in issues:
+                lines.append(f"  • {issue}")
+            return "\n".join(lines)
+
+    async def _handle_query_protocol_status(self, intent) -> str:
+        """Handle protocol status query (is OSPF/BGP running?)"""
+        await self.state_manager.update_state()
+
+        lines = ["Protocol Status:", ""]
+
+        # Check OSPF
+        ospf_running = False
+        if self.ospf_connector and self.ospf_connector.interface:
+            ospf_running = True
+            ospf_state = self.state_manager._current_ospf_state
+            neighbor_count = ospf_state.get('neighbor_count', 0) if ospf_state else 0
+            full_neighbors = ospf_state.get('full_neighbors', 0) if ospf_state else 0
+            lines.append(f"  OSPF: ✓ Running")
+            lines.append(f"    Router ID: {ospf_state.get('router_id', 'N/A') if ospf_state else 'N/A'}")
+            lines.append(f"    Area: {ospf_state.get('area_id', 'N/A') if ospf_state else 'N/A'}")
+            lines.append(f"    Neighbors: {full_neighbors}/{neighbor_count} Full")
+        else:
+            lines.append(f"  OSPF: ✗ Not running")
+
+        lines.append("")
+
+        # Check BGP
+        bgp_running = False
+        if self.bgp_connector and self.bgp_connector.speaker:
+            bgp_running = self.bgp_connector.speaker.agent.running
+            bgp_state = self.state_manager._current_bgp_state
+            if bgp_running:
+                peer_count = bgp_state.get('peer_count', 0) if bgp_state else 0
+                established = bgp_state.get('established_peers', 0) if bgp_state else 0
+                lines.append(f"  BGP: ✓ Running")
+                lines.append(f"    Local AS: {bgp_state.get('local_as', 'N/A') if bgp_state else 'N/A'}")
+                lines.append(f"    Router ID: {bgp_state.get('router_id', 'N/A') if bgp_state else 'N/A'}")
+                lines.append(f"    Peers: {established}/{peer_count} Established")
+            else:
+                lines.append(f"  BGP: ✗ Not running")
+        else:
+            lines.append(f"  BGP: ✗ Not configured")
+
+        return "\n".join(lines)
+
+    async def _handle_query_capabilities(self, intent) -> str:
+        """Handle BGP capabilities query"""
+        await self.state_manager.update_state()
+
+        if not self.bgp_connector or not self.bgp_connector.speaker:
+            return "BGP is not configured."
+
+        lines = ["BGP Negotiated Capabilities:", ""]
+
+        # Get capabilities from each BGP session
+        for peer_ip, session in self.bgp_connector.speaker.agent.sessions.items():
+            lines.append(f"  Peer {peer_ip} (AS {session.config.peer_as}):")
+
+            caps = session.capabilities
+            cap_stats = caps.get_statistics()
+
+            # List negotiated capabilities
+            cap_list = []
+            if cap_stats.get('ipv4_unicast'):
+                cap_list.append("IPv4 Unicast")
+            if cap_stats.get('ipv6_unicast'):
+                cap_list.append("IPv6 Unicast")
+            if cap_stats.get('route_refresh'):
+                cap_list.append("Route Refresh")
+            if cap_stats.get('four_octet_as'):
+                cap_list.append("4-Byte AS")
+            if cap_stats.get('graceful_restart'):
+                cap_list.append("Graceful Restart")
+            if cap_stats.get('add_path'):
+                cap_list.append("ADD-PATH")
+
+            if cap_list:
+                lines.append(f"    Negotiated: {', '.join(cap_list)}")
+            else:
+                lines.append(f"    Negotiated: Basic BGP only")
+
+            # Show local vs peer capability counts
+            lines.append(f"    Local capabilities: {cap_stats.get('local_capabilities', 0)}")
+            lines.append(f"    Peer capabilities: {cap_stats.get('peer_capabilities', 0)}")
+            lines.append("")
+
+        if len(lines) == 2:
+            return "No BGP sessions configured."
+
+        return "\n".join(lines)
+
+    async def _handle_query_fib(self, intent) -> str:
+        """Handle FIB/forwarding table query"""
+        lines = ["Forwarding Information Base (FIB):", ""]
+
+        # Get kernel routes if kernel route manager is available
+        kernel_routes = []
+        if self.bgp_connector and self.bgp_connector.speaker:
+            kernel_mgr = self.bgp_connector.speaker.agent.kernel_route_manager
+            if kernel_mgr:
+                kernel_routes = kernel_mgr.get_installed_routes()
+                lines.append(f"  Kernel Routes Installed: {len(kernel_routes)}")
+                lines.append("")
+
+                if kernel_routes:
+                    for prefix in kernel_routes[:15]:  # Show first 15
+                        next_hop = kernel_mgr.installed_routes.get(prefix, "unknown")
+                        lines.append(f"    • {prefix} via {next_hop}")
+
+                    if len(kernel_routes) > 15:
+                        lines.append(f"\n    ... and {len(kernel_routes) - 15} more routes")
+                else:
+                    lines.append("    No routes installed in kernel.")
+            else:
+                lines.append("  Kernel route manager not configured.")
+        else:
+            lines.append("  BGP not configured (no kernel routes from BGP).")
+
+        # Also show OSPF-derived routes if available
+        if self.ospf_connector and self.ospf_connector.interface:
+            lines.append("")
+            lines.append("  OSPF Routes:")
+            ospf_state = self.state_manager._current_ospf_state
+            if ospf_state:
+                lsdb = ospf_state.get('lsdb', {})
+                lines.append(f"    Router LSAs: {lsdb.get('router_lsas', 0)}")
+                lines.append(f"    Total LSAs: {lsdb.get('total_lsas', 0)}")
+            else:
+                lines.append("    No OSPF routes computed.")
+
+        return "\n".join(lines)
+
+    async def _handle_query_changes(self, intent) -> str:
+        """Handle recent network changes query"""
+        # Get state changes from snapshots
+        changes = self.state_manager.detect_state_changes()
+
+        lines = ["Recent Network Changes:", ""]
+
+        if changes:
+            for change in changes:
+                lines.append(f"  • {change}")
+        else:
+            lines.append("  No recent changes detected.")
+
+        # Show snapshot count
+        lines.append("")
+        lines.append(f"  Snapshots tracked: {len(self.state_manager.snapshots)}")
+
+        # Show recent snapshots with timestamps if available
+        if self.state_manager.snapshots:
+            recent = self.state_manager.snapshots[-3:]  # Last 3 snapshots
+            lines.append("")
+            lines.append("  Recent Snapshots:")
+            for snapshot in reversed(recent):
+                ts = snapshot.timestamp.strftime("%H:%M:%S")
+                health = snapshot.metrics.get('health_score', 0)
+                lines.append(f"    • {ts} - Health: {health:.0f}/100")
+
+        return "\n".join(lines)
+
+    async def _handle_query_metrics(self, intent) -> str:
+        """Handle metrics query (OSPF costs, BGP attributes)"""
+        await self.state_manager.update_state()
+
+        lines = ["Network Metrics:", ""]
+
+        # OSPF metrics
+        if self.ospf_connector and self.ospf_connector.interface:
+            lines.append("  OSPF Metrics:")
+            ospf_iface = self.ospf_connector.interface
+
+            # Interface cost
+            cost = getattr(ospf_iface, 'cost', 10)
+            lines.append(f"    Interface Cost: {cost}")
+
+            # Hello/Dead intervals
+            hello = getattr(ospf_iface, 'hello_interval', 10)
+            dead = getattr(ospf_iface, 'dead_interval', 40)
+            lines.append(f"    Hello Interval: {hello}s")
+            lines.append(f"    Dead Interval: {dead}s")
+
+            # Router priority
+            priority = getattr(ospf_iface, 'priority', 1)
+            lines.append(f"    Router Priority: {priority}")
+            lines.append("")
+
+        # BGP metrics
+        if self.bgp_connector and self.bgp_connector.speaker:
+            lines.append("  BGP Metrics:")
+
+            # Show route attributes for routes in Loc-RIB
+            routes = self.bgp_connector.speaker.agent.loc_rib.get_all_routes()
+            if routes:
+                lines.append(f"    Routes in Loc-RIB: {len(routes)}")
+                lines.append("")
+
+                # Show sample route attributes
+                for route in routes[:5]:  # Show first 5 routes
+                    lines.append(f"    Route: {route.prefix}")
+
+                    # Local preference
+                    local_pref = route.path_attributes.get(5)  # ATTR_LOCAL_PREF
+                    if local_pref:
+                        val = local_pref.value
+                        if isinstance(val, (int, float)):
+                            lines.append(f"      Local Pref: {val}")
+                        elif val and val != b'':
+                            lines.append(f"      Local Pref: {val}")
+
+                    # MED
+                    med = route.path_attributes.get(4)  # ATTR_MED
+                    if med:
+                        val = med.value
+                        if isinstance(val, (int, float)):
+                            lines.append(f"      MED: {val}")
+                        elif val and val != b'':
+                            lines.append(f"      MED: {val}")
+
+                    # AS Path
+                    as_path = route.path_attributes.get(2)  # ATTR_AS_PATH
+                    if as_path and hasattr(as_path, 'get_as_list'):
+                        path_list = as_path.get_as_list()
+                        lines.append(f"      AS Path: {' '.join(map(str, path_list)) or '(local)'}")
+                        lines.append(f"      AS Path Length: {len(path_list)}")
+
+                    # Next-hop
+                    next_hop = route.path_attributes.get(3)  # ATTR_NEXT_HOP
+                    if next_hop and hasattr(next_hop, 'next_hop'):
+                        lines.append(f"      Next-Hop: {next_hop.next_hop}")
+
+                    lines.append("")
+
+                if len(routes) > 5:
+                    lines.append(f"    ... and {len(routes) - 5} more routes")
+            else:
+                lines.append("    No routes in Loc-RIB.")
+
+        if len(lines) == 2:
+            return "No metrics available - no protocols configured."
+
+        return "\n".join(lines)
+
+    async def _handle_ping(self, intent) -> str:
+        """Handle ping diagnostic"""
+        target = intent.parameters.get("target")
+        source = intent.parameters.get("source")
+
+        if not target:
+            return "Please specify an IP address to ping. Example: 'ping 10.0.0.1' or 'ping 10.0.0.1 from 192.168.1.1'"
+
+        params = {"target": target, "count": 3}
+        if source:
+            params["source"] = source
+
+        result = await self.executor.execute_action(
+            "diagnostic_ping",
+            params
+        )
+
+        if result.result:
+            ping_result = result.result
+            if ping_result.get("success"):
+                # Build header with source info if specified
+                if source:
+                    header = f"Ping to {target} from {source}:"
+                else:
+                    header = f"Ping to {target}:"
+
+                lines = [header, ""]
+                lines.append(f"  Packets: {ping_result.get('sent', 0)} sent, {ping_result.get('received', 0)} received")
+                loss = ping_result.get('packet_loss', 0)
+                lines.append(f"  Packet loss: {loss:.1f}%")
+
+                if ping_result.get('rtt_avg') is not None:
+                    lines.append(f"  Round-trip time:")
+                    lines.append(f"    Min: {ping_result.get('rtt_min', 0):.2f}ms")
+                    lines.append(f"    Avg: {ping_result.get('rtt_avg', 0):.2f}ms")
+                    lines.append(f"    Max: {ping_result.get('rtt_max', 0):.2f}ms")
+
+                status = "✓ Host is reachable" if ping_result.get('received', 0) > 0 else "✗ Host unreachable"
+                lines.append("")
+                lines.append(status)
+
+                return "\n".join(lines)
+            else:
+                return f"✗ Ping to {target} failed: {ping_result.get('error', 'Host unreachable')}"
+        else:
+            return f"Error executing ping: {result.error}"
+
+    async def _handle_traceroute(self, intent) -> str:
+        """Handle traceroute diagnostic"""
+        target = intent.parameters.get("target")
+
+        if not target:
+            return "Please specify an IP address to traceroute. Example: 'traceroute 10.0.0.1'"
+
+        result = await self.executor.execute_action(
+            "diagnostic_traceroute",
+            {"target": target, "max_hops": 15}
+        )
+
+        if result.result:
+            trace_result = result.result
+            if trace_result.get("success"):
+                lines = [f"Traceroute to {target}:", ""]
+
+                hops = trace_result.get("hops", [])
+                for hop in hops:
+                    hop_num = hop.get("hop", "?")
+                    ip = hop.get("ip", "*")
+                    rtt = hop.get("rtt")
+
+                    if ip == "*":
+                        lines.append(f"  {hop_num:2d}  * * * (no response)")
+                    elif rtt is not None:
+                        lines.append(f"  {hop_num:2d}  {ip}  {rtt:.2f}ms")
+                    else:
+                        lines.append(f"  {hop_num:2d}  {ip}")
+
+                # Check if we reached the target
+                if hops and hops[-1].get("ip") == target:
+                    lines.append("")
+                    lines.append(f"✓ Reached destination in {len(hops)} hops")
+                elif trace_result.get("reached"):
+                    lines.append("")
+                    lines.append(f"✓ Reached destination")
+                else:
+                    lines.append("")
+                    lines.append(f"✗ Did not reach destination (max hops exceeded)")
+
+                return "\n".join(lines)
+            else:
+                return f"✗ Traceroute to {target} failed: {trace_result.get('error', 'Unknown error')}"
+        else:
+            return f"Error executing traceroute: {result.error}"
+
     def _register_gossip_handlers(self):
         """Register handlers for gossip messages"""
         from ..multi_agent.gossip import MessageType
@@ -353,7 +988,7 @@ class AgenticBridge:
         # Start state update loop
         self._state_update_task = asyncio.create_task(self._state_update_loop())
 
-        print(f"[AgenticBridge] Ralph {self.ralph_id} started")
+        print(f"[AgenticBridge] RubberBand {self.rubberband_id} started")
 
     async def stop(self):
         """Stop agentic bridge"""
@@ -370,7 +1005,7 @@ class AgenticBridge:
             except asyncio.CancelledError:
                 pass
 
-        print(f"[AgenticBridge] Ralph {self.ralph_id} stopped")
+        print(f"[AgenticBridge] RubberBand {self.rubberband_id} stopped")
 
     async def _state_update_loop(self):
         """Periodically update network state"""
@@ -396,7 +1031,7 @@ class AgenticBridge:
     def get_statistics(self) -> Dict[str, Any]:
         """Get comprehensive statistics"""
         return {
-            "ralph_id": self.ralph_id,
+            "rubberband_id": self.rubberband_id,
             "llm": {
                 "turns": self.llm.current_turn,
                 "max_turns": self.llm.max_turns,

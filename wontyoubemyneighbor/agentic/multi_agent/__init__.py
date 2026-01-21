@@ -1,7 +1,7 @@
 """
 Multi-Agent Coordination Layer
 
-Enables Ralph-to-Ralph communication for distributed consensus and state sharing.
+Enables RubberBand-to-RubberBand communication for distributed consensus and state sharing.
 """
 
 from .gossip import GossipProtocol, GossipMessage

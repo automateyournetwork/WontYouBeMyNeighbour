@@ -481,18 +481,33 @@ class AdjacencyManager:
 
         if our_lsa is None:
             # We don't have this LSA
+            logger.debug(f"Need LSA (not in LSDB): type={lsa_header.ls_type}, "
+                        f"id={lsa_header.link_state_id}, adv={lsa_header.advertising_router}")
             return True
 
         # Compare sequence numbers (RFC 2328 Section 13.1)
         neighbor_seq = lsa_header.ls_sequence_number
         our_seq = our_lsa.header.ls_sequence_number
 
+        # Handle None values safely - if either is None, we need the LSA
+        if neighbor_seq is None:
+            logger.warning(f"Neighbor LSA has None sequence number: type={lsa_header.ls_type}")
+            return True
+        if our_seq is None:
+            logger.warning(f"Our LSA has None sequence number: type={lsa_header.ls_type}")
+            return True
+
         # Higher sequence number = newer (accounting for wraparound)
         if neighbor_seq > our_seq:
+            logger.debug(f"Need LSA (newer seq): type={lsa_header.ls_type}, "
+                        f"neighbor_seq={hex(neighbor_seq)}, our_seq={hex(our_seq)}")
             return True
         elif neighbor_seq == our_seq:
             # Same sequence, compare checksum
-            if lsa_header.ls_checksum > our_lsa.header.ls_checksum:
+            neighbor_cksum = lsa_header.ls_checksum or 0
+            our_cksum = our_lsa.header.ls_checksum or 0
+            if neighbor_cksum > our_cksum:
+                logger.debug(f"Need LSA (higher checksum): type={lsa_header.ls_type}")
                 return True
 
         return False

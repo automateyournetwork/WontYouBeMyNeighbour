@@ -9,7 +9,7 @@ Architecture:
 - llm/: Multi-provider LLM interfaces (OpenAI, Claude, Gemini)
 - reasoning/: Intent parsing and decision-making engine
 - actions/: Autonomous action execution layer
-- multi_agent/: Ralph-to-Ralph coordination and consensus
+- multi_agent/: RubberBand-to-RubberBand coordination and consensus
 - knowledge/: Network state management and analytics
 """
 

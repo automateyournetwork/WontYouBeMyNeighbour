@@ -1,5 +1,5 @@
 """
-Ralph REST API Server
+RubberBand REST API Server
 
 FastAPI-based REST API for natural language network management.
 """
@@ -67,9 +67,9 @@ class VoteRequest(BaseModel):
     reason: Optional[str] = None
 
 
-class RalphAPI:
+class RubberBandAPI:
     """
-    Ralph REST API
+    RubberBand REST API
 
     Provides HTTP endpoints for:
     - Natural language queries
@@ -91,7 +91,7 @@ class RalphAPI:
 
         self.bridge = agentic_bridge
         self.app = FastAPI(
-            title="Ralph Network Agent API",
+            title="RubberBand Network Agent API",
             description="Natural language interface for network management",
             version="1.0.0"
         )
@@ -115,8 +115,8 @@ class RalphAPI:
         async def root():
             """API root"""
             return {
-                "service": "Ralph Network Agent",
-                "ralph_id": self.bridge.ralph_id,
+                "service": "RubberBand Network Agent",
+                "rubberband_id": self.bridge.rubberband_id,
                 "version": "1.0.0",
                 "endpoints": {
                     "query": "/api/query",
@@ -133,7 +133,7 @@ class RalphAPI:
             """Health check"""
             return {
                 "status": "healthy",
-                "ralph_id": self.bridge.ralph_id,
+                "rubberband_id": self.bridge.rubberband_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
 
@@ -390,7 +390,7 @@ class RalphAPI:
 
 def create_api_server(agentic_bridge, host: str = "0.0.0.0", port: int = 8080):
     """
-    Create and configure Ralph API server.
+    Create and configure RubberBand API server.
 
     Args:
         agentic_bridge: Instance of AgenticBridge
@@ -398,12 +398,12 @@ def create_api_server(agentic_bridge, host: str = "0.0.0.0", port: int = 8080):
         port: Port to listen on
 
     Returns:
-        Tuple of (RalphAPI, uvicorn server config)
+        Tuple of (RubberBandAPI, uvicorn server config)
     """
     if not FASTAPI_AVAILABLE:
         raise RuntimeError("FastAPI not installed. Install with: pip install fastapi uvicorn")
 
-    api = RalphAPI(agentic_bridge)
+    api = RubberBandAPI(agentic_bridge)
 
     # Return API instance and server config
     return api, {

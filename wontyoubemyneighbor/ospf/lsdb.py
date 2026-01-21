@@ -6,10 +6,10 @@ RFC 2328 Section 12 - The Link State Advertisement
 import time
 import logging
 from typing import Dict, List, Optional, Tuple
-from ospf.packets import LSAHeader, RouterLSA, NetworkLSA, RouterLink
+from ospf.packets import LSAHeader, RouterLSA, NetworkLSA, RouterLink, ASExternalLSA, SummaryLSA, NSSAExternalLSA
 from ospf.constants import (
     ROUTER_LSA, INITIAL_SEQUENCE_NUMBER, MAX_AGE,
-    LINK_TYPE_STUB
+    LINK_TYPE_STUB, AS_EXTERNAL_LSA, SUMMARY_LSA_NETWORK, SUMMARY_LSA_ASBR, NSSA_EXTERNAL_LSA
 )
 
 logger = logging.getLogger(__name__)
@@ -244,6 +244,14 @@ class LinkStateDatabase:
         seq1 = lsa1_header.ls_sequence_number
         seq2 = lsa2_header.ls_sequence_number
 
+        # Handle None sequence numbers - treat None as oldest possible
+        if seq1 is None and seq2 is None:
+            return False  # Both None, consider equal (not newer)
+        if seq1 is None:
+            return False  # lsa1 has no sequence, treat as older
+        if seq2 is None:
+            return True   # lsa2 has no sequence, lsa1 is newer
+
         # Compare sequence numbers (higher = newer)
         if seq1 > seq2:
             return True
@@ -251,8 +259,8 @@ class LinkStateDatabase:
             return False
         else:
             # Same sequence number, check checksum
-            ck1 = lsa1_header.ls_checksum
-            ck2 = lsa2_header.ls_checksum
+            ck1 = lsa1_header.ls_checksum or 0
+            ck2 = lsa2_header.ls_checksum or 0
             return ck1 > ck2
 
     def create_router_lsa(self, router_id: str, links: List[dict],
@@ -322,6 +330,169 @@ class LinkStateDatabase:
             True if installed successfully
         """
         lsa_header, lsa_body = self.create_router_lsa(router_id, links)
+        return self.add_lsa(lsa_header, lsa_body)
+
+    def create_external_lsa(self, router_id: str, prefix: str, mask: str,
+                           metric: int = 20, forwarding_address: str = "0.0.0.0",
+                           external_type: int = 1,
+                           sequence_number: Optional[int] = None) -> Tuple[LSAHeader, ASExternalLSA]:
+        """
+        Create AS External LSA (Type 5) for route redistribution
+
+        Args:
+            router_id: Advertising router ID
+            prefix: Network prefix (used as link_state_id)
+            mask: Network mask
+            metric: External metric value
+            forwarding_address: Forwarding address (0.0.0.0 means use advertising router)
+            external_type: 1 for Type-1 (comparable to internal), 2 for Type-2 (always external)
+            sequence_number: LSA sequence number (or None for auto)
+
+        Returns:
+            Tuple of (LSAHeader, ASExternalLSA)
+        """
+        if sequence_number is None:
+            # Check if we have existing External LSA for this prefix
+            existing = self.get_lsa(AS_EXTERNAL_LSA, prefix, router_id)
+            if existing:
+                sequence_number = existing.header.ls_sequence_number + 1
+            else:
+                sequence_number = INITIAL_SEQUENCE_NUMBER
+
+        # E-bit: 0 = Type-1 external (metric is comparable to link state metric)
+        #        1 = Type-2 external (metric is an external cost)
+        e_bit = 1 if external_type == 2 else 0
+
+        # Build AS External LSA body
+        lsa_body = ASExternalLSA(
+            network_mask=mask,
+            e_bit=e_bit,
+            metric=metric,
+            forwarding_address=forwarding_address,
+            external_route_tag=0
+        )
+
+        # Build LSA Header
+        lsa_header = LSAHeader(
+            ls_age=0,
+            ls_type=AS_EXTERNAL_LSA,
+            link_state_id=prefix,  # Network address
+            advertising_router=router_id,
+            ls_sequence_number=sequence_number,
+            length=None,
+            ls_checksum=None
+        )
+
+        logger.info(f"Created External LSA for {prefix}/{mask} via {router_id}, metric={metric}, seq={hex(sequence_number)}")
+
+        return (lsa_header, lsa_body)
+
+    def install_external_lsa(self, router_id: str, prefix: str, mask: str,
+                            metric: int = 20, forwarding_address: str = "0.0.0.0",
+                            external_type: int = 1) -> bool:
+        """
+        Create and install AS External LSA in LSDB
+
+        Args:
+            router_id: Advertising router ID
+            prefix: Network prefix
+            mask: Network mask
+            metric: External metric
+            forwarding_address: Forwarding address
+            external_type: 1 or 2
+
+        Returns:
+            True if installed successfully
+        """
+        lsa_header, lsa_body = self.create_external_lsa(
+            router_id, prefix, mask, metric, forwarding_address, external_type
+        )
+        return self.add_lsa(lsa_header, lsa_body)
+
+    def get_external_lsas(self) -> List[LSA]:
+        """
+        Get all AS External LSAs
+
+        Returns:
+            List of External LSAs
+        """
+        return [lsa for lsa in self.database.values()
+                if lsa.header.ls_type == AS_EXTERNAL_LSA]
+
+    def get_summary_lsas(self) -> List[LSA]:
+        """
+        Get all Summary LSAs (Type 3 and Type 4)
+
+        Type 3: Summary LSA for inter-area network routes
+        Type 4: ASBR Summary LSA for path to ASBR
+
+        Returns:
+            List of Summary LSAs
+        """
+        return [lsa for lsa in self.database.values()
+                if lsa.header.ls_type in (SUMMARY_LSA_NETWORK, SUMMARY_LSA_ASBR)]
+
+    def get_nssa_lsas(self) -> List[LSA]:
+        """
+        Get all NSSA External LSAs (Type 7)
+
+        RFC 3101 - Not-So-Stubby Area External LSAs
+        Used within NSSAs to carry external routes.
+
+        Returns:
+            List of NSSA External LSAs
+        """
+        return [lsa for lsa in self.database.values()
+                if lsa.header.ls_type == NSSA_EXTERNAL_LSA]
+
+    def install_nssa_lsa(self, router_id: str, prefix: str, mask: str,
+                         metric: int = 20, forwarding_address: str = "0.0.0.0",
+                         external_type: int = 2) -> bool:
+        """
+        Create and install NSSA External LSA in LSDB
+
+        Args:
+            router_id: Advertising router ID
+            prefix: Network prefix
+            mask: Network mask
+            metric: External metric
+            forwarding_address: Forwarding address
+            external_type: 1 or 2
+
+        Returns:
+            True if installed successfully
+        """
+        # Check if we have existing NSSA LSA for this prefix
+        existing = self.get_lsa(NSSA_EXTERNAL_LSA, prefix, router_id)
+        if existing:
+            sequence_number = existing.header.ls_sequence_number + 1
+        else:
+            sequence_number = INITIAL_SEQUENCE_NUMBER
+
+        e_bit = 1 if external_type == 2 else 0
+
+        # Build NSSA External LSA body (same structure as AS External)
+        lsa_body = NSSAExternalLSA(
+            network_mask=mask,
+            e_bit=e_bit,
+            metric=metric,
+            forwarding_address=forwarding_address,
+            external_route_tag=0
+        )
+
+        # Build LSA Header
+        lsa_header = LSAHeader(
+            ls_age=0,
+            ls_type=NSSA_EXTERNAL_LSA,
+            link_state_id=prefix,
+            advertising_router=router_id,
+            ls_sequence_number=sequence_number,
+            length=None,
+            ls_checksum=None
+        )
+
+        logger.info(f"Created NSSA External LSA for {prefix}/{mask} via {router_id}, metric={metric}")
+
         return self.add_lsa(lsa_header, lsa_body)
 
     def get_size(self) -> int:

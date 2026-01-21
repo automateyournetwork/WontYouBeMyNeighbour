@@ -1,8 +1,8 @@
 """
-Consensus Engine for Distributed Ralph Coordination
+Consensus Engine for Distributed RubberBand Coordination
 
 Implements consensus protocols for coordinated decision-making across
-multiple Ralph instances. Uses voting-based consensus for critical actions.
+multiple RubberBand instances. Uses voting-based consensus for critical actions.
 """
 
 from typing import Dict, Any, List, Optional, Set
@@ -46,9 +46,9 @@ class ConsensusProposal:
         if self.votes is None:
             self.votes = {}
 
-    def add_vote(self, ralph_id: str, vote: VoteType):
-        """Add vote from Ralph instance"""
-        self.votes[ralph_id] = vote
+    def add_vote(self, rubberband_id: str, vote: VoteType):
+        """Add vote from RubberBand instance"""
+        self.votes[rubberband_id] = vote
 
     def get_vote_counts(self) -> Dict[str, int]:
         """Get vote counts"""
@@ -94,9 +94,9 @@ class ConsensusProposal:
 
 class ConsensusEngine:
     """
-    Distributed consensus engine for Ralph instances.
+    Distributed consensus engine for RubberBand instances.
 
-    Coordinates decision-making across multiple Ralph instances using
+    Coordinates decision-making across multiple RubberBand instances using
     voting-based consensus.
 
     Features:
@@ -108,11 +108,11 @@ class ConsensusEngine:
 
     def __init__(
         self,
-        ralph_id: str,
+        rubberband_id: str,
         gossip_protocol=None,
         proposal_timeout: int = 60  # seconds
     ):
-        self.ralph_id = ralph_id
+        self.rubberband_id = rubberband_id
         self.gossip = gossip_protocol
         self.proposal_timeout = proposal_timeout
 
@@ -140,12 +140,12 @@ class ConsensusEngine:
         import hashlib
 
         # Generate proposal ID
-        proposal_data = f"{self.ralph_id}{datetime.utcnow().isoformat()}{description}"
+        proposal_data = f"{self.rubberband_id}{datetime.utcnow().isoformat()}{description}"
         proposal_id = hashlib.sha256(proposal_data.encode()).hexdigest()[:16]
 
         proposal = ConsensusProposal(
             proposal_id=proposal_id,
-            proposer_id=self.ralph_id,
+            proposer_id=self.rubberband_id,
             consensus_type=consensus_type,
             description=description,
             parameters=parameters,
@@ -170,7 +170,7 @@ class ConsensusEngine:
 
     def receive_proposal(self, proposal_data: Dict[str, Any]) -> ConsensusProposal:
         """
-        Receive proposal from another Ralph instance.
+        Receive proposal from another RubberBand instance.
 
         Returns the proposal object.
         """
@@ -219,7 +219,7 @@ class ConsensusEngine:
             return False
 
         # Add vote
-        proposal.add_vote(self.ralph_id, vote)
+        proposal.add_vote(self.rubberband_id, vote)
 
         # Broadcast vote via gossip
         if self.gossip:
@@ -228,7 +228,7 @@ class ConsensusEngine:
                 MessageType.CONSENSUS_VOTE,
                 payload={
                     "proposal_id": proposal_id,
-                    "voter_id": self.ralph_id,
+                    "voter_id": self.rubberband_id,
                     "vote": vote.value,
                     "reason": reason
                 }
@@ -246,7 +246,7 @@ class ConsensusEngine:
         voter_id: str,
         vote: str
     ):
-        """Receive vote from another Ralph instance"""
+        """Receive vote from another RubberBand instance"""
         if proposal_id not in self.proposals:
             return
 
@@ -335,7 +335,7 @@ class ConsensusEngine:
     def get_statistics(self) -> Dict[str, Any]:
         """Get consensus engine statistics"""
         return {
-            "ralph_id": self.ralph_id,
+            "rubberband_id": self.rubberband_id,
             "active_proposals": len(self.proposals),
             "completed_proposals": len(self.completed_proposals),
             "auto_vote_enabled": self.auto_vote_enabled

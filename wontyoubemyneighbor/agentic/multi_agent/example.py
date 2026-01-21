@@ -1,7 +1,7 @@
 """
 Example usage of Multi-Agent Coordination
 
-Demonstrates gossip protocol and consensus between Ralph instances.
+Demonstrates gossip protocol and consensus between RubberBand instances.
 """
 
 import asyncio
@@ -10,39 +10,39 @@ from .consensus import ConsensusEngine, ConsensusType, VoteType
 
 
 async def example_gossip_protocol():
-    """Example: Set up gossip network between Ralph instances"""
+    """Example: Set up gossip network between RubberBand instances"""
     print("=" * 60)
     print("Gossip Protocol Example")
     print("=" * 60)
 
-    # Create three Ralph instances
-    ralph1 = GossipProtocol(ralph_id="ralph-1", fanout=2, gossip_interval=2.0)
-    ralph2 = GossipProtocol(ralph_id="ralph-2", fanout=2, gossip_interval=2.0)
-    ralph3 = GossipProtocol(ralph_id="ralph-3", fanout=2, gossip_interval=2.0)
+    # Create three RubberBand instances
+    rubberband1 = GossipProtocol(rubberband_id="rubberband-1", fanout=2, gossip_interval=2.0)
+    rubberband2 = GossipProtocol(rubberband_id="rubberband-2", fanout=2, gossip_interval=2.0)
+    rubberband3 = GossipProtocol(rubberband_id="rubberband-3", fanout=2, gossip_interval=2.0)
 
     # Register peers
-    ralph1.register_peer("ralph-2", "192.168.1.2")
-    ralph1.register_peer("ralph-3", "192.168.1.3")
+    rubberband1.register_peer("rubberband-2", "192.168.1.2")
+    rubberband1.register_peer("rubberband-3", "192.168.1.3")
 
-    ralph2.register_peer("ralph-1", "192.168.1.1")
-    ralph2.register_peer("ralph-3", "192.168.1.3")
+    rubberband2.register_peer("rubberband-1", "192.168.1.1")
+    rubberband2.register_peer("rubberband-3", "192.168.1.3")
 
-    ralph3.register_peer("ralph-1", "192.168.1.1")
-    ralph3.register_peer("ralph-2", "192.168.1.2")
+    rubberband3.register_peer("rubberband-1", "192.168.1.1")
+    rubberband3.register_peer("rubberband-2", "192.168.1.2")
 
     # Register message handlers
     async def handle_state_update(message):
-        print(f"[{ralph2.ralph_id}] Received state update from {message.sender_id}")
+        print(f"[{rubberband2.rubberband_id}] Received state update from {message.sender_id}")
 
-    ralph2.register_handler(MessageType.STATE_UPDATE, handle_state_update)
+    rubberband2.register_handler(MessageType.STATE_UPDATE, handle_state_update)
 
     # Start gossip protocols
-    await ralph1.start()
-    await ralph2.start()
-    await ralph3.start()
+    await rubberband1.start()
+    await rubberband2.start()
+    await rubberband3.start()
 
-    # Ralph1 broadcasts state update
-    message = ralph1.create_message(
+    # RubberBand1 broadcasts state update
+    message = rubberband1.create_message(
         MessageType.STATE_UPDATE,
         payload={
             "ospf_neighbors": 3,
@@ -51,21 +51,21 @@ async def example_gossip_protocol():
         }
     )
 
-    print(f"\n[ralph-1] Broadcasting state update...")
-    await ralph1.broadcast(message)
+    print(f"\n[rubberband-1] Broadcasting state update...")
+    await rubberband1.broadcast(message)
 
     # Let gossip propagate
     await asyncio.sleep(1)
 
     # Check statistics
-    print(f"\n[ralph-1] Stats: {ralph1.get_statistics()}")
-    print(f"[ralph-2] Stats: {ralph2.get_statistics()}")
-    print(f"[ralph-3] Stats: {ralph3.get_statistics()}")
+    print(f"\n[rubberband-1] Stats: {rubberband1.get_statistics()}")
+    print(f"[rubberband-2] Stats: {rubberband2.get_statistics()}")
+    print(f"[rubberband-3] Stats: {rubberband3.get_statistics()}")
 
     # Stop gossip
-    await ralph1.stop()
-    await ralph2.stop()
-    await ralph3.stop()
+    await rubberband1.stop()
+    await rubberband2.stop()
+    await rubberband3.stop()
 
 
 async def example_consensus():
@@ -75,16 +75,16 @@ async def example_consensus():
     print("=" * 60)
 
     # Create gossip network
-    gossip1 = GossipProtocol(ralph_id="ralph-1")
-    gossip2 = GossipProtocol(ralph_id="ralph-2")
-    gossip3 = GossipProtocol(ralph_id="ralph-3")
+    gossip1 = GossipProtocol(rubberband_id="rubberband-1")
+    gossip2 = GossipProtocol(rubberband_id="rubberband-2")
+    gossip3 = GossipProtocol(rubberband_id="rubberband-3")
 
     # Create consensus engines
-    consensus1 = ConsensusEngine(ralph_id="ralph-1", gossip_protocol=gossip1)
-    consensus2 = ConsensusEngine(ralph_id="ralph-2", gossip_protocol=gossip2)
-    consensus3 = ConsensusEngine(ralph_id="ralph-3", gossip_protocol=gossip3)
+    consensus1 = ConsensusEngine(rubberband_id="rubberband-1", gossip_protocol=gossip1)
+    consensus2 = ConsensusEngine(rubberband_id="rubberband-2", gossip_protocol=gossip2)
+    consensus3 = ConsensusEngine(rubberband_id="rubberband-3", gossip_protocol=gossip3)
 
-    # Ralph1 creates proposal
+    # RubberBand1 creates proposal
     proposal = consensus1.create_proposal(
         consensus_type=ConsensusType.METRIC_ADJUSTMENT,
         description="Increase OSPF cost on eth0 from 10 to 15",
@@ -96,28 +96,28 @@ async def example_consensus():
         required_votes=2
     )
 
-    print(f"\n[ralph-1] Created proposal: {proposal.proposal_id}")
+    print(f"\n[rubberband-1] Created proposal: {proposal.proposal_id}")
     print(f"Description: {proposal.description}")
 
-    # Other Ralphs receive proposal
+    # Other RubberBands receive proposal
     consensus2.receive_proposal(proposal.to_dict())
     consensus3.receive_proposal(proposal.to_dict())
 
-    print("\n[ralph-2] Received proposal")
-    print("[ralph-3] Received proposal")
+    print("\n[rubberband-2] Received proposal")
+    print("[rubberband-3] Received proposal")
 
     # Vote on proposal
     consensus1.vote(proposal.proposal_id, VoteType.APPROVE, "Proposer auto-approve")
     consensus2.vote(proposal.proposal_id, VoteType.APPROVE, "Reasonable metric change")
     consensus3.vote(proposal.proposal_id, VoteType.APPROVE, "Looks good")
 
-    print("\n[ralph-1] Voted: APPROVE")
-    print("[ralph-2] Voted: APPROVE")
-    print("[ralph-3] Voted: APPROVE")
+    print("\n[rubberband-1] Voted: APPROVE")
+    print("[rubberband-2] Voted: APPROVE")
+    print("[rubberband-3] Voted: APPROVE")
 
     # Propagate votes
-    consensus1.receive_vote(proposal.proposal_id, "ralph-2", "approve")
-    consensus1.receive_vote(proposal.proposal_id, "ralph-3", "approve")
+    consensus1.receive_vote(proposal.proposal_id, "rubberband-2", "approve")
+    consensus1.receive_vote(proposal.proposal_id, "rubberband-3", "approve")
 
     # Check status
     status = consensus1.get_proposal_status(proposal.proposal_id)
@@ -134,9 +134,9 @@ async def example_rejected_proposal():
     print("Rejected Proposal Example")
     print("=" * 60)
 
-    consensus1 = ConsensusEngine(ralph_id="ralph-1")
-    consensus2 = ConsensusEngine(ralph_id="ralph-2")
-    consensus3 = ConsensusEngine(ralph_id="ralph-3")
+    consensus1 = ConsensusEngine(rubberband_id="rubberband-1")
+    consensus2 = ConsensusEngine(rubberband_id="rubberband-2")
+    consensus3 = ConsensusEngine(rubberband_id="rubberband-3")
 
     # Create dangerous proposal
     proposal = consensus1.create_proposal(
@@ -146,7 +146,7 @@ async def example_rejected_proposal():
         required_votes=3
     )
 
-    print(f"\n[ralph-1] Created proposal: {proposal.description}")
+    print(f"\n[rubberband-1] Created proposal: {proposal.description}")
 
     # Distribute to others
     consensus2.receive_proposal(proposal.to_dict())
@@ -158,8 +158,8 @@ async def example_rejected_proposal():
     consensus3.vote(proposal.proposal_id, VoteType.REJECT, "Network disruption risk")
 
     # Propagate
-    consensus1.receive_vote(proposal.proposal_id, "ralph-2", "reject")
-    consensus1.receive_vote(proposal.proposal_id, "ralph-3", "reject")
+    consensus1.receive_vote(proposal.proposal_id, "rubberband-2", "reject")
+    consensus1.receive_vote(proposal.proposal_id, "rubberband-3", "reject")
 
     status = consensus1.get_proposal_status(proposal.proposal_id)
     print(f"\nProposal Status: {status['status']}")
@@ -175,12 +175,12 @@ async def example_auto_vote():
     print("Auto-Vote Example")
     print("=" * 60)
 
-    consensus1 = ConsensusEngine(ralph_id="ralph-1")
-    consensus2 = ConsensusEngine(ralph_id="ralph-2")
+    consensus1 = ConsensusEngine(rubberband_id="rubberband-1")
+    consensus2 = ConsensusEngine(rubberband_id="rubberband-2")
 
-    # Enable auto-vote on ralph2
+    # Enable auto-vote on rubberband2
     consensus2.enable_auto_vote()
-    print("[ralph-2] Auto-vote enabled")
+    print("[rubberband-2] Auto-vote enabled")
 
     # Create proposal
     proposal = consensus1.create_proposal(
@@ -190,16 +190,16 @@ async def example_auto_vote():
         required_votes=2
     )
 
-    print(f"\n[ralph-1] Created proposal: {proposal.description}")
+    print(f"\n[rubberband-1] Created proposal: {proposal.description}")
 
-    # Ralph2 receives and auto-votes
+    # RubberBand2 receives and auto-votes
     received_proposal = consensus2.receive_proposal(proposal.to_dict())
-    print(f"[ralph-2] Auto-voted on proposal")
+    print(f"[rubberband-2] Auto-voted on proposal")
 
-    # Check ralph2's vote
+    # Check rubberband2's vote
     votes = received_proposal.votes
-    if "ralph-2" in votes:
-        print(f"[ralph-2] Vote: {votes['ralph-2'].value}")
+    if "rubberband-2" in votes:
+        print(f"[rubberband-2] Vote: {votes['rubberband-2'].value}")
 
 
 async def example_consensus_statistics():
@@ -208,7 +208,7 @@ async def example_consensus_statistics():
     print("Consensus Statistics")
     print("=" * 60)
 
-    consensus = ConsensusEngine(ralph_id="ralph-1")
+    consensus = ConsensusEngine(rubberband_id="rubberband-1")
 
     # Create several proposals
     for i in range(5):
@@ -226,7 +226,7 @@ async def example_consensus_statistics():
 
     # Get statistics
     stats = consensus.get_statistics()
-    print(f"\nRalph ID: {stats['ralph_id']}")
+    print(f"\nRubberBand ID: {stats['rubberband_id']}")
     print(f"Active Proposals: {stats['active_proposals']}")
     print(f"Completed Proposals: {stats['completed_proposals']}")
 

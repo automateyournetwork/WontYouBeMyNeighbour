@@ -2,7 +2,7 @@
 Safety Constraints
 
 Enforces safety rules for autonomous network actions.
-Prevents Ralph from making dangerous changes without human approval.
+Prevents RubberBand from making dangerous changes without human approval.
 """
 
 from typing import Dict, Any, List, Optional
@@ -54,7 +54,7 @@ class SafetyConstraints:
                 "max": 65535
             },
             "critical_interfaces": [],  # Interfaces that require approval
-            "max_route_injections": 100,  # Max routes Ralph can inject
+            "max_route_injections": 100,  # Max routes RubberBand can inject
             "min_change_interval": 60,  # Seconds between changes to same resource
             "require_approval_for": [
                 "graceful_shutdown",
@@ -218,7 +218,27 @@ class SafetyConstraints:
         Check if action is allowed without human approval.
 
         Returns True if autonomous, False if requires approval.
+        Read-only query actions are always allowed.
         """
+        # Read-only query actions are always allowed (they don't modify network state)
+        read_only_actions = {
+            "query_neighbors",
+            "query_routes",
+            "query_status",
+            "query_rib",
+            "query_bgp_peer",
+            "query_lsa",
+            "query_route",
+            "query_neighbor",
+            "analyze_topology",
+            "analyze_path",
+            "detect_anomaly",
+            "explain_decision",
+        }
+
+        if action_type in read_only_actions:
+            return True
+
         if not self.config["autonomous_mode"]:
             return False
 

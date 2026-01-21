@@ -1,10 +1,10 @@
 #!/bin/bash
-# Test runner for Ralph agentic layer
+# Test runner for RubberBand agentic layer
 
 set -e
 
 echo "=================================="
-echo "Ralph Agentic Layer Test Suite"
+echo "RubberBand Agentic Layer Test Suite"
 echo "=================================="
 echo ""
 

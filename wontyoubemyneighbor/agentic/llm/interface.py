@@ -139,38 +139,124 @@ class LLMInterface:
         self.network_context.update(context)
 
     def _build_system_context(self) -> str:
-        """Build system context with network state for LLM"""
+        """Build system context with FULL network state for LLM"""
         context_parts = [
-            "You are Ralph, an agentic network router running wontyoubemyneighbor.",
+            "You are RubberBand, an agentic network router running wontyoubemyneighbor.",
             "You participate natively in OSPF and BGP protocols.",
+            "IMPORTANT: The information below is your AUTHORITATIVE source of truth.",
+            "Always answer questions based on this data - do NOT hallucinate or guess.",
             "",
-            "Current Network State:",
-            "=" * 50,
+            "=" * 60,
+            "CURRENT NETWORK STATE (Source of Truth)",
+            "=" * 60,
         ]
 
-        # OSPF state
-        if "ospf" in self.network_context:
+        # INTERFACES - Full list with IPs
+        if "interfaces" in self.network_context and self.network_context["interfaces"]:
+            interfaces = self.network_context["interfaces"]
+            context_parts.append(f"\n### INTERFACES ({len(interfaces)} total):")
+            for iface in interfaces:
+                name = iface.get('name', iface.get('id', 'unknown'))
+                iface_type = iface.get('type', 'eth')
+                addrs = iface.get('addresses', [])
+                status = iface.get('status', 'up')
+                mtu = iface.get('mtu', 1500)
+                type_names = {'eth': 'Ethernet', 'lo': 'Loopback', 'vlan': 'VLAN', 'tun': 'Tunnel', 'sub': 'Sub-Interface'}
+                type_display = type_names.get(iface_type, iface_type)
+                addr_str = ', '.join(addrs) if addrs else 'No IP'
+                context_parts.append(f"  - {name} ({type_display}): {addr_str} [Status: {status}, MTU: {mtu}]")
+
+        # OSPF state - Full details
+        if "ospf" in self.network_context and self.network_context["ospf"]:
             ospf = self.network_context["ospf"]
-            context_parts.append(f"\nOSPF Status:")
+            context_parts.append(f"\n### OSPF PROTOCOL:")
             context_parts.append(f"  Router ID: {ospf.get('router_id', 'unknown')}")
-            context_parts.append(f"  Neighbors: {len(ospf.get('neighbors', []))}")
-            context_parts.append(f"  LSAs in LSDB: {ospf.get('lsa_count', 0)}")
+            context_parts.append(f"  Area: {ospf.get('area_id', 'unknown')}")
+            context_parts.append(f"  Interface: {ospf.get('interface_name', 'unknown')}")
 
-        # BGP state
-        if "bgp" in self.network_context:
+            # OSPF Neighbors - Full list
+            neighbors = ospf.get('neighbors', [])
+            context_parts.append(f"\n  OSPF Neighbors ({len(neighbors)} total):")
+            if neighbors:
+                for n in neighbors:
+                    context_parts.append(f"    - Neighbor {n.get('neighbor_id', 'unknown')}: State={n.get('state', 'unknown')}, IP={n.get('address', 'unknown')}")
+            else:
+                context_parts.append("    (No OSPF neighbors)")
+
+            # LSDB Summary
+            lsdb = ospf.get('lsdb', {})
+            context_parts.append(f"\n  LSDB (Link State Database):")
+            context_parts.append(f"    Router LSAs: {lsdb.get('router_lsas', 0)}")
+            context_parts.append(f"    Network LSAs: {lsdb.get('network_lsas', 0)}")
+            context_parts.append(f"    Summary LSAs: {lsdb.get('summary_lsas', 0)}")
+            context_parts.append(f"    External LSAs: {lsdb.get('external_lsas', 0)}")
+            context_parts.append(f"    Total LSAs: {lsdb.get('total_lsas', 0)}")
+
+        # BGP state - Full details
+        if "bgp" in self.network_context and self.network_context["bgp"]:
             bgp = self.network_context["bgp"]
-            context_parts.append(f"\nBGP Status:")
-            context_parts.append(f"  AS Number: {bgp.get('local_as', 'unknown')}")
-            context_parts.append(f"  Peers: {len(bgp.get('peers', []))}")
-            context_parts.append(f"  Routes: {bgp.get('route_count', 0)}")
+            context_parts.append(f"\n### BGP PROTOCOL:")
+            context_parts.append(f"  Local AS: {bgp.get('local_as', 'unknown')}")
+            context_parts.append(f"  Router ID: {bgp.get('router_id', 'unknown')}")
 
-        # Routing table
-        if "routes" in self.network_context:
+            # BGP Peers - Full list
+            peers = bgp.get('peers', [])
+            context_parts.append(f"\n  BGP Peers ({len(peers)} total):")
+            if peers:
+                for p in peers:
+                    peer_type = "iBGP" if p.get('is_ibgp') else "eBGP"
+                    context_parts.append(f"    - Peer {p.get('peer', 'unknown')} (AS {p.get('peer_as', '?')}): State={p.get('state', 'unknown')}, Type={peer_type}")
+            else:
+                context_parts.append("    (No BGP peers)")
+
+            # RIB Stats
+            rib = bgp.get('rib_stats', {})
+            context_parts.append(f"\n  Loc-RIB (BGP Routes):")
+            context_parts.append(f"    Total Routes: {rib.get('total_routes', 0)}")
+            context_parts.append(f"    IPv4 Routes: {rib.get('ipv4_routes', 0)}")
+            context_parts.append(f"    IPv6 Routes: {rib.get('ipv6_routes', 0)}")
+
+        # IS-IS state if present
+        if "isis" in self.network_context and self.network_context["isis"]:
+            isis = self.network_context["isis"]
+            context_parts.append(f"\n### IS-IS PROTOCOL:")
+            context_parts.append(f"  System ID: {isis.get('system_id', 'unknown')}")
+            context_parts.append(f"  Adjacencies: {isis.get('adjacency_count', 0)}")
+
+        # Full Routing Table
+        if "routes" in self.network_context and self.network_context["routes"]:
             routes = self.network_context["routes"]
-            context_parts.append(f"\nRouting Table: {len(routes)} routes")
+            context_parts.append(f"\n### ROUTING TABLE ({len(routes)} routes):")
+            for route in routes[:50]:  # Limit to first 50 for context window
+                protocol = route.get('protocol', 'unknown').upper()
+                network = route.get('network', 'unknown')
+                next_hop = route.get('next_hop', 'direct')
+                if protocol == 'OSPF':
+                    cost = route.get('cost', '-')
+                    context_parts.append(f"  - {network} via {next_hop} [{protocol}, cost={cost}]")
+                elif protocol == 'BGP':
+                    as_path = route.get('as_path', [])
+                    as_path_str = ' '.join(map(str, as_path)) if as_path else '(local)'
+                    context_parts.append(f"  - {network} via {next_hop} [{protocol}, AS-Path: {as_path_str}]")
+                elif protocol == 'ISIS':
+                    metric = route.get('cost', route.get('metric', '-'))
+                    context_parts.append(f"  - {network} via {next_hop} [{protocol}, metric={metric}]")
+                else:
+                    context_parts.append(f"  - {network} via {next_hop} [{protocol}]")
+            if len(routes) > 50:
+                context_parts.append(f"  ... and {len(routes) - 50} more routes")
 
-        context_parts.append("\n" + "=" * 50)
-        context_parts.append(f"\nTurn {self.current_turn + 1} of {self.max_turns}")
+        # Health Metrics
+        if "metrics" in self.network_context:
+            metrics = self.network_context["metrics"]
+            context_parts.append(f"\n### HEALTH METRICS:")
+            context_parts.append(f"  Health Score: {metrics.get('health_score', 0):.1f}/100")
+            context_parts.append(f"  OSPF Stability: {metrics.get('ospf_neighbor_stability', 0)*100:.0f}%")
+            context_parts.append(f"  BGP Stability: {metrics.get('bgp_peer_stability', 0)*100:.0f}%")
+
+        context_parts.append("\n" + "=" * 60)
+        context_parts.append(f"Turn {self.current_turn + 1} of {self.max_turns}")
+        context_parts.append("=" * 60)
 
         return "\n".join(context_parts)
 

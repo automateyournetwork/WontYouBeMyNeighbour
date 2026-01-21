@@ -61,19 +61,21 @@ EVENT_KILL_NBR = "KillNbr"
 EVENT_INACTIVITY_TIMER = "InactivityTimer"
 EVENT_LL_DOWN = "LLDown"
 
-# LSA Types (RFC 2328 Section 12.1)
+# LSA Types (RFC 2328 Section 12.1, RFC 3101 for Type 7)
 ROUTER_LSA = 1
 NETWORK_LSA = 2
 SUMMARY_LSA_NETWORK = 3
 SUMMARY_LSA_ASBR = 4
 AS_EXTERNAL_LSA = 5
+NSSA_EXTERNAL_LSA = 7  # RFC 3101 - Not-So-Stubby Area External LSA
 
 LSA_TYPE_NAMES = {
     1: "Router LSA",
     2: "Network LSA",
     3: "Summary LSA (IP network)",
     4: "Summary LSA (ASBR)",
-    5: "AS External LSA"
+    5: "AS External LSA",
+    7: "NSSA External LSA"
 }
 
 # Router Link Types (RFC 2328 Section A.4.2)

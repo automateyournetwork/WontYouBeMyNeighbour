@@ -10,14 +10,16 @@ from typing import List, Dict, Optional, Tuple
 from scapy.packet import Raw
 from ospf.packets import (
     OSPFHeader, OSPFLSUpdate, OSPFLSAck, OSPFLSRequest, LSRequest,
-    LSAHeader, RouterLSA, NetworkLSA, parse_ospf_packet
+    LSAHeader, RouterLSA, NetworkLSA, ASExternalLSA, NSSAExternalLSA,
+    SummaryLSA, parse_ospf_packet
 )
 from ospf.neighbor import OSPFNeighbor
 from ospf.lsdb import LinkStateDatabase, LSA
 from ospf.constants import (
     LINK_STATE_REQUEST, LINK_STATE_UPDATE, LINK_STATE_ACK,
     STATE_FULL, STATE_LOADING, EVENT_LOADING_DONE,
-    ROUTER_LSA, NETWORK_LSA
+    ROUTER_LSA, NETWORK_LSA, AS_EXTERNAL_LSA, NSSA_EXTERNAL_LSA,
+    SUMMARY_LSA_NETWORK, SUMMARY_LSA_ASBR
 )
 
 logger = logging.getLogger(__name__)
@@ -575,7 +577,19 @@ class LSAFloodingManager:
                             elif lsa_header.ls_type == NETWORK_LSA:
                                 body = NetworkLSA(body_bytes)
                                 logger.debug(f"Parsed Network LSA from {lsa_header.advertising_router}")
-                            # Other LSA types can be added here
+                            elif lsa_header.ls_type == AS_EXTERNAL_LSA:
+                                body = ASExternalLSA(body_bytes)
+                                logger.debug(f"Parsed External LSA from {lsa_header.advertising_router}: "
+                                           f"network={lsa_header.link_state_id}, "
+                                           f"mask={body.network_mask}, metric={body.metric}")
+                            elif lsa_header.ls_type == NSSA_EXTERNAL_LSA:
+                                body = NSSAExternalLSA(body_bytes)
+                                logger.debug(f"Parsed NSSA External LSA from {lsa_header.advertising_router}: "
+                                           f"network={lsa_header.link_state_id}, "
+                                           f"mask={body.network_mask}, metric={body.metric}")
+                            elif lsa_header.ls_type in (SUMMARY_LSA_NETWORK, SUMMARY_LSA_ASBR):
+                                body = SummaryLSA(body_bytes)
+                                logger.debug(f"Parsed Summary LSA Type {lsa_header.ls_type} from {lsa_header.advertising_router}")
                         except Exception as e:
                             logger.debug(f"Could not parse LSA body type {lsa_header.ls_type}: {e}")
                             # Continue with body=None if parsing fails

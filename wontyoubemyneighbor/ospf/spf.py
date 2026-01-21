@@ -8,7 +8,11 @@ import logging
 from typing import Dict, List, Optional
 import networkx as nx
 from ospf.lsdb import LinkStateDatabase, LSA
-from ospf.constants import ROUTER_LSA, NETWORK_LSA, LINK_TYPE_PTP, LINK_TYPE_TRANSIT, LINK_TYPE_STUB
+from ospf.constants import (
+    ROUTER_LSA, NETWORK_LSA, AS_EXTERNAL_LSA, NSSA_EXTERNAL_LSA,
+    SUMMARY_LSA_NETWORK, SUMMARY_LSA_ASBR,
+    LINK_TYPE_PTP, LINK_TYPE_TRANSIT, LINK_TYPE_STUB
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +114,274 @@ class SPFCalculator:
                 path=path
             )
 
+        # Step 4: Process Summary LSAs (Type 3/4) - RFC 2328 Section 16.2/16.3
+        # Inter-area routes from ABRs
+        self._process_summary_lsas(shortest_costs)
+
+        # Step 5: Process External LSAs (Type 5) - RFC 2328 Section 16.4
+        # External routes are added AFTER SPF tree is computed
+        self._process_external_lsas(shortest_costs)
+
+        # Step 6: Process NSSA External LSAs (Type 7) - RFC 3101
+        # NSSA external routes within Not-So-Stubby Areas
+        self._process_nssa_lsas(shortest_costs)
+
         logger.info(f"SPF calculation complete: {len(self.routing_table)} routes")
         return self.routing_table
+
+    def _process_summary_lsas(self, shortest_costs: Dict[str, int]):
+        """
+        Process Summary LSAs (Type 3 and Type 4) for inter-area routes.
+
+        Per RFC 2328 Section 16.2/16.3:
+        - Type 3: Summary LSA for network routes from other areas
+        - Type 4: ASBR Summary LSA for path to ASBRs in other areas
+
+        The cost to an inter-area destination is:
+        cost_to_ABR + summary_metric
+
+        Args:
+            shortest_costs: Dictionary of router_id -> cost from SPF
+        """
+        summary_lsas = self.lsdb.get_summary_lsas()
+
+        if not summary_lsas:
+            return
+
+        logger.debug(f"Processing {len(summary_lsas)} Summary LSAs")
+
+        for lsa in summary_lsas:
+            try:
+                # Get summary route details from LSA
+                abr_id = lsa.header.advertising_router
+                ls_type = lsa.header.ls_type
+                destination = lsa.header.link_state_id
+
+                # Skip if we can't reach the ABR
+                if abr_id not in shortest_costs and abr_id != self.router_id:
+                    logger.debug(f"Cannot reach ABR {abr_id} for summary route {destination}")
+                    continue
+
+                # Skip if this is from ourselves (we're the ABR)
+                if abr_id == self.router_id:
+                    continue
+
+                # Get summary metric from LSA body
+                if not lsa.body:
+                    continue
+
+                summary_metric = lsa.body.metric
+                network_mask = lsa.body.network_mask
+
+                # Calculate cost to ABR
+                cost_to_abr = shortest_costs.get(abr_id, float('inf'))
+
+                # Total cost = cost_to_ABR + summary_metric
+                total_cost = cost_to_abr + summary_metric
+
+                # Handle Type 3 (Network Summary) vs Type 4 (ASBR Summary)
+                if ls_type == SUMMARY_LSA_NETWORK:
+                    # Type 3: Inter-area network route
+                    prefix = self._build_prefix(destination, network_mask)
+                elif ls_type == SUMMARY_LSA_ASBR:
+                    # Type 4: ASBR Summary - adds path to ASBR in another area
+                    # This is used for external route calculation
+                    prefix = destination  # ASBR router ID
+                else:
+                    continue
+
+                # Determine next hop (same as path to ABR)
+                if abr_id in self.routing_table:
+                    next_hop = self.routing_table[abr_id].next_hop
+                else:
+                    next_hop = abr_id
+
+                # Only add if we don't have a better intra-area route
+                if prefix not in self.routing_table:
+                    self.routing_table[prefix] = RouteEntry(
+                        destination=prefix,
+                        cost=total_cost,
+                        next_hop=next_hop,
+                        path=[self.router_id, abr_id] if abr_id != self.router_id else [self.router_id]
+                    )
+                    route_type = "IA" if ls_type == SUMMARY_LSA_NETWORK else "ASBR"
+                    logger.debug(f"Added {route_type} route: {prefix} via {next_hop} (cost={total_cost})")
+
+            except Exception as e:
+                logger.warning(f"Error processing Summary LSA: {e}")
+
+    def _process_external_lsas(self, shortest_costs: Dict[str, int]):
+        """
+        Process AS External LSAs (Type 5) and add external routes.
+
+        Per RFC 2328 Section 16.4, external routes are calculated after
+        the SPF tree is built. The cost to an external destination is:
+        - Type 1: cost_to_ASBR + external_metric
+        - Type 2: external_metric (ASBR cost used only as tiebreaker)
+
+        Args:
+            shortest_costs: Dictionary of router_id -> cost from SPF
+        """
+        external_lsas = self.lsdb.get_external_lsas()
+
+        if not external_lsas:
+            return
+
+        logger.debug(f"Processing {len(external_lsas)} External LSAs")
+
+        for lsa in external_lsas:
+            try:
+                # Get external route details from LSA
+                asbr_id = lsa.header.advertising_router
+                network = lsa.header.link_state_id
+
+                # Skip if we can't reach the ASBR
+                if asbr_id not in shortest_costs and asbr_id != self.router_id:
+                    logger.debug(f"Cannot reach ASBR {asbr_id} for external route {network}")
+                    continue
+
+                # Get external metric from LSA body
+                if not lsa.body:
+                    continue
+
+                external_metric = lsa.body.metric
+                network_mask = lsa.body.network_mask
+                e_bit = getattr(lsa.body, 'e_bit', 1)  # Default to Type 2
+
+                # Calculate cost to ASBR
+                if asbr_id == self.router_id:
+                    cost_to_asbr = 0
+                else:
+                    cost_to_asbr = shortest_costs.get(asbr_id, float('inf'))
+
+                # Calculate total cost based on external type
+                if e_bit == 0:
+                    # Type 1 external: cost = cost_to_ASBR + external_metric
+                    total_cost = cost_to_asbr + external_metric
+                else:
+                    # Type 2 external: cost = external_metric (ASBR cost as tiebreaker)
+                    total_cost = external_metric
+
+                # Build prefix with mask
+                prefix = self._build_prefix(network, network_mask)
+
+                # Determine next hop
+                if asbr_id == self.router_id:
+                    next_hop = None  # Local route
+                elif asbr_id in self.routing_table:
+                    next_hop = self.routing_table[asbr_id].next_hop
+                else:
+                    next_hop = asbr_id
+
+                # Add to routing table (external routes have lower preference)
+                # Only add if we don't have a better internal route
+                if prefix not in self.routing_table:
+                    self.routing_table[prefix] = RouteEntry(
+                        destination=prefix,
+                        cost=total_cost,
+                        next_hop=next_hop,
+                        path=[self.router_id, asbr_id] if asbr_id != self.router_id else [self.router_id]
+                    )
+                    logger.debug(f"Added external route: {prefix} via {next_hop} (cost={total_cost}, type={'E1' if e_bit == 0 else 'E2'})")
+
+            except Exception as e:
+                logger.warning(f"Error processing External LSA: {e}")
+
+    def _process_nssa_lsas(self, shortest_costs: Dict[str, int]):
+        """
+        Process NSSA External LSAs (Type 7) per RFC 3101.
+
+        NSSA External LSAs are similar to AS External LSAs but are
+        flooded only within the NSSA. They are converted to Type 5
+        at the NSSA ABR for flooding to other areas.
+
+        Args:
+            shortest_costs: Dictionary of router_id -> cost from SPF
+        """
+        nssa_lsas = self.lsdb.get_nssa_lsas()
+
+        if not nssa_lsas:
+            return
+
+        logger.debug(f"Processing {len(nssa_lsas)} NSSA External LSAs")
+
+        for lsa in nssa_lsas:
+            try:
+                # Get NSSA route details from LSA
+                asbr_id = lsa.header.advertising_router
+                network = lsa.header.link_state_id
+
+                # Skip if we can't reach the ASBR
+                if asbr_id not in shortest_costs and asbr_id != self.router_id:
+                    logger.debug(f"Cannot reach ASBR {asbr_id} for NSSA route {network}")
+                    continue
+
+                # Get external metric from LSA body
+                if not lsa.body:
+                    continue
+
+                external_metric = lsa.body.metric
+                network_mask = lsa.body.network_mask
+                e_bit = getattr(lsa.body, 'e_bit', 1)
+
+                # Calculate cost to ASBR
+                if asbr_id == self.router_id:
+                    cost_to_asbr = 0
+                else:
+                    cost_to_asbr = shortest_costs.get(asbr_id, float('inf'))
+
+                # Calculate total cost based on external type
+                if e_bit == 0:
+                    # N1: cost = cost_to_ASBR + external_metric
+                    total_cost = cost_to_asbr + external_metric
+                else:
+                    # N2: cost = external_metric
+                    total_cost = external_metric
+
+                # Build prefix with mask
+                prefix = self._build_prefix(network, network_mask)
+
+                # Determine next hop
+                if asbr_id == self.router_id:
+                    next_hop = None
+                elif asbr_id in self.routing_table:
+                    next_hop = self.routing_table[asbr_id].next_hop
+                else:
+                    next_hop = asbr_id
+
+                # NSSA routes have lower priority than Type 5 external routes
+                # Only add if we don't have a better route
+                if prefix not in self.routing_table:
+                    self.routing_table[prefix] = RouteEntry(
+                        destination=prefix,
+                        cost=total_cost,
+                        next_hop=next_hop,
+                        path=[self.router_id, asbr_id] if asbr_id != self.router_id else [self.router_id]
+                    )
+                    logger.debug(f"Added NSSA route: {prefix} via {next_hop} (cost={total_cost}, type={'N1' if e_bit == 0 else 'N2'})")
+
+            except Exception as e:
+                logger.warning(f"Error processing NSSA LSA: {e}")
+
+    def _build_prefix(self, network: str, mask: str) -> str:
+        """
+        Build prefix string from network and mask.
+
+        Args:
+            network: Network address (e.g., "10.0.0.0")
+            mask: Network mask (e.g., "255.0.0.0")
+
+        Returns:
+            Prefix string (e.g., "10.0.0.0/8")
+        """
+        try:
+            # Convert mask to prefix length
+            mask_octets = [int(o) for o in mask.split('.')]
+            mask_int = (mask_octets[0] << 24) + (mask_octets[1] << 16) + (mask_octets[2] << 8) + mask_octets[3]
+            prefix_len = bin(mask_int).count('1')
+            return f"{network}/{prefix_len}"
+        except Exception:
+            return network
 
     def _build_graph(self) -> nx.Graph:
         """

@@ -247,7 +247,7 @@ You should see:
 
 ## 🏆 Development Methodology
 
-Built using **PrincipleSkinner** (Ralph + GAIT):
+Built using **PrincipleSkinner** (RubberBand + GAIT):
 - 7 iterations from design to completion
 - Complete GAIT version control
 - Branch-based feature development

@@ -147,6 +147,10 @@ class BGPAgent:
         """
         Handle incoming TCP connection
 
+        Per RFC 4271 Section 6.8, when a BGP speaker receives an incoming connection
+        for a peer it's actively connecting to, it should handle the collision.
+        The connection with the higher BGP Identifier (router ID) wins.
+
         Args:
             reader: Stream reader
             writer: Stream writer
@@ -170,17 +174,62 @@ class BGPAgent:
                 await writer.wait_closed()
                 return
 
-            # Check if session is in passive mode
-            self.logger.debug(f"Session passive mode: {session.config.passive}")
-            if not session.config.passive:
-                self.logger.warning(f"Session {peer_ip} not configured for passive mode, rejecting")
-                writer.close()
-                await writer.wait_closed()
-                return
+            # RFC 4271 Section 6.8: Connection Collision Detection
+            # If we're in passive mode, always accept
+            # If we're in active mode BUT:
+            #   - Session is in Idle/Connect/Active state: Accept (we haven't established yet)
+            #   - Session is in OpenSent/OpenConfirm: Handle collision based on router ID
+            #   - Session is Established: Reject (we already have a working connection)
+            self.logger.debug(f"Session passive mode: {session.config.passive}, FSM state: {session.fsm.get_state_name()}")
 
-            # Accept connection
-            self.logger.debug(f"Calling session.accept_connection for {peer_ip}")
-            await session.accept_connection(reader, writer)
+            if not session.config.passive:
+                # Active mode - check current state for collision handling
+                current_state = session.fsm.state
+
+                if current_state == STATE_ESTABLISHED:
+                    # Already established, reject new connection
+                    self.logger.warning(f"Session {peer_ip} already established, rejecting new connection")
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+
+                elif current_state in (STATE_OPENSENT, STATE_OPENCONFIRM):
+                    # Connection collision - per RFC 4271, compare BGP identifiers (router IDs)
+                    # The connection initiated by the higher router ID is kept
+                    import struct
+                    import socket
+                    our_id = struct.unpack("!I", socket.inet_aton(self.router_id))[0]
+                    peer_id = struct.unpack("!I", socket.inet_aton(session.config.peer_router_id or peer_ip))[0]
+
+                    if our_id > peer_id:
+                        # We have higher ID - keep our outgoing connection, reject incoming
+                        self.logger.info(f"Connection collision with {peer_ip}: our ID higher, rejecting incoming")
+                        writer.close()
+                        await writer.wait_closed()
+                        return
+                    else:
+                        # Peer has higher ID - accept incoming, close our outgoing attempt
+                        self.logger.info(f"Connection collision with {peer_ip}: peer ID higher, accepting incoming, dropping outgoing")
+                        # Close existing connection attempt
+                        if session.writer:
+                            try:
+                                session.writer.close()
+                                await session.writer.wait_closed()
+                            except:
+                                pass
+                        session.reader = None
+                        session.writer = None
+
+                else:
+                    # In Idle/Connect/Active state - accept the incoming connection
+                    # This handles the case where both sides are trying to connect
+                    self.logger.info(f"Accepting incoming connection from {peer_ip} (collision resolution)")
+
+            # Accept connection - pass is_collision=True if we're not in passive mode
+            # so the session knows to re-send OPEN on the new connection
+            is_collision = not session.config.passive
+            self.logger.debug(f"Calling session.accept_connection for {peer_ip} (collision={is_collision})")
+            await session.accept_connection(reader, writer, is_collision=is_collision)
             self.logger.debug(f"session.accept_connection completed for {peer_ip}")
 
         except Exception as e:

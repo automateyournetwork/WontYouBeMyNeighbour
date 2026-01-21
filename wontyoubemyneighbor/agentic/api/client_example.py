@@ -1,7 +1,7 @@
 """
-Ralph API Client Examples
+RubberBand API Client Examples
 
-Demonstrates how to interact with Ralph via REST API.
+Demonstrates how to interact with RubberBand via REST API.
 """
 
 import asyncio
@@ -14,8 +14,8 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
 
 
-class RalphClient:
-    """Simple client for Ralph REST API"""
+class RubberBandClient:
+    """Simple client for RubberBand REST API"""
 
     def __init__(self, base_url: str = "http://localhost:8080"):
         self.base_url = base_url.rstrip("/")
@@ -110,7 +110,7 @@ async def example_basic_queries():
     print("Basic API Queries Example")
     print("=" * 60)
 
-    client = RalphClient()
+    client = RubberBandClient()
 
     queries = [
         "Show me my OSPF neighbors",
@@ -237,7 +237,7 @@ async def example_curl_commands():
 
     commands = [
         ('Health check', 'curl http://localhost:8080/health'),
-        ('Query Ralph', '''curl -X POST http://localhost:8080/api/query \\
+        ('Query RubberBand', '''curl -X POST http://localhost:8080/api/query \\
   -H "Content-Type: application/json" \\
   -d '{"query": "Show me my OSPF neighbors"}' '''),
         ('Get state', 'curl http://localhost:8080/api/state'),

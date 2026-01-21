@@ -83,11 +83,20 @@ class ActionExecutor:
         # Protocol handlers (to be injected)
         self.ospf_interface = None
         self.bgp_speaker = None
+        self.isis_speaker = None
+        self.ospfv3_speaker = None
 
-    def set_protocol_handlers(self, ospf_interface=None, bgp_speaker=None):
-        """Inject protocol handlers for actual network operations"""
-        self.ospf_interface = ospf_interface
-        self.bgp_speaker = bgp_speaker
+    def set_protocol_handlers(self, ospf_interface=None, bgp_speaker=None,
+                              isis_speaker=None, ospfv3_speaker=None):
+        """Inject protocol handlers for actual network operations (preserves existing values)"""
+        if ospf_interface is not None:
+            self.ospf_interface = ospf_interface
+        if bgp_speaker is not None:
+            self.bgp_speaker = bgp_speaker
+        if isis_speaker is not None:
+            self.isis_speaker = isis_speaker
+        if ospfv3_speaker is not None:
+            self.ospfv3_speaker = ospfv3_speaker
 
     async def execute_action(
         self,
@@ -157,6 +166,10 @@ class ActionExecutor:
                 result = await self._execute_query_neighbors(parameters)
             elif action_type == "query_routes":
                 result = await self._execute_query_routes(parameters)
+            elif action_type == "diagnostic_ping":
+                result = await self._execute_ping(parameters)
+            elif action_type == "diagnostic_traceroute":
+                result = await self._execute_traceroute(parameters)
             else:
                 raise ValueError(f"Unknown action type: {action_type}")
 
@@ -260,9 +273,9 @@ class ActionExecutor:
             neighbors = []
             for neighbor in self.ospf_interface.neighbors.values():
                 neighbors.append({
-                    "neighbor_id": neighbor.neighbor_id,
-                    "state": neighbor.state,
-                    "address": neighbor.address
+                    "neighbor_id": neighbor.router_id,
+                    "state": neighbor.get_state_name(),
+                    "address": neighbor.ip_address
                 })
             return {"protocol": "ospf", "neighbors": neighbors}
 
@@ -280,24 +293,264 @@ class ActionExecutor:
         return {"protocol": protocol, "neighbors": []}
 
     async def _execute_query_routes(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Query routing table"""
+        """Query routing table (combined OSPF + BGP)"""
         destination = params.get("destination")
 
-        # In real implementation, query actual routing table
         routes = []
 
+        # Get OSPF routes from SPF calculator
+        if self.ospf_interface:
+            try:
+                # Access SPF calculator's routing table
+                if hasattr(self.ospf_interface, 'spf_calc') and self.ospf_interface.spf_calc:
+                    ospf_routes = self.ospf_interface.spf_calc.routing_table
+                    for prefix, route_entry in ospf_routes.items():
+                        # Filter by destination if specified
+                        if destination is not None and prefix != destination:
+                            continue
+
+                        routes.append({
+                            "network": prefix,
+                            "next_hop": route_entry.next_hop or "direct",
+                            "protocol": "ospf",
+                            "cost": route_entry.cost,
+                            "path": route_entry.path
+                        })
+            except Exception as e:
+                # Log but continue - don't fail entirely
+                pass
+
+        # Get BGP routes from Loc-RIB
         if self.bgp_speaker:
-            # Get BGP routes
-            for route_key, route_info in self.bgp_speaker.rib.items():
-                if destination is None or route_key[0] == destination:
+            try:
+                from bgp.constants import ATTR_AS_PATH
+
+                all_routes = self.bgp_speaker.agent.loc_rib.get_all_routes()
+                for route in all_routes:
+                    # Filter by destination if specified
+                    if destination is not None and route.prefix != destination:
+                        continue
+
+                    # Extract AS path
+                    as_path = []
+                    if route.has_attribute(ATTR_AS_PATH):
+                        as_path_attr = route.get_attribute(ATTR_AS_PATH)
+                        if hasattr(as_path_attr, 'as_list'):
+                            as_path = as_path_attr.as_list()
+
                     routes.append({
-                        "network": route_key[0],
-                        "next_hop": str(route_info.get("next_hop", "")),
+                        "network": route.prefix,
+                        "next_hop": route.next_hop or "",
                         "protocol": "bgp",
-                        "as_path": route_info.get("as_path", [])
+                        "as_path": as_path,
+                        "source": route.source
                     })
+            except Exception:
+                pass
+
+        # Get IS-IS routes from SPF calculator
+        if self.isis_speaker:
+            try:
+                if hasattr(self.isis_speaker, 'spf_calculator'):
+                    isis_routes = self.isis_speaker.spf_calculator.get_combined_routing_table()
+                    for prefix, route in isis_routes.items():
+                        # Filter by destination if specified
+                        if destination is not None and prefix != destination:
+                            continue
+
+                        routes.append({
+                            "network": prefix,
+                            "next_hop": route.next_hop or "direct",
+                            "protocol": "isis",
+                            "cost": route.metric,
+                            "level": route.level,
+                            "route_type": route.route_type
+                        })
+                elif hasattr(self.isis_speaker, 'get_routes'):
+                    for route in self.isis_speaker.get_routes():
+                        if destination is not None and route.prefix != destination:
+                            continue
+                        routes.append({
+                            "network": route.prefix,
+                            "next_hop": route.next_hop or "direct",
+                            "protocol": "isis",
+                            "cost": route.metric,
+                            "level": route.level
+                        })
+            except Exception:
+                pass
 
         return {"routes": routes, "count": len(routes)}
+
+    async def _execute_ping(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute ping diagnostic using system ping"""
+        import subprocess
+        import re
+
+        target = params.get("target")
+        count = params.get("count", 3)
+        source = params.get("source")  # Optional source IP
+
+        if not target:
+            return {"success": False, "error": "No target specified"}
+
+        try:
+            # Build ping command
+            # -c: count, -W: timeout per packet (seconds), -I: source interface/IP
+            cmd = ["ping", "-c", str(count), "-W", "2"]
+            if source:
+                cmd.extend(["-I", source])
+            cmd.append(target)
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+
+            output = result.stdout + result.stderr
+
+            # Parse ping output
+            sent = 0
+            received = 0
+            rtt_min = None
+            rtt_avg = None
+            rtt_max = None
+
+            # Parse packet statistics
+            # "3 packets transmitted, 3 received, 0% packet loss"
+            stats_match = re.search(r'(\d+)\s+packets\s+transmitted,\s+(\d+)\s+(?:packets\s+)?received', output)
+            if stats_match:
+                sent = int(stats_match.group(1))
+                received = int(stats_match.group(2))
+
+            # Parse RTT statistics
+            # "rtt min/avg/max/mdev = 0.123/0.456/0.789/0.111 ms"
+            rtt_match = re.search(r'rtt\s+min/avg/max/\S+\s*=\s*([\d.]+)/([\d.]+)/([\d.]+)', output)
+            if rtt_match:
+                rtt_min = float(rtt_match.group(1))
+                rtt_avg = float(rtt_match.group(2))
+                rtt_max = float(rtt_match.group(3))
+
+            # Calculate packet loss
+            packet_loss = 0.0
+            if sent > 0:
+                packet_loss = ((sent - received) / sent) * 100
+
+            result_dict = {
+                "success": True,
+                "target": target,
+                "sent": sent,
+                "received": received,
+                "packet_loss": packet_loss,
+                "rtt_min": rtt_min,
+                "rtt_avg": rtt_avg,
+                "rtt_max": rtt_max,
+                "raw_output": output
+            }
+            if source:
+                result_dict["source"] = source
+            return result_dict
+
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Ping timed out", "target": target}
+        except FileNotFoundError:
+            return {"success": False, "error": "ping command not found", "target": target}
+        except Exception as e:
+            return {"success": False, "error": str(e), "target": target}
+
+    async def _execute_traceroute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute traceroute diagnostic using system traceroute"""
+        import subprocess
+        import re
+
+        target = params.get("target")
+        max_hops = params.get("max_hops", 15)
+
+        if not target:
+            return {"success": False, "error": "No target specified"}
+
+        try:
+            # Use system traceroute command
+            # -m: max TTL (hops), -w: wait time, -q: queries per hop
+            result = subprocess.run(
+                ["traceroute", "-m", str(max_hops), "-w", "2", "-q", "1", target],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            output = result.stdout + result.stderr
+
+            # Parse traceroute output
+            hops = []
+            reached = False
+
+            for line in output.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Skip the header line
+                if line.startswith('traceroute'):
+                    continue
+
+                # Parse hop lines: "1  10.0.0.1  0.123 ms"
+                # or "2  * * *"
+                hop_match = re.match(r'^\s*(\d+)\s+(.+)', line)
+                if hop_match:
+                    hop_num = int(hop_match.group(1))
+                    rest = hop_match.group(2).strip()
+
+                    if rest.startswith('*'):
+                        hops.append({"hop": hop_num, "ip": "*", "rtt": None})
+                    else:
+                        # Parse IP and RTT
+                        # Format: "hostname (IP) RTT ms" or "IP RTT ms"
+                        ip_match = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', rest)
+                        rtt_match = re.search(r'([\d.]+)\s*ms', rest)
+
+                        ip = ip_match.group(1) if ip_match else "?"
+                        rtt = float(rtt_match.group(1)) if rtt_match else None
+
+                        hops.append({"hop": hop_num, "ip": ip, "rtt": rtt})
+
+                        # Check if we reached the target
+                        if ip == target:
+                            reached = True
+
+            return {
+                "success": True,
+                "target": target,
+                "hops": hops,
+                "reached": reached,
+                "raw_output": output
+            }
+
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Traceroute timed out", "target": target}
+        except FileNotFoundError:
+            # Try tracepath as fallback (more commonly available on some systems)
+            try:
+                result = subprocess.run(
+                    ["tracepath", "-m", str(max_hops), target],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                # Simplified parsing for tracepath
+                return {
+                    "success": True,
+                    "target": target,
+                    "hops": [],
+                    "reached": False,
+                    "raw_output": result.stdout + result.stderr
+                }
+            except:
+                return {"success": False, "error": "traceroute/tracepath command not found", "target": target}
+        except Exception as e:
+            return {"success": False, "error": str(e), "target": target}
 
     def get_pending_actions(self) -> list[ActionResult]:
         """Get list of actions pending approval"""

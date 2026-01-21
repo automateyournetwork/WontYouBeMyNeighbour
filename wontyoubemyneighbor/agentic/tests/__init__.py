@@ -1,5 +1,5 @@
 """
-Unit Tests for Ralph Agentic Network Router
+Unit Tests for RubberBand Agentic Network Router
 
 Test suite covering all major components:
 - LLM interfaces
