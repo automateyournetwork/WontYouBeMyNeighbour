@@ -88,8 +88,8 @@ class SPFCalculator:
             shortest_costs = nx.single_source_dijkstra_path_length(
                 self.graph, self.router_id, weight='weight'
             )
-        except Exception as e:
-            logger.error(f"Dijkstra calculation failed: {e}")
+        except (nx.NetworkXError, nx.NodeNotFound, KeyError) as e:
+            logger.error(f"Dijkstra calculation failed: {type(e).__name__}: {e}")
             return {}
 
         # Step 3: Build routing table from shortest paths
@@ -166,12 +166,16 @@ class SPFCalculator:
                 if abr_id == self.router_id:
                     continue
 
-                # Get summary metric from LSA body
+                # Get summary metric from LSA body - validate required attributes
                 if not lsa.body:
                     continue
 
-                summary_metric = lsa.body.metric
-                network_mask = lsa.body.network_mask
+                # Safely get attributes with fallback for malformed LSAs
+                summary_metric = getattr(lsa.body, 'metric', None)
+                network_mask = getattr(lsa.body, 'network_mask', None)
+                if summary_metric is None or network_mask is None:
+                    logger.debug(f"Summary LSA from {abr_id} missing metric/mask attributes")
+                    continue
 
                 # Calculate cost to ABR
                 cost_to_abr = shortest_costs.get(abr_id, float('inf'))

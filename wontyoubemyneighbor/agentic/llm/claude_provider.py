@@ -87,9 +87,14 @@ class ClaudeProvider(BaseLLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens
             )
+            # Safely access response content
+            if not response.content:
+                raise RuntimeError("Claude returned empty response")
             return response.content[0].text
-        except Exception as e:
+        except anthropic.APIError as e:
             raise RuntimeError(f"Claude API error: {e}")
+        except (IndexError, AttributeError) as e:
+            raise RuntimeError(f"Invalid Claude response format: {e}")
 
     def get_provider_name(self) -> str:
         """Get provider name for logging"""

@@ -1,4 +1,4 @@
-# Testing dependencies for RubberBand agentic layer
+# Testing dependencies for ASI agentic layer
 
 # Core test framework
 pytest>=7.4.0

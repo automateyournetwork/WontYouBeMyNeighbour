@@ -1,0 +1,20 @@
+{
+  "links": [
+    {"id": "ss1-s1a", "a1": "super-spine-1", "i1": "eth1", "a2": "spine-1a", "i2": "eth1", "t": "ethernet", "c": 1, "description": "Super-Spine-1 to Pod-1 Spine-A"},
+    {"id": "ss1-s1b", "a1": "super-spine-1", "i1": "eth2", "a2": "spine-1b", "i2": "eth1", "t": "ethernet", "c": 1, "description": "Super-Spine-1 to Pod-1 Spine-B"},
+    {"id": "ss1-s2a", "a1": "super-spine-1", "i1": "eth3", "a2": "spine-2a", "i2": "eth1", "t": "ethernet", "c": 1, "description": "Super-Spine-1 to Pod-2 Spine-A"},
+    {"id": "ss1-s2b", "a1": "super-spine-1", "i1": "eth4", "a2": "spine-2b", "i2": "eth1", "t": "ethernet", "c": 1, "description": "Super-Spine-1 to Pod-2 Spine-B"},
+    {"id": "ss2-s1a", "a1": "super-spine-2", "i1": "eth1", "a2": "spine-1a", "i2": "eth2", "t": "ethernet", "c": 1, "description": "Super-Spine-2 to Pod-1 Spine-A"},
+    {"id": "ss2-s1b", "a1": "super-spine-2", "i1": "eth2", "a2": "spine-1b", "i2": "eth2", "t": "ethernet", "c": 1, "description": "Super-Spine-2 to Pod-1 Spine-B"},
+    {"id": "ss2-s2a", "a1": "super-spine-2", "i1": "eth3", "a2": "spine-2a", "i2": "eth2", "t": "ethernet", "c": 1, "description": "Super-Spine-2 to Pod-2 Spine-A"},
+    {"id": "ss2-s2b", "a1": "super-spine-2", "i1": "eth4", "a2": "spine-2b", "i2": "eth2", "t": "ethernet", "c": 1, "description": "Super-Spine-2 to Pod-2 Spine-B"},
+    {"id": "s1a-l1a", "a1": "spine-1a", "i1": "eth3", "a2": "leaf-1a", "i2": "eth1", "t": "ethernet", "c": 10, "description": "Pod-1 Spine-A to Leaf-A"},
+    {"id": "s1a-l1b", "a1": "spine-1a", "i1": "eth4", "a2": "leaf-1b", "i2": "eth1", "t": "ethernet", "c": 10, "description": "Pod-1 Spine-A to Leaf-B"},
+    {"id": "s1b-l1a", "a1": "spine-1b", "i1": "eth3", "a2": "leaf-1a", "i2": "eth2", "t": "ethernet", "c": 10, "description": "Pod-1 Spine-B to Leaf-A"},
+    {"id": "s1b-l1b", "a1": "spine-1b", "i1": "eth4", "a2": "leaf-1b", "i2": "eth2", "t": "ethernet", "c": 10, "description": "Pod-1 Spine-B to Leaf-B"},
+    {"id": "s2a-l2a", "a1": "spine-2a", "i1": "eth3", "a2": "leaf-2a", "i2": "eth1", "t": "ethernet", "c": 10, "description": "Pod-2 Spine-A to Leaf-A"},
+    {"id": "s2a-l2b", "a1": "spine-2a", "i1": "eth4", "a2": "leaf-2b", "i2": "eth1", "t": "ethernet", "c": 10, "description": "Pod-2 Spine-A to Leaf-B"},
+    {"id": "s2b-l2a", "a1": "spine-2b", "i1": "eth3", "a2": "leaf-2a", "i2": "eth2", "t": "ethernet", "c": 10, "description": "Pod-2 Spine-B to Leaf-A"},
+    {"id": "s2b-l2b", "a1": "spine-2b", "i1": "eth4", "a2": "leaf-2b", "i2": "eth2", "t": "ethernet", "c": 10, "description": "Pod-2 Spine-B to Leaf-B"}
+  ]
+}

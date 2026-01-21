@@ -2,7 +2,7 @@
 Safety Constraints
 
 Enforces safety rules for autonomous network actions.
-Prevents RubberBand from making dangerous changes without human approval.
+Prevents ASI from making dangerous changes without human approval.
 """
 
 from typing import Dict, Any, List, Optional
@@ -54,7 +54,7 @@ class SafetyConstraints:
                 "max": 65535
             },
             "critical_interfaces": [],  # Interfaces that require approval
-            "max_route_injections": 100,  # Max routes RubberBand can inject
+            "max_route_injections": 100,  # Max routes ASI can inject
             "min_change_interval": 60,  # Seconds between changes to same resource
             "require_approval_for": [
                 "graceful_shutdown",

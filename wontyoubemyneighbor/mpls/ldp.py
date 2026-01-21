@@ -269,8 +269,8 @@ class LDPSession:
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
-            except Exception:
-                pass
+            except (OSError, ConnectionError) as e:
+                self.logger.debug(f"Error closing writer: {e}")
 
         if old_state == LDPSessionState.OPERATIONAL and self.on_session_down:
             self.on_session_down()
@@ -561,6 +561,10 @@ class LDPSpeaker:
     ) -> None:
         """Handle incoming TCP connection"""
         peer_addr = writer.get_extra_info('peername')
+        if not peer_addr:
+            self.logger.warning("Could not get peer address from connection")
+            writer.close()
+            return
         peer_ip = peer_addr[0]
 
         self.logger.info(f"Incoming LDP connection from {peer_ip}")

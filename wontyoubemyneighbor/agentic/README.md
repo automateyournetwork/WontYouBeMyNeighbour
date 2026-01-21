@@ -1,4 +1,4 @@
-# RubberBand: Agentic Network Router
+# ASI: Agentic Network Router
 
 Transform wontyoubemyneighbor into an intelligent, conversational network router that understands natural language while maintaining native OSPF and BGP protocol participation.
 
@@ -36,7 +36,7 @@ Transform wontyoubemyneighbor into an intelligent, conversational network router
                        │
 ┌──────────────────────▼──────────────────────────────────┐
 │           Multi-Agent Coordination                       │
-│  • Gossip Protocol (RubberBand-to-RubberBand)                     │
+│  • Gossip Protocol (ASI-to-ASI)                     │
 │  • Consensus Engine (Distributed Voting)                │
 └──────────────────────┬──────────────────────────────────┘
                        │
@@ -113,7 +113,7 @@ curl -X POST http://localhost:8080/api/query \
 - **LLM Context**: Automatic network state injection
 
 ### 🤝 Multi-Agent Coordination
-- **Gossip Protocol**: Epidemic-style RubberBand-to-RubberBand communication
+- **Gossip Protocol**: Epidemic-style ASI-to-ASI communication
 - **Consensus Engine**: Distributed voting for critical actions
 - **Automatic Coordination**: Alert propagation, state sharing
 
@@ -140,7 +140,7 @@ from wontyoubemyneighbor.agentic.integration.bridge import AgenticBridge
 
 # Create agentic bridge
 bridge = AgenticBridge(
-    rubberband_id="rubberband-1",
+    asi_id="asi-1",
     claude_key="sk-ant-...",
     autonomous_mode=False
 )
@@ -189,7 +189,7 @@ proposal = bridge.consensus.create_proposal(
     required_votes=2
 )
 
-# Other RubberBand instances vote
+# Other ASI instances vote
 bridge.consensus.vote(proposal.proposal_id, VoteType.APPROVE)
 
 # Check status
@@ -228,7 +228,7 @@ bridge.llm.reset_conversation()
 
 ## Intent Types
 
-RubberBand understands these natural language intents:
+ASI understands these natural language intents:
 
 ### Query Intents
 - `QUERY_STATUS` - "What is the status?"
@@ -333,7 +333,7 @@ python wontyoubemyneighbor/agentic/api/client_example.py
 
 ## Contributing
 
-RubberBand is part of the wontyoubemyneighbor project. See main project README for contribution guidelines.
+ASI is part of the wontyoubemyneighbor project. See main project README for contribution guidelines.
 
 ## License
 

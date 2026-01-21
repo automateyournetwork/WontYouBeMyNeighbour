@@ -316,9 +316,9 @@ class ActionExecutor:
                             "cost": route_entry.cost,
                             "path": route_entry.path
                         })
-            except Exception as e:
-                # Log but continue - don't fail entirely
-                pass
+            except (AttributeError, KeyError, TypeError) as e:
+                # Log OSPF route retrieval error but continue with other protocols
+                self.logger.debug(f"OSPF route retrieval failed: {e}")
 
         # Get BGP routes from Loc-RIB
         if self.bgp_speaker:
@@ -345,8 +345,9 @@ class ActionExecutor:
                         "as_path": as_path,
                         "source": route.source
                     })
-            except Exception:
-                pass
+            except (AttributeError, KeyError, TypeError, ImportError) as e:
+                # Log BGP route retrieval error but continue with other protocols
+                self.logger.debug(f"BGP route retrieval failed: {e}")
 
         # Get IS-IS routes from SPF calculator
         if self.isis_speaker:
@@ -377,8 +378,9 @@ class ActionExecutor:
                             "cost": route.metric,
                             "level": route.level
                         })
-            except Exception:
-                pass
+            except (AttributeError, KeyError, TypeError) as e:
+                # Log IS-IS route retrieval error but continue
+                self.logger.debug(f"IS-IS route retrieval failed: {e}")
 
         return {"routes": routes, "count": len(routes)}
 
@@ -386,6 +388,7 @@ class ActionExecutor:
         """Execute ping diagnostic using system ping"""
         import subprocess
         import re
+        import ipaddress
 
         target = params.get("target")
         count = params.get("count", 3)
@@ -393,6 +396,19 @@ class ActionExecutor:
 
         if not target:
             return {"success": False, "error": "No target specified"}
+
+        # Validate target IP to prevent command injection
+        try:
+            ipaddress.ip_address(target)
+        except ValueError:
+            return {"success": False, "error": f"Invalid IP address: {target}"}
+
+        # Validate source IP if provided
+        if source:
+            try:
+                ipaddress.ip_address(source)
+            except ValueError:
+                return {"success": False, "error": f"Invalid source IP address: {source}"}
 
         try:
             # Build ping command
@@ -464,12 +480,19 @@ class ActionExecutor:
         """Execute traceroute diagnostic using system traceroute"""
         import subprocess
         import re
+        import ipaddress
 
         target = params.get("target")
         max_hops = params.get("max_hops", 15)
 
         if not target:
             return {"success": False, "error": "No target specified"}
+
+        # Validate target IP to prevent command injection
+        try:
+            ipaddress.ip_address(target)
+        except ValueError:
+            return {"success": False, "error": f"Invalid IP address: {target}"}
 
         try:
             # Use system traceroute command
@@ -547,9 +570,10 @@ class ActionExecutor:
                     "reached": False,
                     "raw_output": result.stdout + result.stderr
                 }
-            except:
+            except (subprocess.SubprocessError, FileNotFoundError, OSError) as e:
+                self.logger.debug(f"tracepath command failed: {e}")
                 return {"success": False, "error": "traceroute/tracepath command not found", "target": target}
-        except Exception as e:
+        except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError) as e:
             return {"success": False, "error": str(e), "target": target}
 
     def get_pending_actions(self) -> list[ActionResult]:

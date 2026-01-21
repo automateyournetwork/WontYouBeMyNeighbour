@@ -182,7 +182,10 @@ def validate(data: Union[str, Dict], schema_type: str = None) -> Dict[str, Any]:
 
 def save_to_file(obj: Any, filepath: Union[str, Path], compressed: bool = False) -> bool:
     """
-    Save object to TOON file
+    Save object to TOON file with atomic write operation.
+
+    Uses a temporary file and atomic rename to prevent corruption
+    if the process is interrupted during write.
 
     Args:
         obj: Object to save
@@ -190,33 +193,65 @@ def save_to_file(obj: Any, filepath: Union[str, Path], compressed: bool = False)
         compressed: If True, compress the file
 
     Returns:
-        True if successful
+        True if successful, False on error
+
+    Raises:
+        IOError: If file operations fail
+        ValueError: If serialization fails
     """
+    import tempfile
+    import os
+
     filepath = Path(filepath)
 
     # Ensure parent directory exists
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
-    # Serialize
-    toon_str = serialize(obj, indent=2)
+    try:
+        # Serialize first to catch errors before writing
+        toon_str = serialize(obj, indent=2)
 
-    # Optionally compress
-    if compressed:
-        toon_str = compress(toon_str)
-        # Add .gz extension if not present
-        if not filepath.suffix == '.gz':
-            filepath = filepath.with_suffix(filepath.suffix + '.gz')
+        # Optionally compress
+        if compressed:
+            toon_str = compress(toon_str)
+            # Add .gz extension if not present
+            if not filepath.suffix == '.gz':
+                filepath = filepath.with_suffix(filepath.suffix + '.gz')
 
-    # Write file
-    with open(filepath, 'w') as f:
-        f.write(toon_str)
+        # Write to temporary file first (atomic operation)
+        # Create temp file in same directory to ensure atomic rename works
+        fd, temp_path = tempfile.mkstemp(
+            suffix='.tmp',
+            prefix='.toon_',
+            dir=filepath.parent
+        )
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(toon_str)
+                f.flush()
+                os.fsync(f.fileno())  # Ensure data is written to disk
 
-    return True
+            # Atomic rename (on POSIX systems)
+            os.replace(temp_path, filepath)
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
+
+        return True
+
+    except (IOError, OSError) as e:
+        raise IOError(f"Failed to save file {filepath}: {e}")
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Failed to serialize object: {e}")
 
 
 def load_from_file(filepath: Union[str, Path], target_type: Type[T] = None) -> Union[Dict, T]:
     """
-    Load object from TOON file
+    Load object from TOON file with proper error handling.
 
     Args:
         filepath: Source file path
@@ -224,17 +259,38 @@ def load_from_file(filepath: Union[str, Path], target_type: Type[T] = None) -> U
 
     Returns:
         Loaded object or dict
+
+    Raises:
+        FileNotFoundError: If file does not exist
+        IOError: If file cannot be read
+        ValueError: If content is corrupted or invalid
     """
     filepath = Path(filepath)
 
-    with open(filepath, 'r') as f:
-        content = f.read()
+    if not filepath.exists():
+        raise FileNotFoundError(f"TOON file not found: {filepath}")
 
-    # Check if compressed (base64 encoded gzip starts with specific characters)
-    if content.startswith('H4sI'):  # gzip magic number in base64
-        content = decompress(content)
+    try:
+        with open(filepath, 'r') as f:
+            content = f.read()
 
-    return deserialize(content, target_type)
+        if not content.strip():
+            raise ValueError(f"TOON file is empty: {filepath}")
+
+        # Check if compressed (base64 encoded gzip starts with specific characters)
+        if content.startswith('H4sI'):  # gzip magic number in base64
+            try:
+                content = decompress(content)
+            except Exception as e:
+                raise ValueError(f"Failed to decompress TOON file {filepath}: {e}")
+
+        try:
+            return deserialize(content, target_type)
+        except Exception as e:
+            raise ValueError(f"Failed to deserialize TOON file {filepath}: {e}")
+
+    except IOError as e:
+        raise IOError(f"Failed to read TOON file {filepath}: {e}")
 
 
 def get_token_count(data: Union[str, Any]) -> int:

@@ -28,7 +28,7 @@ class PersistenceManager:
         Initialize persistence manager
 
         Args:
-            storage_path: Base storage path (default: ~/.rubberband/storage)
+            storage_path: Base storage path (default: ~/.asi/storage)
         """
         self.storage_path = storage_path or get_default_storage_path()
         ensure_storage_dirs(self.storage_path)
@@ -38,8 +38,20 @@ class PersistenceManager:
 
     # Agent operations
 
-    def save_agent(self, agent: TOONAgent, backup: bool = True) -> Path:
-        """Save agent to storage"""
+    def save_agent(self, agent: TOONAgent, backup: bool = True, enforce_mcps: bool = True) -> Path:
+        """
+        Save agent to storage
+
+        Args:
+            agent: Agent to save
+            backup: Whether to create backup if file exists
+            enforce_mcps: Whether to ensure mandatory MCPs are present (default: True)
+
+        Returns:
+            Path to saved file
+        """
+        if enforce_mcps:
+            agent = ensure_mandatory_mcps(agent)
         return self.agents.save(agent, backup)
 
     def load_agent(self, agent_id: str) -> Optional[TOONAgent]:
@@ -201,9 +213,9 @@ def get_manager() -> PersistenceManager:
     return _default_manager
 
 
-def save_agent(agent: TOONAgent, backup: bool = True) -> Path:
-    """Save agent using default manager"""
-    return get_manager().save_agent(agent, backup)
+def save_agent(agent: TOONAgent, backup: bool = True, enforce_mcps: bool = True) -> Path:
+    """Save agent using default manager (enforces mandatory MCPs by default)"""
+    return get_manager().save_agent(agent, backup, enforce_mcps)
 
 
 def load_agent(agent_id: str) -> Optional[TOONAgent]:
@@ -278,6 +290,497 @@ def capture_agent_state(
 
     agent.state = state
     return agent
+
+
+# Mandatory MCPs per spec (Quality Gate 2)
+MANDATORY_MCP_TYPES = {"gait", "pyats", "rfc", "markmap"}
+
+
+def get_mandatory_mcps() -> List[TOONMCPConfig]:
+    """
+    Get the 4 mandatory MCPs that every agent must have.
+
+    Per spec:
+    - GAIT: Conversation tracking with audit UI
+    - pyATS: Self-testing with AETest
+    - RFC: Protocol knowledge base
+    - Markmap: Real-time mind maps of agent state
+
+    Returns:
+        List of mandatory MCP configs (all enabled)
+    """
+    all_mcps = create_default_mcps()
+    return [mcp for mcp in all_mcps if mcp.t in MANDATORY_MCP_TYPES]
+
+
+def ensure_mandatory_mcps(agent: 'TOONAgent') -> 'TOONAgent':
+    """
+    Ensure agent has all 4 mandatory MCPs.
+
+    If any mandatory MCP is missing, it will be added.
+
+    Args:
+        agent: Agent to validate/update
+
+    Returns:
+        Agent with all mandatory MCPs
+    """
+    # Get existing MCP types
+    existing_types = {mcp.t for mcp in agent.mcps} if agent.mcps else set()
+
+    # Find missing mandatory MCPs
+    missing = MANDATORY_MCP_TYPES - existing_types
+
+    if missing:
+        # Get mandatory MCPs and add the missing ones
+        mandatory = get_mandatory_mcps()
+        for mcp in mandatory:
+            if mcp.t in missing:
+                if agent.mcps is None:
+                    agent.mcps = []
+                agent.mcps.append(mcp)
+
+    return agent
+
+
+def validate_agent_mcps(agent: 'TOONAgent') -> Dict[str, Any]:
+    """
+    Validate that agent has all required MCPs.
+
+    Args:
+        agent: Agent to validate
+
+    Returns:
+        Validation result dict with 'valid', 'missing', and 'message' keys
+    """
+    existing_types = {mcp.t for mcp in agent.mcps} if agent.mcps else set()
+    missing = MANDATORY_MCP_TYPES - existing_types
+
+    if missing:
+        return {
+            "valid": False,
+            "missing": list(missing),
+            "message": f"Agent is missing mandatory MCPs: {', '.join(sorted(missing))}"
+        }
+
+    return {
+        "valid": True,
+        "missing": [],
+        "message": "Agent has all mandatory MCPs"
+    }
+
+
+# Optional MCPs that require configuration
+OPTIONAL_MCP_TYPES = {"servicenow", "netbox", "slack", "github"}
+
+
+def get_optional_mcps() -> List[TOONMCPConfig]:
+    """
+    Get optional MCPs that can be configured.
+
+    Optional MCPs include:
+    - ServiceNow: ITSM integration
+    - NetBox: DCIM/IPAM
+    - Slack: Team notifications
+    - GitHub: Version control
+
+    Returns:
+        List of optional MCP configs (all disabled by default)
+    """
+    all_mcps = create_default_mcps()
+    return [mcp for mcp in all_mcps if mcp.t in OPTIONAL_MCP_TYPES]
+
+
+def get_mcp_config_fields(mcp_type: str) -> List[Dict[str, Any]]:
+    """
+    Get configuration fields required for an MCP.
+
+    Args:
+        mcp_type: MCP type (servicenow, netbox, slack, github)
+
+    Returns:
+        List of config field definitions
+    """
+    all_mcps = create_default_mcps()
+    for mcp in all_mcps:
+        if mcp.t == mcp_type:
+            return mcp.c.get("_config_fields", [])
+    return []
+
+
+def configure_optional_mcp(
+    agent: 'TOONAgent',
+    mcp_type: str,
+    config: Dict[str, Any],
+    enable: bool = True
+) -> 'TOONAgent':
+    """
+    Configure an optional MCP on an agent.
+
+    Args:
+        agent: Agent to configure
+        mcp_type: MCP type (servicenow, netbox, slack, github)
+        config: Configuration values (e.g., API keys, URLs)
+        enable: Whether to enable the MCP
+
+    Returns:
+        Updated agent
+    """
+    if mcp_type not in OPTIONAL_MCP_TYPES:
+        raise ValueError(f"Invalid optional MCP type: {mcp_type}. Valid types: {OPTIONAL_MCP_TYPES}")
+
+    # Find or create the MCP config
+    mcp_found = False
+    if agent.mcps:
+        for mcp in agent.mcps:
+            if mcp.t == mcp_type:
+                # Update existing MCP
+                mcp.e = enable
+                # Merge config (preserving internal fields)
+                internal_fields = {k: v for k, v in mcp.c.items() if k.startswith("_")}
+                mcp.c = {**config, **internal_fields}
+                mcp_found = True
+                break
+
+    if not mcp_found:
+        # Add new MCP from defaults
+        optional_mcps = get_optional_mcps()
+        for default_mcp in optional_mcps:
+            if default_mcp.t == mcp_type:
+                # Create new MCP with provided config
+                internal_fields = {k: v for k, v in default_mcp.c.items() if k.startswith("_")}
+                new_mcp = TOONMCPConfig(
+                    id=default_mcp.id,
+                    t=default_mcp.t,
+                    n=default_mcp.n,
+                    d=default_mcp.d,
+                    url=default_mcp.url,
+                    c={**config, **internal_fields},
+                    e=enable
+                )
+                if agent.mcps is None:
+                    agent.mcps = []
+                agent.mcps.append(new_mcp)
+                break
+
+    return agent
+
+
+def enable_optional_mcp(agent: 'TOONAgent', mcp_type: str) -> 'TOONAgent':
+    """
+    Enable an optional MCP on an agent (if already configured).
+
+    Args:
+        agent: Agent to update
+        mcp_type: MCP type to enable
+
+    Returns:
+        Updated agent
+    """
+    if agent.mcps:
+        for mcp in agent.mcps:
+            if mcp.t == mcp_type:
+                mcp.e = True
+                break
+    return agent
+
+
+def disable_optional_mcp(agent: 'TOONAgent', mcp_type: str) -> 'TOONAgent':
+    """
+    Disable an optional MCP on an agent.
+
+    Args:
+        agent: Agent to update
+        mcp_type: MCP type to disable
+
+    Returns:
+        Updated agent
+    """
+    if agent.mcps:
+        for mcp in agent.mcps:
+            if mcp.t == mcp_type:
+                mcp.e = False
+                break
+    return agent
+
+
+def get_agent_mcp_status(agent: 'TOONAgent') -> Dict[str, Any]:
+    """
+    Get MCP status for an agent.
+
+    Returns summary of mandatory and optional MCPs with their status.
+
+    Args:
+        agent: Agent to check
+
+    Returns:
+        Dictionary with MCP status information
+    """
+    mandatory_status = []
+    optional_status = []
+
+    if agent.mcps:
+        for mcp in agent.mcps:
+            status = {
+                "id": mcp.id,
+                "type": mcp.t,
+                "name": mcp.n,
+                "enabled": mcp.e,
+                "requires_config": mcp.c.get("_requires_config", False),
+                "has_config": bool({k: v for k, v in mcp.c.items() if not k.startswith("_")})
+            }
+            if mcp.t in MANDATORY_MCP_TYPES:
+                mandatory_status.append(status)
+            elif mcp.t in OPTIONAL_MCP_TYPES:
+                optional_status.append(status)
+
+    # Check for missing mandatory MCPs
+    existing_mandatory = {s["type"] for s in mandatory_status}
+    missing_mandatory = MANDATORY_MCP_TYPES - existing_mandatory
+
+    return {
+        "mandatory": {
+            "complete": len(missing_mandatory) == 0,
+            "missing": list(missing_mandatory),
+            "mcps": mandatory_status
+        },
+        "optional": {
+            "configured": [s for s in optional_status if s["has_config"]],
+            "available": list(OPTIONAL_MCP_TYPES),
+            "mcps": optional_status
+        },
+        "total_enabled": sum(1 for m in agent.mcps if m.e) if agent.mcps else 0,
+        "total_configured": len(agent.mcps) if agent.mcps else 0
+    }
+
+
+# =============================================================================
+# Custom MCP Import Functions (Quality Gate 9)
+# =============================================================================
+
+def validate_custom_mcp_json(json_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate custom MCP JSON structure.
+
+    Expected JSON format:
+    {
+        "id": "my-custom-mcp",
+        "name": "My Custom MCP",
+        "description": "Description of the MCP",
+        "url": "https://github.com/org/mcp-server",
+        "config": {
+            "key1": "value1",
+            "key2": "value2"
+        },
+        "config_fields": [
+            {"id": "field1", "label": "Field 1", "type": "text", "required": true},
+            {"id": "field2", "label": "Field 2", "type": "password", "required": false}
+        ],
+        "enabled": true
+    }
+
+    Args:
+        json_data: JSON data to validate
+
+    Returns:
+        Validation result with 'valid', 'errors', and 'normalized' keys
+    """
+    errors = []
+    normalized = {}
+
+    # Required fields
+    if not json_data.get("id"):
+        errors.append("Missing required field: 'id'")
+    else:
+        # Validate ID format (alphanumeric, hyphens, underscores)
+        mcp_id = json_data["id"]
+        if not isinstance(mcp_id, str) or not mcp_id.replace("-", "").replace("_", "").isalnum():
+            errors.append("Invalid 'id': must be alphanumeric with hyphens/underscores only")
+        else:
+            normalized["id"] = mcp_id
+
+    if not json_data.get("url"):
+        errors.append("Missing required field: 'url'")
+    else:
+        url = json_data["url"]
+        if not isinstance(url, str) or not (url.startswith("http://") or url.startswith("https://")):
+            errors.append("Invalid 'url': must be a valid HTTP/HTTPS URL")
+        else:
+            normalized["url"] = url
+
+    # Optional fields with defaults
+    normalized["name"] = json_data.get("name", json_data.get("id", "Custom MCP"))
+    normalized["description"] = json_data.get("description", "")
+
+    # Validate config
+    config = json_data.get("config", {})
+    if not isinstance(config, dict):
+        errors.append("Invalid 'config': must be a dictionary")
+    else:
+        normalized["config"] = config
+
+    # Validate config_fields
+    config_fields = json_data.get("config_fields", [])
+    if not isinstance(config_fields, list):
+        errors.append("Invalid 'config_fields': must be a list")
+    else:
+        validated_fields = []
+        for i, field in enumerate(config_fields):
+            if not isinstance(field, dict):
+                errors.append(f"Invalid config_field at index {i}: must be a dictionary")
+                continue
+            if not field.get("id"):
+                errors.append(f"Missing 'id' in config_field at index {i}")
+                continue
+            if not field.get("label"):
+                errors.append(f"Missing 'label' in config_field at index {i}")
+                continue
+            validated_fields.append({
+                "id": field["id"],
+                "label": field["label"],
+                "type": field.get("type", "text"),
+                "required": field.get("required", False),
+                "placeholder": field.get("placeholder", ""),
+                "hint": field.get("hint", "")
+            })
+        normalized["config_fields"] = validated_fields
+
+    # Enabled flag
+    normalized["enabled"] = json_data.get("enabled", True)
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "normalized": normalized if len(errors) == 0 else None
+    }
+
+
+def import_custom_mcp(json_data: Dict[str, Any]) -> TOONMCPConfig:
+    """
+    Import a custom MCP from JSON data.
+
+    Args:
+        json_data: Validated JSON data for custom MCP
+
+    Returns:
+        TOONMCPConfig for the custom MCP
+
+    Raises:
+        ValueError: If validation fails
+    """
+    validation = validate_custom_mcp_json(json_data)
+    if not validation["valid"]:
+        raise ValueError(f"Invalid custom MCP JSON: {'; '.join(validation['errors'])}")
+
+    data = validation["normalized"]
+
+    # Build config with internal fields
+    config = data.get("config", {}).copy()
+    config["_config_fields"] = data.get("config_fields", [])
+    config["_requires_config"] = len(data.get("config_fields", [])) > 0
+    config["_custom"] = True  # Mark as custom MCP
+
+    return TOONMCPConfig(
+        id=data["id"],
+        t="custom",  # Custom MCPs have type "custom"
+        n=data["name"],
+        d=data["description"],
+        url=data["url"],
+        c=config,
+        e=data["enabled"]
+    )
+
+
+def add_custom_mcp_to_agent(agent: 'TOONAgent', json_data: Dict[str, Any]) -> 'TOONAgent':
+    """
+    Add a custom MCP to an agent from JSON data.
+
+    Args:
+        agent: Agent to update
+        json_data: Custom MCP JSON data
+
+    Returns:
+        Updated agent with custom MCP added
+
+    Raises:
+        ValueError: If validation fails or MCP already exists
+    """
+    custom_mcp = import_custom_mcp(json_data)
+
+    # Check for duplicate ID
+    if agent.mcps:
+        for existing in agent.mcps:
+            if existing.id == custom_mcp.id:
+                raise ValueError(f"MCP with ID '{custom_mcp.id}' already exists on agent")
+    else:
+        agent.mcps = []
+
+    agent.mcps.append(custom_mcp)
+    return agent
+
+
+def remove_custom_mcp_from_agent(agent: 'TOONAgent', mcp_id: str) -> 'TOONAgent':
+    """
+    Remove a custom MCP from an agent.
+
+    Only custom MCPs can be removed. Mandatory MCPs cannot be removed.
+
+    Args:
+        agent: Agent to update
+        mcp_id: ID of the custom MCP to remove
+
+    Returns:
+        Updated agent with custom MCP removed
+
+    Raises:
+        ValueError: If MCP is mandatory or not found
+    """
+    if not agent.mcps:
+        raise ValueError(f"MCP '{mcp_id}' not found on agent")
+
+    # Find the MCP
+    found_mcp = None
+    for mcp in agent.mcps:
+        if mcp.id == mcp_id:
+            found_mcp = mcp
+            break
+
+    if not found_mcp:
+        raise ValueError(f"MCP '{mcp_id}' not found on agent")
+
+    # Check if it's mandatory
+    if found_mcp.t in MANDATORY_MCP_TYPES:
+        raise ValueError(f"Cannot remove mandatory MCP '{mcp_id}' (type: {found_mcp.t})")
+
+    # Remove the MCP
+    agent.mcps = [m for m in agent.mcps if m.id != mcp_id]
+    return agent
+
+
+def list_custom_mcps(agent: 'TOONAgent') -> List[Dict[str, Any]]:
+    """
+    List all custom MCPs on an agent.
+
+    Args:
+        agent: Agent to check
+
+    Returns:
+        List of custom MCP information
+    """
+    custom_mcps = []
+    if agent.mcps:
+        for mcp in agent.mcps:
+            if mcp.c.get("_custom", False) or mcp.t == "custom":
+                custom_mcps.append({
+                    "id": mcp.id,
+                    "name": mcp.n,
+                    "description": mcp.d,
+                    "url": mcp.url,
+                    "enabled": mcp.e,
+                    "config_fields": mcp.c.get("_config_fields", []),
+                    "has_config": bool({k: v for k, v in mcp.c.items() if not k.startswith("_")})
+                })
+    return custom_mcps
 
 
 def create_default_mcps() -> List[TOONMCPConfig]:

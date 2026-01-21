@@ -1,5 +1,5 @@
 /**
- * RubberBand Network Monitor
+ * ASI Network Monitor
  *
  * JavaScript for monitoring deployed multi-agent networks
  */
@@ -38,7 +38,11 @@ async function refreshNetworks() {
 }
 
 // Load saved networks from persistence
+// TODO: Feature not yet implemented - disabled until save/load ASI is built
 async function loadSavedNetworks() {
+    // Disabled - saved networks feature not yet implemented
+    return;
+    /*
     try {
         const response = await fetch('/api/wizard/libraries/networks');
         savedNetworks = await response.json();
@@ -46,6 +50,7 @@ async function loadSavedNetworks() {
     } catch (error) {
         console.error('Failed to load saved networks:', error);
     }
+    */
 }
 
 // Render deployed networks
@@ -67,6 +72,11 @@ function renderNetworks() {
             ${deployedNetworks.map(network => renderNetworkCard(network)).join('')}
         </div>
     `;
+
+    // Auto-load agent details for each network
+    deployedNetworks.forEach(network => {
+        viewNetworkDetails(network.network_id);
+    });
 }
 
 // Render a single network card

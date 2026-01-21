@@ -38,6 +38,7 @@ class ContainerInfo:
     created: str
     network: Optional[str] = None
     ip_address: Optional[str] = None
+    ip_address_v6: Optional[str] = None  # IPv6 address for dual-stack support
     ports: Dict[str, Any] = field(default_factory=dict)
     labels: Dict[str, str] = field(default_factory=dict)
     health: Optional[str] = None
@@ -51,6 +52,10 @@ class NetworkInfo:
     driver: str
     subnet: Optional[str] = None
     gateway: Optional[str] = None
+    # IPv6 dual-stack support (3-layer architecture)
+    subnet6: Optional[str] = None  # IPv6 subnet (e.g., "fd00:docker:1::/64")
+    gateway6: Optional[str] = None  # IPv6 gateway
+    ipv6_enabled: bool = False
     containers: List[str] = field(default_factory=list)
     labels: Dict[str, str] = field(default_factory=dict)
 
@@ -148,16 +153,27 @@ class DockerManager:
         name: str,
         subnet: Optional[str] = None,
         gateway: Optional[str] = None,
+        subnet6: Optional[str] = None,
+        gateway6: Optional[str] = None,
+        enable_ipv6: bool = False,
         driver: str = "bridge",
         labels: Optional[Dict[str, str]] = None
     ) -> NetworkInfo:
         """
-        Create a Docker network
+        Create a Docker network with optional dual-stack (IPv4 + IPv6) support
+
+        3-Layer Network Architecture:
+          Layer 1: Docker Network (this layer) - container connectivity
+          Layer 2: ASI Overlay (IPv6 agent mesh) - auto-configured per agent
+          Layer 3: Underlay (user-defined routing topology)
 
         Args:
             name: Network name
-            subnet: CIDR subnet (e.g., "172.20.0.0/16")
-            gateway: Gateway IP
+            subnet: IPv4 CIDR subnet (e.g., "172.20.0.0/16")
+            gateway: IPv4 Gateway IP
+            subnet6: IPv6 CIDR subnet (e.g., "fd00:docker:1::/64")
+            gateway6: IPv6 Gateway
+            enable_ipv6: Enable IPv6 on the network (required for dual-stack)
             driver: Network driver (bridge, overlay, etc.)
             labels: Network labels
 
@@ -175,24 +191,49 @@ class DockerManager:
         except NotFound:
             pass
 
-        # Build IPAM config if subnet specified
-        ipam_config = None
+        # Build IPAM config with optional dual-stack
+        ipam_pools = []
+
+        # IPv4 pool
         if subnet:
-            ipam_pool = docker.types.IPAMPool(
+            ipam_pools.append(docker.types.IPAMPool(
                 subnet=subnet,
                 gateway=gateway
-            )
-            ipam_config = docker.types.IPAMConfig(pool_configs=[ipam_pool])
+            ))
 
-        # Create network
+        # IPv6 pool (for dual-stack)
+        if subnet6 and enable_ipv6:
+            ipam_pools.append(docker.types.IPAMPool(
+                subnet=subnet6,
+                gateway=gateway6
+            ))
+            self.logger.info(f"IPv6 enabled for network {name}: {subnet6}")
+
+        ipam_config = None
+        if ipam_pools:
+            ipam_config = docker.types.IPAMConfig(pool_configs=ipam_pools)
+
+        # Prepare network options for IPv6
+        network_options = {}
+        if enable_ipv6 and driver == "bridge":
+            # Enable IPv6 routing in bridge network
+            network_options["com.docker.network.bridge.enable_ip_masquerade"] = "true"
+
+        # Create network with dual-stack support
         network = self.client.networks.create(
             name=name,
             driver=driver,
             ipam=ipam_config,
-            labels=labels or {"rubberband.managed": "true"}
+            enable_ipv6=enable_ipv6,
+            options=network_options if network_options else None,
+            labels=labels or {"asi.managed": "true"}
         )
 
-        self.logger.info(f"Created Docker network: {name} ({subnet or 'auto'})")
+        subnet_info = f"{subnet or 'auto'}"
+        if subnet6 and enable_ipv6:
+            subnet_info += f", {subnet6}"
+        self.logger.info(f"Created Docker network: {name} ({subnet_info})")
+
         return self._network_to_info(network)
 
     def get_network(self, name: str) -> Optional[NetworkInfo]:
@@ -240,12 +281,12 @@ class DockerManager:
             self.logger.error(f"Error deleting network {name}: {e}")
             return False
 
-    def list_networks(self, rubberband_only: bool = True) -> List[NetworkInfo]:
+    def list_networks(self, asi_only: bool = True) -> List[NetworkInfo]:
         """
         List Docker networks
 
         Args:
-            rubberband_only: Only return RubberBand-managed networks
+            asi_only: Only return ASI-managed networks
 
         Returns:
             List of NetworkInfo
@@ -254,8 +295,8 @@ class DockerManager:
             return []
 
         filters = {}
-        if rubberband_only:
-            filters["label"] = "rubberband.managed=true"
+        if asi_only:
+            filters["label"] = "asi.managed=true"
 
         networks = self.client.networks.list(filters=filters)
         return [self._network_to_info(n) for n in networks]
@@ -263,18 +304,42 @@ class DockerManager:
     def _network_to_info(self, network) -> NetworkInfo:
         """Convert Docker network to NetworkInfo"""
         attrs = network.attrs
-        ipam = attrs.get("IPAM", {}).get("Config", [{}])[0]
+        ipam_configs = attrs.get("IPAM", {}).get("Config", [])
+
+        # Parse IPv4 and IPv6 configurations
+        subnet = None
+        gateway = None
+        subnet6 = None
+        gateway6 = None
+
+        for config in ipam_configs:
+            config_subnet = config.get("Subnet", "")
+            config_gateway = config.get("Gateway")
+
+            # Check if IPv6 (contains ':')
+            if ':' in config_subnet:
+                subnet6 = config_subnet
+                gateway6 = config_gateway
+            else:
+                subnet = config_subnet
+                gateway = config_gateway
 
         containers = []
         for container_id in attrs.get("Containers", {}).keys():
             containers.append(container_id[:12])
 
+        # Check if IPv6 is enabled
+        ipv6_enabled = attrs.get("EnableIPv6", False)
+
         return NetworkInfo(
             id=network.id[:12],
             name=network.name,
             driver=attrs.get("Driver", "unknown"),
-            subnet=ipam.get("Subnet"),
-            gateway=ipam.get("Gateway"),
+            subnet=subnet,
+            gateway=gateway,
+            subnet6=subnet6,
+            gateway6=gateway6,
+            ipv6_enabled=ipv6_enabled,
             containers=containers,
             labels=attrs.get("Labels", {})
         )
@@ -336,8 +401,8 @@ class DockerManager:
 
         # Default labels
         default_labels = {
-            "rubberband.managed": "true",
-            "rubberband.created": datetime.now().isoformat()
+            "asi.managed": "true",
+            "asi.created": datetime.now().isoformat()
         }
         if labels:
             default_labels.update(labels)
@@ -463,12 +528,12 @@ class DockerManager:
             self.logger.error(f"Error getting logs for {name}: {e}")
             return None
 
-    def list_containers(self, rubberband_only: bool = True, all: bool = True) -> List[ContainerInfo]:
+    def list_containers(self, asi_only: bool = True, all: bool = True) -> List[ContainerInfo]:
         """
         List containers
 
         Args:
-            rubberband_only: Only return RubberBand-managed containers
+            asi_only: Only return ASI-managed containers
             all: Include stopped containers
 
         Returns:
@@ -478,8 +543,8 @@ class DockerManager:
             return []
 
         filters = {}
-        if rubberband_only:
-            filters["label"] = "rubberband.managed=true"
+        if asi_only:
+            filters["label"] = "asi.managed=true"
 
         containers = self.client.containers.list(all=all, filters=filters)
         return [self._container_to_info(c) for c in containers]
@@ -493,12 +558,17 @@ class DockerManager:
         networks = network_settings.get("Networks", {})
         network_name = None
         ip_address = None
+        ip_address_v6 = None
 
         # First, try to find a non-bridge network (our custom networks)
         for name, config in networks.items():
             if name != "bridge":
                 network_name = name
                 ip_address = config.get("IPAddress")
+                # Get IPv6 address if available (dual-stack)
+                ipv6_addr = config.get("GlobalIPv6Address")
+                if ipv6_addr:
+                    ip_address_v6 = ipv6_addr
                 break
 
         # Fall back to any network if no custom network found
@@ -506,6 +576,9 @@ class DockerManager:
             for name, config in networks.items():
                 network_name = name
                 ip_address = config.get("IPAddress")
+                ipv6_addr = config.get("GlobalIPv6Address")
+                if ipv6_addr:
+                    ip_address_v6 = ipv6_addr
                 break
 
         # Get health status
@@ -521,6 +594,7 @@ class DockerManager:
             created=attrs.get("Created", ""),
             network=network_name,
             ip_address=ip_address,
+            ip_address_v6=ip_address_v6,
             ports=network_settings.get("Ports", {}),
             labels=attrs.get("Config", {}).get("Labels", {}),
             health=health

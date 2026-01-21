@@ -6,6 +6,7 @@ Orchestrates LLM queries, decision-making, and autonomous actions.
 """
 
 from typing import Dict, Any, Optional, List
+from datetime import datetime
 import asyncio
 
 from ..llm.interface import LLMInterface, LLMProvider
@@ -28,13 +29,13 @@ class AgenticBridge:
 
     def __init__(
         self,
-        rubberband_id: str,
+        asi_id: str,
         openai_key: Optional[str] = None,
         claude_key: Optional[str] = None,
         gemini_key: Optional[str] = None,
         autonomous_mode: bool = False
     ):
-        self.rubberband_id = rubberband_id
+        self.asi_id = asi_id
 
         # Initialize LLM interface
         self.llm = LLMInterface(
@@ -59,8 +60,8 @@ class AgenticBridge:
         self.analytics = NetworkAnalytics(self.state_manager)
 
         # Initialize multi-agent layer
-        self.gossip = GossipProtocol(rubberband_id=rubberband_id)
-        self.consensus = ConsensusEngine(rubberband_id=rubberband_id, gossip_protocol=self.gossip)
+        self.gossip = GossipProtocol(asi_id=asi_id)
+        self.consensus = ConsensusEngine(asi_id=asi_id, gossip_protocol=self.gossip)
 
         # Protocol connectors (set via dependency injection)
         self.ospf_connector = None
@@ -70,13 +71,18 @@ class AgenticBridge:
         self.agent_config: Optional[Dict[str, Any]] = None
         self.interfaces: List[Dict[str, Any]] = []
 
+        # GAIT: Conversation and action history tracking
+        self.conversation_history: List[Dict[str, Any]] = []
+        self.action_history: List[Dict[str, Any]] = []
+        self._max_history_length = 1000  # Maximum items to retain
+
         # State update task
         self._state_update_task: Optional[asyncio.Task] = None
         self._running = False
 
     async def initialize(self):
         """Initialize all agentic components"""
-        print(f"[AgenticBridge] Initializing RubberBand {self.rubberband_id}...")
+        print(f"[AgenticBridge] Initializing ASI {self.asi_id}...")
 
         # Initialize LLM providers
         await self.llm.initialize_providers()
@@ -139,6 +145,9 @@ class AgenticBridge:
 
         This is the main entry point for human interaction.
         """
+        # Record user message in conversation history (GAIT)
+        self._record_conversation('user', user_message)
+
         # Update network state
         await self.state_manager.update_state()
         context = self.state_manager.get_llm_context()
@@ -219,7 +228,47 @@ class AgenticBridge:
         else:
             # Use LLM for complex queries
             response = await self.llm.query(user_message)
-            return response or "I'm not sure how to help with that."
+            response = response or "I'm not sure how to help with that."
+            self._record_conversation('assistant', response)
+            return response
+
+    def _record_conversation(self, role: str, content: str) -> None:
+        """
+        Record a conversation message for GAIT tracking.
+
+        Args:
+            role: 'user' or 'assistant'
+            content: Message content
+        """
+        self.conversation_history.append({
+            'role': role,
+            'content': content,
+            'timestamp': datetime.now().isoformat()
+        })
+
+        # Trim history if too long
+        if len(self.conversation_history) > self._max_history_length:
+            self.conversation_history = self.conversation_history[-self._max_history_length:]
+
+    def _record_action(self, action: str, result: Any, success: bool = True) -> None:
+        """
+        Record an action execution for GAIT tracking.
+
+        Args:
+            action: Action name/type
+            result: Action result or error message
+            success: Whether the action succeeded
+        """
+        self.action_history.append({
+            'action': action,
+            'result': str(result) if result else '',
+            'success': success,
+            'timestamp': datetime.now().isoformat()
+        })
+
+        # Trim history if too long
+        if len(self.action_history) > self._max_history_length:
+            self.action_history = self.action_history[-self._max_history_length:]
 
     async def _handle_query_neighbors(self, intent) -> str:
         """Handle OSPF neighbor query"""
@@ -231,18 +280,21 @@ class AgenticBridge:
         if result.result:
             neighbors = result.result.get("neighbors", [])
             if not neighbors:
-                return "No OSPF neighbors found."
-
-            lines = ["OSPF Neighbors:", ""]
-            for neighbor in neighbors:
-                lines.append(f"  • Neighbor {neighbor['neighbor_id']}")
-                lines.append(f"    State: {neighbor['state']}")
-                lines.append(f"    Address: {neighbor['address']}")
-                lines.append("")
-
-            return "\n".join(lines)
+                response = "No OSPF neighbors found."
+            else:
+                lines = ["OSPF Neighbors:", ""]
+                for neighbor in neighbors:
+                    lines.append(f"  • Neighbor {neighbor['neighbor_id']}")
+                    lines.append(f"    State: {neighbor['state']}")
+                    lines.append(f"    Address: {neighbor['address']}")
+                    lines.append("")
+                response = "\n".join(lines)
         else:
-            return f"Error querying neighbors: {result.error}"
+            response = f"Error querying neighbors: {result.error}"
+
+        self._record_conversation('assistant', response)
+        self._record_action('query_neighbors', result.result if result.result else result.error, bool(result.result))
+        return response
 
     async def _handle_query_route(self, intent) -> str:
         """Handle route query"""
@@ -406,7 +458,7 @@ class AgenticBridge:
             lines.append("    2. Inter-area routes preferred over external")
             lines.append("    3. Lowest cumulative cost (SPF algorithm)")
 
-            ospf_state = self.state_manager._current_ospf_state
+            ospf_state = self.state_manager.get_ospf_state()
             if ospf_state:
                 lsdb = ospf_state.get('lsdb', {})
                 lines.append(f"  Current LSDB has {lsdb.get('total_lsas', 0)} LSAs for SPF computation")
@@ -433,13 +485,21 @@ class AgenticBridge:
         )
 
         if result.status.value == "completed":
-            return f"✓ Successfully adjusted OSPF cost on {interface} to {proposed_metric}"
+            response = f"✓ Successfully adjusted OSPF cost on {interface} to {proposed_metric}"
+            success = True
         elif result.status.value == "blocked":
-            return f"✗ Action blocked: {result.error}"
+            response = f"✗ Action blocked: {result.error}"
+            success = False
         elif result.status.value == "pending_approval":
-            return f"⚠ Action requires approval: {result.error}"
+            response = f"⚠ Action requires approval: {result.error}"
+            success = False
         else:
-            return f"✗ Action failed: {result.error}"
+            response = f"✗ Action failed: {result.error}"
+            success = False
+
+        self._record_conversation('assistant', response)
+        self._record_action('metric_adjustment', {'interface': interface, 'metric': proposed_metric, 'status': result.status.value}, success)
+        return response
 
     async def _handle_action_inject_route(self, intent) -> str:
         """Handle route injection action"""
@@ -452,13 +512,21 @@ class AgenticBridge:
         )
 
         if result.status.value == "completed":
-            return f"✓ Successfully injected route {network} into {protocol.upper()}"
+            response = f"✓ Successfully injected route {network} into {protocol.upper()}"
+            success = True
         elif result.status.value == "blocked":
-            return f"✗ Action blocked: {result.error}"
+            response = f"✗ Action blocked: {result.error}"
+            success = False
         elif result.status.value == "pending_approval":
-            return f"⚠ Action requires approval: {result.error}"
+            response = f"⚠ Action requires approval: {result.error}"
+            success = False
         else:
-            return f"✗ Action failed: {result.error}"
+            response = f"✗ Action failed: {result.error}"
+            success = False
+
+        self._record_conversation('assistant', response)
+        self._record_action('route_injection', {'network': network, 'protocol': protocol, 'status': result.status.value}, success)
+        return response
 
     async def _handle_query_router_id(self, intent) -> str:
         """Handle router ID query"""
@@ -467,13 +535,13 @@ class AgenticBridge:
         lines = ["Router ID Information:", ""]
 
         # OSPF Router ID
-        ospf_state = self.state_manager._current_ospf_state
+        ospf_state = self.state_manager.get_ospf_state()
         if ospf_state:
             lines.append(f"  OSPF Router ID: {ospf_state.get('router_id', 'N/A')}")
             lines.append(f"  OSPF Area: {ospf_state.get('area_id', 'N/A')}")
 
         # BGP Router ID
-        bgp_state = self.state_manager._current_bgp_state
+        bgp_state = self.state_manager.get_bgp_state()
         if bgp_state:
             lines.append(f"  BGP Router ID: {bgp_state.get('router_id', 'N/A')}")
             lines.append(f"  BGP Local AS: {bgp_state.get('local_as', 'N/A')}")
@@ -487,7 +555,7 @@ class AgenticBridge:
         """Handle LSA/LSDB query"""
         await self.state_manager.update_state()
 
-        ospf_state = self.state_manager._current_ospf_state
+        ospf_state = self.state_manager.get_ospf_state()
         if not ospf_state:
             return "No OSPF state available."
 
@@ -509,7 +577,7 @@ class AgenticBridge:
         lines = ["Network Statistics:", ""]
 
         # OSPF stats
-        ospf_state = self.state_manager._current_ospf_state
+        ospf_state = self.state_manager.get_ospf_state()
         if ospf_state:
             lines.append("OSPF:")
             lines.append(f"  Neighbors: {ospf_state.get('neighbor_count', 0)}")
@@ -518,7 +586,7 @@ class AgenticBridge:
             lines.append("")
 
         # BGP stats
-        bgp_state = self.state_manager._current_bgp_state
+        bgp_state = self.state_manager.get_bgp_state()
         if bgp_state:
             lines.append("BGP:")
             lines.append(f"  Total Peers: {bgp_state.get('peer_count', 0)}")
@@ -572,7 +640,7 @@ class AgenticBridge:
             lines.append("")
 
         # Also show protocol-specific interface info
-        ospf_state = self.state_manager._current_ospf_state
+        ospf_state = self.state_manager.get_ospf_state()
         if ospf_state:
             lines.append("Protocol Interface Bindings:")
             lines.append(f"  OSPF bound to: {ospf_state.get('interface_name', 'N/A')}")
@@ -591,7 +659,7 @@ class AgenticBridge:
         issues = []
 
         # Check OSPF health
-        ospf_state = self.state_manager._current_ospf_state
+        ospf_state = self.state_manager.get_ospf_state()
         if ospf_state:
             neighbor_count = ospf_state.get('neighbor_count', 0)
             full_neighbors = ospf_state.get('full_neighbors', 0)
@@ -599,7 +667,7 @@ class AgenticBridge:
                 issues.append(f"OSPF: Only {full_neighbors}/{neighbor_count} neighbors in Full state")
 
         # Check BGP health
-        bgp_state = self.state_manager._current_bgp_state
+        bgp_state = self.state_manager.get_bgp_state()
         if bgp_state:
             peer_count = bgp_state.get('peer_count', 0)
             established = bgp_state.get('established_peers', 0)
@@ -629,7 +697,7 @@ class AgenticBridge:
         ospf_running = False
         if self.ospf_connector and self.ospf_connector.interface:
             ospf_running = True
-            ospf_state = self.state_manager._current_ospf_state
+            ospf_state = self.state_manager.get_ospf_state()
             neighbor_count = ospf_state.get('neighbor_count', 0) if ospf_state else 0
             full_neighbors = ospf_state.get('full_neighbors', 0) if ospf_state else 0
             lines.append(f"  OSPF: ✓ Running")
@@ -645,7 +713,7 @@ class AgenticBridge:
         bgp_running = False
         if self.bgp_connector and self.bgp_connector.speaker:
             bgp_running = self.bgp_connector.speaker.agent.running
-            bgp_state = self.state_manager._current_bgp_state
+            bgp_state = self.state_manager.get_bgp_state()
             if bgp_running:
                 peer_count = bgp_state.get('peer_count', 0) if bgp_state else 0
                 established = bgp_state.get('established_peers', 0) if bgp_state else 0
@@ -737,7 +805,7 @@ class AgenticBridge:
         if self.ospf_connector and self.ospf_connector.interface:
             lines.append("")
             lines.append("  OSPF Routes:")
-            ospf_state = self.state_manager._current_ospf_state
+            ospf_state = self.state_manager.get_ospf_state()
             if ospf_state:
                 lsdb = ospf_state.get('lsdb', {})
                 lines.append(f"    Router LSAs: {lsdb.get('router_lsas', 0)}")
@@ -988,7 +1056,7 @@ class AgenticBridge:
         # Start state update loop
         self._state_update_task = asyncio.create_task(self._state_update_loop())
 
-        print(f"[AgenticBridge] RubberBand {self.rubberband_id} started")
+        print(f"[AgenticBridge] ASI {self.asi_id} started")
 
     async def stop(self):
         """Stop agentic bridge"""
@@ -1005,7 +1073,7 @@ class AgenticBridge:
             except asyncio.CancelledError:
                 pass
 
-        print(f"[AgenticBridge] RubberBand {self.rubberband_id} stopped")
+        print(f"[AgenticBridge] ASI {self.asi_id} stopped")
 
     async def _state_update_loop(self):
         """Periodically update network state"""
@@ -1031,7 +1099,7 @@ class AgenticBridge:
     def get_statistics(self) -> Dict[str, Any]:
         """Get comprehensive statistics"""
         return {
-            "rubberband_id": self.rubberband_id,
+            "asi_id": self.asi_id,
             "llm": {
                 "turns": self.llm.current_turn,
                 "max_turns": self.llm.max_turns,

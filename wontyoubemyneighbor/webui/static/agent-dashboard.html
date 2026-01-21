@@ -181,6 +181,9 @@
         .protocol-tab.vxlan.active { color: var(--accent-pink); }
         .protocol-tab.dhcp.active { color: #60a5fa; }
         .protocol-tab.dns.active { color: #34d399; }
+        .protocol-tab.testing.active { color: #22d3ee; }
+        .protocol-tab.gait.active { color: #f59e0b; }
+        .protocol-tab.markmap.active { color: #ec4899; }
 
         .protocol-indicator {
             width: 8px;
@@ -381,6 +384,381 @@
             color: var(--bg-primary);
         }
 
+        /* Chat Tab Styles */
+        .protocol-tab.chat.active { color: #00d9ff; }
+        .metric-card.chat::before { background: #00d9ff; }
+
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: 500px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .chat-message {
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+        }
+
+        .chat-message.user {
+            align-self: flex-end;
+            background: var(--accent-cyan);
+            color: #000;
+            border-bottom-right-radius: 4px;
+        }
+
+        .chat-message.assistant {
+            align-self: flex-start;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-bottom-left-radius: 4px;
+        }
+
+        .chat-message.system {
+            align-self: center;
+            background: rgba(250, 204, 21, 0.1);
+            border: 1px solid var(--accent-yellow);
+            color: var(--accent-yellow);
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
+        .chat-input-area {
+            display: flex;
+            gap: 10px;
+            padding: 15px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-color);
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 12px 16px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+        }
+
+        .chat-input:focus {
+            outline: none;
+            border-color: var(--accent-cyan);
+        }
+
+        .chat-send-btn {
+            padding: 12px 24px;
+            background: var(--accent-cyan);
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .chat-send-btn:hover {
+            background: #00b8d9;
+        }
+
+        .chat-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Testing Tab Styles */
+        .metric-card.testing::before { background: #22d3ee; }
+        .metric-card.gait::before { background: #f59e0b; }
+        .metric-card.markmap::before { background: #ec4899; }
+
+        .test-suite-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 15px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            transition: all 0.2s;
+        }
+
+        .test-suite-item:hover {
+            background: var(--bg-primary);
+        }
+
+        .test-suite-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .test-suite-checkbox input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent-cyan);
+            cursor: pointer;
+        }
+
+        .test-count {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .schedule-form {
+            padding: 15px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+        }
+
+        .form-row {
+            margin-bottom: 15px;
+        }
+
+        .form-row label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+
+        .form-row select {
+            width: 100%;
+            padding: 8px 12px;
+            margin-top: 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .form-row input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent-cyan);
+        }
+
+        /* GAIT Tab Styles */
+        .gait-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .search-input {
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            width: 200px;
+        }
+
+        .search-input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .gait-controls select {
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+        }
+
+        .conversation-timeline {
+            max-height: 500px;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        .timeline-item {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: 7px;
+            top: 24px;
+            bottom: -20px;
+            width: 2px;
+            background: var(--border-color);
+        }
+
+        .timeline-item:last-child::before {
+            display: none;
+        }
+
+        .timeline-marker {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-top: 4px;
+        }
+
+        .timeline-item.user .timeline-marker { background: var(--accent-cyan); }
+        .timeline-item.agent .timeline-marker { background: var(--accent-green); }
+        .timeline-item.system .timeline-marker { background: var(--accent-yellow); }
+        .timeline-item.action .timeline-marker { background: var(--accent-purple); }
+
+        .timeline-content {
+            flex: 1;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 12px 15px;
+        }
+
+        .timeline-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .timeline-sender {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .timeline-item.user .timeline-sender { color: var(--accent-cyan); }
+        .timeline-item.agent .timeline-sender { color: var(--accent-green); }
+        .timeline-item.system .timeline-sender { color: var(--accent-yellow); }
+        .timeline-item.action .timeline-sender { color: var(--accent-purple); }
+
+        .timeline-time {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .timeline-message {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        /* Markmap Tab Styles */
+        .markmap-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .markmap-controls label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+
+        .markmap-controls input[type="checkbox"] {
+            accent-color: var(--accent-cyan);
+        }
+
+        .markmap-container {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 600px;
+            position: relative;
+        }
+
+        .markmap-container.fullscreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 1000;
+            border-radius: 0;
+            margin: 0;
+        }
+
+        #markmap-svg {
+            background: var(--bg-tertiary);
+        }
+
+        /* Test result status badges */
+        .status-badge.passed {
+            background: rgba(74, 222, 128, 0.2);
+            color: var(--accent-green);
+        }
+
+        .status-badge.failed {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        .status-badge.skipped {
+            background: rgba(250, 204, 21, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        .status-badge.running {
+            background: rgba(0, 217, 255, 0.2);
+            color: var(--accent-cyan);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Results filter dropdown */
+        #results-filter {
+            padding: 6px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+        }
+
+        /* Expandable test result rows */
+        .test-result-row {
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .test-result-row:hover {
+            background: var(--bg-primary) !important;
+        }
+
+        .test-result-row.expanded {
+            background: var(--bg-primary);
+        }
+
+        .test-detail-row td {
+            font-size: 0.9rem;
+        }
+
         /* Responsive */
         @media (max-width: 1024px) {
             .metrics-row {
@@ -389,6 +767,10 @@
 
             .two-column {
                 grid-template-columns: 1fr;
+            }
+
+            .gait-controls {
+                flex-wrap: wrap;
             }
         }
 
@@ -400,6 +782,10 @@
             .header-left {
                 flex-direction: column;
                 align-items: flex-start;
+            }
+
+            .markmap-controls {
+                flex-wrap: wrap;
             }
         }
     </style>
@@ -416,9 +802,10 @@
                 </div>
             </div>
             <div class="nav-links">
-                <a href="/" class="nav-link">Builder</a>
-                <a href="/realtime" class="nav-link">Network Monitor</a>
-                <a href="/dashboard" class="nav-link">Single Agent</a>
+                <a href="/topology3d" class="nav-link" id="agent3dViewLink">My 3D View</a>
+                <a href="/topology3d" class="nav-link">Network 3D</a>
+                <a href="/monitor" class="nav-link">Full Topology</a>
+                <a href="/" class="nav-link">Chat</a>
             </div>
         </header>
 
@@ -453,6 +840,47 @@
         <!-- Protocol Tabs -->
         <div class="protocol-tabs" id="protocol-tabs">
             <!-- Tabs will be dynamically generated -->
+        </div>
+
+        <!-- Chat Content -->
+        <div class="protocol-content active" id="chat-content">
+            <div class="metrics-row">
+                <div class="metric-card chat">
+                    <div class="metric-label">Messages Sent</div>
+                    <div class="metric-value" id="chat-sent">0</div>
+                </div>
+                <div class="metric-card chat">
+                    <div class="metric-label">Responses</div>
+                    <div class="metric-value" id="chat-received">0</div>
+                </div>
+                <div class="metric-card chat">
+                    <div class="metric-label">Session</div>
+                    <div class="metric-value" id="chat-session">Active</div>
+                </div>
+                <div class="metric-card chat">
+                    <div class="metric-label">Provider</div>
+                    <div class="metric-value" id="chat-provider">--</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>Chat with ASI Agent</h3>
+                    <span style="font-size: 0.85rem; color: var(--text-secondary);">Ask about routing, neighbors, protocols</span>
+                </div>
+                <div class="chat-container">
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="chat-message system">
+                            Welcome! Ask me about your routing protocols, neighbors, or routes.<br>
+                            <span style="font-size: 0.85rem;">Try: "How many neighbors do I have?" or "Show me the BGP routes"</span>
+                        </div>
+                    </div>
+                    <div class="chat-input-area">
+                        <input type="text" class="chat-input" id="chat-input" placeholder="Ask ASI something..." autocomplete="off">
+                        <button class="chat-send-btn" id="chat-send-btn">Send</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Interfaces Content -->
@@ -892,7 +1320,195 @@
                 </div>
             </div>
         </div>
+
+        <!-- Testing Content (pyATS) -->
+        <div class="protocol-content" id="testing-content">
+            <div class="metrics-row">
+                <div class="metric-card testing">
+                    <div class="metric-label">Test Suites</div>
+                    <div class="metric-value" id="testing-suites">0</div>
+                </div>
+                <div class="metric-card testing">
+                    <div class="metric-label">Last Run</div>
+                    <div class="metric-value" id="testing-last-run">Never</div>
+                </div>
+                <div class="metric-card testing">
+                    <div class="metric-label">Pass Rate</div>
+                    <div class="metric-value" id="testing-pass-rate">--<span class="metric-unit">%</span></div>
+                </div>
+                <div class="metric-card testing">
+                    <div class="metric-label">Next Scheduled</div>
+                    <div class="metric-value" id="testing-next-run">--</div>
+                </div>
+            </div>
+
+            <div class="two-column">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Available Test Suites</h3>
+                        <button class="btn btn-secondary" id="run-all-tests-btn">Run All Tests</button>
+                    </div>
+                    <div id="test-suites-list">
+                        <div class="test-suite-item">
+                            <label class="test-suite-checkbox">
+                                <input type="checkbox" checked data-suite="common_connectivity">
+                                <span class="checkmark"></span>
+                                Connectivity Tests
+                            </label>
+                            <span class="test-count">4 tests</span>
+                        </div>
+                        <div class="test-suite-item">
+                            <label class="test-suite-checkbox">
+                                <input type="checkbox" checked data-suite="common_interface">
+                                <span class="checkmark"></span>
+                                Interface Tests
+                            </label>
+                            <span class="test-count">4 tests</span>
+                        </div>
+                        <div class="test-suite-item">
+                            <label class="test-suite-checkbox">
+                                <input type="checkbox" checked data-suite="common_resource">
+                                <span class="checkmark"></span>
+                                Resource Tests
+                            </label>
+                            <span class="test-count">5 tests</span>
+                        </div>
+                        <div class="test-suite-item" id="protocol-test-suites">
+                            <!-- Protocol-specific test suites added dynamically -->
+                        </div>
+                    </div>
+
+                    <div class="section" style="margin-top: 20px;">
+                        <div class="section-header">
+                            <h3>Test Schedule</h3>
+                        </div>
+                        <div class="schedule-form">
+                            <div class="form-row">
+                                <label>Run tests every:</label>
+                                <select id="schedule-interval">
+                                    <option value="0">Manual only</option>
+                                    <option value="15">15 minutes</option>
+                                    <option value="30">30 minutes</option>
+                                    <option value="60" selected>1 hour</option>
+                                    <option value="360">6 hours</option>
+                                    <option value="1440">24 hours</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="schedule-on-change" checked>
+                                    Run on configuration change
+                                </label>
+                            </div>
+                            <button class="btn btn-secondary" id="save-schedule-btn">Save Schedule</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Test Results</h3>
+                        <select id="results-filter">
+                            <option value="all">All Results</option>
+                            <option value="failed">Failed Only</option>
+                            <option value="passed">Passed Only</option>
+                        </select>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Test</th>
+                                <th>Suite</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="test-results-table">
+                            <tr><td colspan="5" class="empty-state">No test results yet. Run tests to see results.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- GAIT Content (Conversation History) -->
+        <div class="protocol-content" id="gait-content">
+            <div class="metrics-row">
+                <div class="metric-card gait">
+                    <div class="metric-label">Total Turns</div>
+                    <div class="metric-value" id="gait-turns">0</div>
+                </div>
+                <div class="metric-card gait">
+                    <div class="metric-label">User Messages</div>
+                    <div class="metric-value" id="gait-user-msgs">0</div>
+                </div>
+                <div class="metric-card gait">
+                    <div class="metric-label">Agent Responses</div>
+                    <div class="metric-value" id="gait-agent-msgs">0</div>
+                </div>
+                <div class="metric-card gait">
+                    <div class="metric-label">Actions Taken</div>
+                    <div class="metric-value" id="gait-actions">0</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>Conversation History</h3>
+                    <div class="gait-controls">
+                        <input type="text" id="gait-search" placeholder="Search conversations..." class="search-input">
+                        <select id="gait-filter">
+                            <option value="all">All Messages</option>
+                            <option value="user">User Only</option>
+                            <option value="agent">Agent Only</option>
+                            <option value="system">System Only</option>
+                            <option value="action">Actions Only</option>
+                        </select>
+                        <button class="btn btn-secondary" id="export-gait-btn">Export Logs</button>
+                    </div>
+                </div>
+                <div class="conversation-timeline" id="gait-timeline">
+                    <div class="timeline-item user">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-content">
+                            <div class="timeline-header">
+                                <span class="timeline-sender">User</span>
+                                <span class="timeline-time">--</span>
+                            </div>
+                            <div class="timeline-message">No conversation history available. GAIT tracking will record all interactions.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Markmap Content (Mind Map Visualization) -->
+        <div class="protocol-content" id="markmap-content">
+            <div class="section">
+                <div class="section-header">
+                    <h3>Agent State Mind Map</h3>
+                    <div class="markmap-controls">
+                        <label>
+                            <input type="checkbox" id="markmap-auto-refresh" checked>
+                            Auto-refresh (1s)
+                        </label>
+                        <button class="btn btn-secondary" id="markmap-refresh-btn">Refresh Now</button>
+                        <button class="btn btn-secondary" id="markmap-export-btn">Export SVG</button>
+                        <button class="btn btn-secondary" id="markmap-fullscreen-btn">Fullscreen</button>
+                    </div>
+                </div>
+                <div class="markmap-container" id="markmap-container">
+                    <svg id="markmap-svg" style="width: 100%; height: 600px;"></svg>
+                </div>
+            </div>
+        </div>
     </div>
+
+    <!-- Markmap library for mind map rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.15.4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.15.4"></script>
 
     <script src="/static/agent-dashboard.js"></script>
 </body>

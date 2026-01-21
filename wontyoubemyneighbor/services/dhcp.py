@@ -407,14 +407,25 @@ class DHCPServer:
                 offset += 1
                 continue
 
+            # Bounds check: need at least 2 more bytes for type+length
+            if offset + 1 >= len(data):
+                self.logger.warning("DHCP options truncated: missing option length")
+                break
             opt_len = data[offset + 1]
+
+            # Bounds check: ensure option data fits in buffer
+            if offset + 2 + opt_len > len(data):
+                self.logger.warning(f"DHCP option {opt_type} truncated: need {opt_len} bytes, only {len(data) - offset - 2} available")
+                break
             opt_data = data[offset + 2:offset + 2 + opt_len]
             packet['options'][opt_type] = opt_data
             offset += 2 + opt_len
 
-        # Extract message type
+        # Extract message type safely
         if OPT_MESSAGE_TYPE in packet['options']:
-            packet['message_type'] = packet['options'][OPT_MESSAGE_TYPE][0]
+            msg_type_data = packet['options'][OPT_MESSAGE_TYPE]
+            if msg_type_data:
+                packet['message_type'] = msg_type_data[0]
 
         return packet
 

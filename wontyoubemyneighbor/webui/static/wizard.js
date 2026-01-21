@@ -1,5 +1,5 @@
 /**
- * RubberBand Network Builder Wizard
+ * ASI Network Builder Wizard
  *
  * JavaScript logic for the 6-step network builder wizard
  */
@@ -13,7 +13,22 @@ let wizardState = {
     agents: [],
     network_type: { mode: 'manual' },
     topology: { links: [], auto_generate: false },
-    llm_config: { provider: 'claude', api_key: null }
+    llm_config: { provider: 'claude', api_key: null },
+    // Network Foundation (3-layer architecture)
+    network_foundation: {
+        underlay_protocol: 'ipv6',  // 'ipv4', 'ipv6', or 'dual'
+        overlay: {
+            enabled: true,
+            subnet: 'fd00:a510::/48',
+            enable_nd: true,
+            enable_routes: true
+        },
+        docker_ipv6: {
+            enabled: true,
+            subnet: 'fd00:docker:1::/64',
+            gateway: 'fd00:docker:1::1'
+        }
+    }
 };
 
 // Default MCPs
@@ -40,6 +55,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await checkDocker();
     await loadDefaultMcps();
     await loadAgentTemplates();
+    initializeProtocolSelection();
 });
 
 // Import Network Template
@@ -147,6 +163,106 @@ async function createSession() {
     }
 }
 
+// Network Foundation - Underlay Protocol Selection
+
+function selectUnderlayProtocol(protocol) {
+    // Update radio button
+    document.querySelectorAll('input[name="underlay-protocol"]').forEach(radio => {
+        radio.checked = (radio.value === protocol);
+    });
+
+    // Update visual selection
+    document.querySelectorAll('.protocol-option').forEach(option => {
+        const radio = option.querySelector('input[type="radio"]');
+        if (radio.value === protocol) {
+            option.style.borderColor = '#00d9ff';
+            option.style.background = 'rgba(0, 217, 255, 0.1)';
+        } else {
+            option.style.borderColor = '#2a2a4e';
+            option.style.background = '#16213e';
+        }
+    });
+
+    // Update wizard state
+    wizardState.network_foundation.underlay_protocol = protocol;
+
+    // Update agent protocol availability based on underlay selection
+    updateAgentProtocolAvailability(protocol);
+
+    console.log(`[Wizard] Underlay protocol set to: ${protocol}`);
+}
+
+// Update which protocols are available for agents based on underlay selection
+function updateAgentProtocolAvailability(underlayProtocol) {
+    // Store in global state for use in agent builder
+    window.underlayProtocol = underlayProtocol;
+
+    // Update the protocol dropdown in the agent builder if it exists
+    const protocolSelect = document.getElementById('agent-protocol');
+    if (protocolSelect) {
+        // Get all options
+        const options = protocolSelect.querySelectorAll('option');
+        options.forEach(option => {
+            const value = option.value;
+
+            // OSPFv3 is IPv6 only - hide if pure IPv4 underlay
+            if (value === 'ospfv3') {
+                option.style.display = (underlayProtocol === 'ipv4') ? 'none' : '';
+                option.disabled = (underlayProtocol === 'ipv4');
+            }
+
+            // OSPFv2 (ospf) is IPv4 only - hide if pure IPv6 underlay
+            if (value === 'ospf') {
+                option.style.display = (underlayProtocol === 'ipv6') ? 'none' : '';
+                option.disabled = (underlayProtocol === 'ipv6');
+            }
+        });
+
+        // If current selection is now invalid, switch to a valid one
+        const currentValue = protocolSelect.value;
+        if ((currentValue === 'ospfv3' && underlayProtocol === 'ipv4') ||
+            (currentValue === 'ospf' && underlayProtocol === 'ipv6')) {
+            // Switch to BGP as a safe default
+            protocolSelect.value = 'ibgp';
+        }
+    }
+
+    console.log(`[Wizard] Agent protocols updated for ${underlayProtocol} underlay`);
+}
+
+// Initialize protocol selection visual on page load
+function initializeProtocolSelection() {
+    // Set default selection (IPv6)
+    selectUnderlayProtocol('ipv6');
+    // Initialize Docker network fields
+    updateDockerNetworkFields();
+}
+
+// Docker Network IP Version Toggle
+function updateDockerNetworkFields() {
+    const ipVersion = document.getElementById('docker-ip-version').value;
+    const subnetInput = document.getElementById('subnet');
+    const gatewayInput = document.getElementById('gateway');
+
+    if (ipVersion === 'ipv6') {
+        // IPv6 defaults
+        subnetInput.value = 'fd00:docker:1::/64';
+        subnetInput.placeholder = 'e.g., fd00:docker:1::/64';
+        gatewayInput.value = 'fd00:docker:1::1';
+        gatewayInput.placeholder = 'e.g., fd00:docker:1::1';
+        wizardState.network_foundation.docker_ipv6.enabled = true;
+    } else {
+        // IPv4 defaults
+        subnetInput.value = '172.20.0.0/16';
+        subnetInput.placeholder = 'e.g., 172.20.0.0/16';
+        gatewayInput.value = '172.20.0.1';
+        gatewayInput.placeholder = 'e.g., 172.20.0.1';
+        wizardState.network_foundation.docker_ipv6.enabled = false;
+    }
+
+    console.log(`[Wizard] Docker network IP version set to: ${ipVersion}`);
+}
+
 // Docker Check
 
 async function checkDocker() {
@@ -179,10 +295,19 @@ async function checkDocker() {
 async function loadDefaultMcps() {
     try {
         const response = await fetch('/api/wizard/mcps/default');
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
         defaultMcps = await response.json();
+        console.log('Loaded MCPs:', defaultMcps.length, defaultMcps.map(m => `${m.id}(${m.t})`));
         renderMcpGrid();
     } catch (error) {
         console.error('Failed to load MCPs:', error);
+        // Show error in UI
+        const mandatoryGrid = document.getElementById('mandatory-mcp-grid');
+        const optionalGrid = document.getElementById('optional-mcp-grid');
+        if (mandatoryGrid) mandatoryGrid.innerHTML = `<div class="alert alert-error">Failed to load MCPs: ${error.message}</div>`;
+        if (optionalGrid) optionalGrid.innerHTML = '';
     }
 }
 
@@ -192,40 +317,214 @@ let currentMcpConfig = null;
 // MCP configurations (stored separately from selection)
 let mcpConfigurations = {};
 
-function renderMcpGrid() {
-    const grid = document.getElementById('mcp-grid');
-    grid.innerHTML = defaultMcps.map(mcp => {
-        const isSelected = wizardState.mcp_selection.selected.includes(mcp.id);
-        const requiresConfig = mcp.c?._requires_config;
-        const hasConfig = mcpConfigurations[mcp.id] && Object.keys(mcpConfigurations[mcp.id]).length > 0;
-        const configFields = mcp.c?._config_fields || [];
+// Custom MCPs added by user
+let customMcps = [];
 
-        return `
-            <div class="mcp-card ${isSelected ? 'selected' : ''}"
-                 data-mcp-id="${mcp.id}">
-                <div onclick="toggleMcp('${mcp.id}')" style="cursor: pointer;">
-                    <h4>${mcp.n}</h4>
-                    <p>${mcp.d || 'No description'}</p>
+// Mandatory MCP types (always included, can't be deselected)
+const MANDATORY_MCP_TYPES = ['gait', 'pyats', 'rfc', 'markmap'];
+
+// Optional MCP types (can be enabled/disabled)
+const OPTIONAL_MCP_TYPES = ['servicenow', 'netbox', 'slack', 'github'];
+
+function renderMcpGrid() {
+    console.log('renderMcpGrid called, defaultMcps:', defaultMcps.length);
+    console.log('MANDATORY_MCP_TYPES:', MANDATORY_MCP_TYPES);
+    console.log('OPTIONAL_MCP_TYPES:', OPTIONAL_MCP_TYPES);
+
+    // Separate mandatory and optional MCPs
+    const mandatoryMcps = defaultMcps.filter(mcp => MANDATORY_MCP_TYPES.includes(mcp.t));
+    const optionalMcps = defaultMcps.filter(mcp => OPTIONAL_MCP_TYPES.includes(mcp.t));
+
+    console.log('Mandatory MCPs found:', mandatoryMcps.length, mandatoryMcps.map(m => m.id));
+    console.log('Optional MCPs found:', optionalMcps.length, optionalMcps.map(m => m.id));
+
+    // Ensure all mandatory MCPs are in the selected list
+    mandatoryMcps.forEach(mcp => {
+        if (!wizardState.mcp_selection.selected.includes(mcp.id)) {
+            wizardState.mcp_selection.selected.push(mcp.id);
+        }
+    });
+
+    // Render mandatory MCPs (locked)
+    const mandatoryGrid = document.getElementById('mandatory-mcp-grid');
+    console.log('mandatory-mcp-grid element:', mandatoryGrid);
+    if (mandatoryGrid) {
+        if (mandatoryMcps.length === 0) {
+            mandatoryGrid.innerHTML = '<div class="alert alert-info">No mandatory MCPs found in API response</div>';
+        } else {
+            mandatoryGrid.innerHTML = mandatoryMcps.map(mcp => {
+                return `
+                    <div class="mcp-card mandatory selected" data-mcp-id="${mcp.id}">
+                        <h4>${mcp.n}</h4>
+                        <p>${mcp.d || 'No description'}</p>
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a4a2a; text-align: center;">
+                            <span style="color: #4ade80; font-size: 0.75rem;">✓ Always enabled</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+    } else {
+        console.error('mandatory-mcp-grid element not found!');
+    }
+
+    // Render optional MCPs (toggleable)
+    const optionalGrid = document.getElementById('optional-mcp-grid');
+    console.log('optional-mcp-grid element:', optionalGrid);
+    if (optionalGrid) {
+        if (optionalMcps.length === 0) {
+            optionalGrid.innerHTML = '<div class="alert alert-info">No optional MCPs found in API response</div>';
+        } else {
+            optionalGrid.innerHTML = optionalMcps.map(mcp => {
+            const isSelected = wizardState.mcp_selection.selected.includes(mcp.id);
+            const requiresConfig = mcp.c?._requires_config;
+            const hasConfig = mcpConfigurations[mcp.id] && Object.keys(mcpConfigurations[mcp.id]).length > 0;
+            const configFields = mcp.c?._config_fields || [];
+
+            return `
+                <div class="mcp-card ${isSelected ? 'selected' : ''}" data-mcp-id="${mcp.id}">
+                    <div onclick="toggleMcp('${mcp.id}')" style="cursor: pointer;">
+                        <h4>${mcp.n}</h4>
+                        <p>${mcp.d || 'No description'}</p>
+                    </div>
+                    ${configFields.length > 0 ? `
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2a4e;">
+                            <button class="btn btn-secondary" onclick="event.stopPropagation(); openMcpConfig('${mcp.id}')"
+                                    style="padding: 5px 10px; font-size: 0.8rem; width: 100%;">
+                                ${hasConfig ? '✓ Configured' : (requiresConfig ? '⚠ Configure' : 'Configure')}
+                            </button>
+                        </div>
+                    ` : `
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2a4e; text-align: center;">
+                            <span style="color: #888; font-size: 0.75rem;">Click to ${isSelected ? 'disable' : 'enable'}</span>
+                        </div>
+                    `}
                 </div>
-                ${configFields.length > 0 ? `
-                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2a4e;">
-                        <button class="btn btn-secondary" onclick="event.stopPropagation(); openMcpConfig('${mcp.id}')"
+            `;
+            }).join('');
+        }
+    } else {
+        console.error('optional-mcp-grid element not found!');
+    }
+
+    // Render custom MCPs list
+    renderCustomMcpList();
+}
+
+function renderCustomMcpList() {
+    const listDiv = document.getElementById('custom-mcp-list');
+    if (!listDiv) return;
+
+    if (customMcps.length === 0) {
+        listDiv.innerHTML = '';
+        return;
+    }
+
+    listDiv.innerHTML = `
+        <h4 style="color: #9333ea; margin-bottom: 10px;">Added Custom MCPs (${customMcps.length})</h4>
+        <div class="mcp-grid">
+            ${customMcps.map((mcp, idx) => `
+                <div class="mcp-card custom selected" data-mcp-id="${mcp.id}">
+                    <h4>${mcp.n || mcp.id}</h4>
+                    <p>${mcp.d || 'Custom MCP'}</p>
+                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #4a2a4e;">
+                        <button class="btn btn-danger" onclick="removeCustomMcp(${idx})"
                                 style="padding: 5px 10px; font-size: 0.8rem; width: 100%;">
-                            ${hasConfig ? '✓ Configured' : (requiresConfig ? '⚠ Configure' : 'Configure')}
+                            Remove
                         </button>
                     </div>
-                ` : `
-                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2a4e; text-align: center;">
-                        <span style="color: #4ade80; font-size: 0.75rem;">✓ No config needed</span>
-                    </div>
-                `}
-            </div>
-        `;
-    }).join('');
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function loadCustomMcpFile(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    document.getElementById('custom-mcp-file-name').textContent = file.name;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        document.getElementById('custom-mcp-json').value = e.target.result;
+    };
+    reader.readAsText(file);
+}
+
+function importCustomMcp() {
+    const jsonText = document.getElementById('custom-mcp-json').value.trim();
+    const statusSpan = document.getElementById('custom-mcp-status');
+
+    if (!jsonText) {
+        statusSpan.innerHTML = '<span style="color: #ef4444;">Please provide MCP configuration</span>';
+        return;
+    }
+
+    let mcpConfig;
+    try {
+        mcpConfig = JSON.parse(jsonText);
+    } catch (e) {
+        statusSpan.innerHTML = '<span style="color: #ef4444;">Invalid JSON format</span>';
+        return;
+    }
+
+    // Validate required fields
+    if (!mcpConfig.id) {
+        statusSpan.innerHTML = '<span style="color: #ef4444;">MCP must have an "id" field</span>';
+        return;
+    }
+
+    // Check for duplicate
+    if (customMcps.some(m => m.id === mcpConfig.id) ||
+        defaultMcps.some(m => m.id === mcpConfig.id)) {
+        statusSpan.innerHTML = '<span style="color: #ef4444;">MCP with this ID already exists</span>';
+        return;
+    }
+
+    // Add defaults
+    mcpConfig.t = mcpConfig.t || 'custom';
+    mcpConfig.n = mcpConfig.n || mcpConfig.id;
+    mcpConfig.e = mcpConfig.e !== false;
+    mcpConfig.c = mcpConfig.c || {};
+
+    // Add to custom MCPs and selected list
+    customMcps.push(mcpConfig);
+    wizardState.mcp_selection.custom.push(mcpConfig);
+    wizardState.mcp_selection.selected.push(mcpConfig.id);
+
+    // Clear form
+    document.getElementById('custom-mcp-json').value = '';
+    document.getElementById('custom-mcp-file-name').textContent = '';
+
+    statusSpan.innerHTML = `<span style="color: #4ade80;">Added "${mcpConfig.n}"</span>`;
+    setTimeout(() => { statusSpan.innerHTML = ''; }, 3000);
+
+    renderCustomMcpList();
+}
+
+function removeCustomMcp(index) {
+    const mcp = customMcps[index];
+    if (!mcp) return;
+
+    // Remove from arrays
+    customMcps.splice(index, 1);
+    wizardState.mcp_selection.custom = wizardState.mcp_selection.custom.filter(m => m.id !== mcp.id);
+    wizardState.mcp_selection.selected = wizardState.mcp_selection.selected.filter(id => id !== mcp.id);
+
+    renderCustomMcpList();
 }
 
 function toggleMcp(mcpId) {
     const mcp = defaultMcps.find(m => m.id === mcpId);
+    if (!mcp) return;
+
+    // Prevent toggling mandatory MCPs
+    if (MANDATORY_MCP_TYPES.includes(mcp.t)) {
+        console.log(`Cannot toggle mandatory MCP: ${mcp.n}`);
+        return;
+    }
+
     const requiresConfig = mcp?.c?._requires_config;
     const hasConfig = mcpConfigurations[mcpId] && Object.keys(mcpConfigurations[mcpId]).length > 0;
 
@@ -1990,11 +2289,37 @@ async function nextStep(currentStep) {
                 return;
             }
 
+            // Get underlay protocol selection
+            const underlayRadio = document.querySelector('input[name="underlay-protocol"]:checked');
+            const underlayProtocol = underlayRadio ? underlayRadio.value : 'ipv6';
+
+            // Get Docker network IP version from dropdown
+            const dockerIpVersion = document.getElementById('docker-ip-version').value;
+            const isDockerIpv6 = dockerIpVersion === 'ipv6';
+
             wizardState.docker_config = {
                 name: networkName,
+                ip_version: dockerIpVersion,
                 subnet: document.getElementById('subnet').value || null,
                 gateway: document.getElementById('gateway').value || null,
-                driver: document.getElementById('driver').value
+                driver: document.getElementById('driver').value,
+                enable_ipv6: isDockerIpv6
+            };
+
+            // Save network foundation settings
+            wizardState.network_foundation = {
+                underlay_protocol: underlayProtocol,
+                overlay: {
+                    enabled: true,
+                    subnet: 'fd00:a510::/48',
+                    enable_nd: document.getElementById('enable-nd').checked,
+                    enable_routes: document.getElementById('enable-overlay-routes').checked
+                },
+                docker_ipv6: {
+                    enabled: isDockerIpv6,
+                    subnet: isDockerIpv6 ? document.getElementById('subnet').value : 'fd00:docker:1::/64',
+                    gateway: isDockerIpv6 ? document.getElementById('gateway').value : 'fd00:docker:1::1'
+                }
             };
 
             await saveStep1();
@@ -2157,7 +2482,8 @@ async function launchNetwork() {
     else if (provider === 'gemini') apiKeys.google = apiKey;
 
     try {
-        showAlert('Launching network...', 'info');
+        showAlert('Launching network... Please wait for containers to start.', 'info');
+        console.log('Launching network with session:', sessionId);
 
         const response = await fetch(`/api/wizard/session/${sessionId}/launch`, {
             method: 'POST',
@@ -2170,71 +2496,227 @@ async function launchNetwork() {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.detail);
+            throw new Error(error.detail || 'Launch failed');
         }
 
         const data = await response.json();
+        console.log('Launch response:', JSON.stringify(data, null, 2));
 
-        if (data.status === 'running') {
-            showAlert('Network launched successfully! Opening agent dashboards...', 'success');
+        // Always show the summary if we got a response (even partial success)
+        showAlert('Network launched! Showing results...', 'success');
 
-            // Show agent details
-            let details = '<h4>Agent Status:</h4><ul>';
-            for (const [agentId, agent] of Object.entries(data.agents)) {
-                details += `<li>${agentId}: ${agent.status} (IP: ${agent.ip_address || 'N/A'}, WebUI: ${agent.webui_port || 'N/A'})</li>`;
-            }
-            details += '</ul>';
+        // Build launch summary page - include ALL agents (even without ports for debugging)
+        const allAgents = Object.entries(data.agents || {});
+        console.log('All agents in response:', allAgents.length);
 
-            document.getElementById('preview-details').innerHTML += details;
+        const agentsWithWebUI = allAgents
+            .filter(([_, agent]) => agent.webui_port)
+            .map(([agentId, agent]) => ({
+                id: agentId,
+                port: agent.webui_port,
+                ip: agent.ip_address,
+                status: agent.status,
+                url: `http://localhost:${agent.webui_port}/dashboard`
+            }));
 
-            // Collect agents with WebUI ports
-            const agentsWithWebUI = Object.entries(data.agents)
-                .filter(([_, agent]) => agent.webui_port)
-                .map(([agentId, agent]) => ({
+        console.log('Agents with WebUI ports:', agentsWithWebUI.length, agentsWithWebUI);
+
+        // If no agents have ports, still show what we have
+        if (agentsWithWebUI.length === 0 && allAgents.length > 0) {
+            console.warn('No agents have webui_port! Raw agents:', allAgents);
+            // Create entries anyway for display
+            allAgents.forEach(([agentId, agent]) => {
+                agentsWithWebUI.push({
                     id: agentId,
-                    port: agent.webui_port,
-                    url: `http://localhost:${agent.webui_port}/dashboard`
-                }));
-
-            if (agentsWithWebUI.length > 0) {
-                // Wait a moment for containers to fully start
-                setTimeout(async () => {
-                    // Open all agents in new tabs with staggered delays to avoid popup blocking
-                    // Don't redirect current page - open ALL agents in new tabs
-                    for (let i = 0; i < agentsWithWebUI.length; i++) {
-                        const agent = agentsWithWebUI[i];
-                        // Stagger each window.open by 500ms to avoid popup blockers
-                        await new Promise(resolve => setTimeout(resolve, i * 500));
-
-                        const newWindow = window.open(agent.url, `rubberband_${agent.id}`);
-
-                        // Check if popup was blocked
-                        if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
-                            console.warn(`Popup blocked for ${agent.id}. User may need to allow popups.`);
-                            // Add a clickable link as fallback
-                            const fallbackLink = document.createElement('div');
-                            fallbackLink.innerHTML = `
-                                <p style="margin-top: 10px;">
-                                    <a href="${agent.url}" target="_blank" style="color: #00d9ff; text-decoration: underline;">
-                                        Click here to open ${agent.id} dashboard
-                                    </a>
-                                </p>
-                            `;
-                            document.getElementById('preview-details').appendChild(fallbackLink);
-                        }
-                    }
-                }, 2000);  // 2 second delay for containers to initialize
-
-                details += `<p style="margin-top: 15px; color: #4ade80;">Opening ${agentsWithWebUI.length} agent dashboard(s) in new tabs...</p>`;
-                details += `<p style="color: #888; font-size: 0.9rem;">If tabs don't open automatically, please allow popups for this site.</p>`;
-                document.getElementById('preview-details').innerHTML = details;
-            }
-        } else if (data.status === 'error') {
-            showAlert('Network launch failed. Check Docker availability.', 'error');
+                    port: agent.webui_port || 'N/A',
+                    ip: agent.ip_address || 'N/A',
+                    status: agent.status || 'unknown',
+                    url: agent.webui_port ? `http://localhost:${agent.webui_port}/dashboard` : '#'
+                });
+            });
         }
 
+            // Store agents globally for the open all function
+            window.launchedAgents = agentsWithWebUI;
+
+            // Log detailed info for debugging
+            console.log('=== LAUNCH SUMMARY ===');
+            console.log('Total agents in response:', allAgents.length);
+            console.log('Agents with WebUI ports:', agentsWithWebUI.length);
+            agentsWithWebUI.forEach(a => {
+                console.log(`  - ${a.id}: port=${a.port}, url=${a.url}, status=${a.status}`);
+            });
+            console.log('window.launchedAgents set to:', window.launchedAgents);
+            console.log('======================');
+
+            // Create launch summary HTML
+            let summaryHTML = `
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <h2 style="color: #4ade80; margin-bottom: 10px;">🎉 Network Deployed Successfully!</h2>
+                    <p style="color: #888; margin-bottom: 20px;">${agentsWithWebUI.length} agent(s) are now running</p>
+                    <button onclick="openAllAgentDashboards()" style="background: linear-gradient(135deg, #4ade80, #00d9ff); color: #1a1a2e; padding: 15px 30px; border: none; border-radius: 8px; cursor: pointer; font-size: 1.1rem; font-weight: bold; box-shadow: 0 4px 15px rgba(0,217,255,0.3);">
+                        🚀 Open All ${agentsWithWebUI.length} Agent Dashboards
+                    </button>
+                    <p style="color: #666; font-size: 0.8rem; margin-top: 10px;">Click the button above or click individual agents below</p>
+                </div>
+
+                <div style="background: #1a1a2e; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+                    <h3 style="color: #00d9ff; margin-bottom: 15px;">Agent Dashboards</h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px;">
+            `;
+
+            for (const agent of agentsWithWebUI) {
+                const statusColor = agent.status === 'running' ? '#4ade80' : '#facc15';
+                summaryHTML += `
+                    <a href="${agent.url}" target="_blank" style="text-decoration: none;">
+                        <div style="background: #16213e; border: 2px solid ${statusColor}; border-radius: 8px; padding: 15px; transition: all 0.3s; cursor: pointer;"
+                             onmouseover="this.style.borderColor='#00d9ff'; this.style.transform='translateY(-2px)';"
+                             onmouseout="this.style.borderColor='${statusColor}'; this.style.transform='translateY(0)';">
+                            <div style="font-weight: bold; color: #00d9ff; margin-bottom: 5px;">${agent.id}</div>
+                            <div style="font-family: monospace; color: #4ade80; font-size: 1.1rem;">localhost:${agent.port}</div>
+                            <div style="font-family: monospace; color: #888; font-size: 0.8rem;">Container IP: ${agent.ip || 'N/A'}</div>
+                            <div style="color: ${statusColor}; font-size: 0.75rem; margin-top: 8px; text-transform: uppercase;">${agent.status}</div>
+                        </div>
+                    </a>
+                `;
+            }
+
+            summaryHTML += `
+                    </div>
+                </div>
+
+                <div style="background: #1a1a2e; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
+                    <h3 style="color: #00d9ff; margin-bottom: 15px;">Quick Links</h3>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                        <a href="/monitor" target="_blank" style="background: #00d9ff; color: #1a1a2e; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">
+                            📊 Full Agent Topology
+                        </a>
+                        <a href="/topology3d" target="_blank" style="background: #9333ea; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">
+                            🌐 3D Network View
+                        </a>
+                    </div>
+                </div>
+
+                <div style="border-top: 1px solid #2a2a4e; padding-top: 20px; margin-top: 20px; text-align: center;">
+                    <p style="color: #888; margin-bottom: 15px;">
+                        The Network Builder is no longer needed. You can close it to free up port 8000.
+                    </p>
+                    <button onclick="closeBuilder()" style="background: #ef4444; color: white; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: bold;">
+                        🛑 Close Network Builder
+                    </button>
+                </div>
+            `;
+
+            // Replace step-5 content with summary (this is the active step when launching)
+            const step5 = document.getElementById('step-5');
+            console.log('step-5 element found:', !!step5);
+
+            if (step5) {
+                // Ensure step-5 is active/visible
+                step5.classList.add('active');
+                step5.innerHTML = `<div class="wizard-content">${summaryHTML}</div>`;
+                console.log('Updated step-5 with launch summary');
+
+                // Scroll to top so user sees the summary
+                window.scrollTo(0, 0);
+            } else {
+                // Fallback: find the active wizard step
+                const activeStep = document.querySelector('.wizard-step.active');
+                console.log('Active step found:', !!activeStep);
+
+                if (activeStep) {
+                    activeStep.innerHTML = `<div class="wizard-content">${summaryHTML}</div>`;
+                    console.log('Updated active wizard step with summary');
+                } else {
+                    // Last resort: create a modal/overlay
+                    console.error('Could not find any wizard step to update');
+                    const overlay = document.createElement('div');
+                    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:#1a1a2e;z-index:9999;overflow:auto;padding:40px;';
+                    overlay.innerHTML = summaryHTML;
+                    document.body.appendChild(overlay);
+                    console.log('Created overlay with summary');
+                }
+            }
+
+            // Hide the wizard navigation at bottom
+            const step5Nav = document.querySelector('#step-5 .wizard-nav');
+            if (step5Nav) step5Nav.style.display = 'none';
+
+            // Mark all progress steps as complete
+            document.querySelectorAll('.step').forEach(step => step.classList.add('completed'));
+
+            console.log('Summary page should now be visible');
+
     } catch (error) {
+        console.error('Launch exception:', error);
         showAlert(`Failed to launch network: ${error.message}`, 'error');
+    }
+}
+
+// Open all agent dashboards function
+function openAllAgentDashboards() {
+    const agents = window.launchedAgents || [];
+    if (agents.length === 0) {
+        alert('No agents to open');
+        return;
+    }
+
+    console.log(`Opening ${agents.length} agent dashboards...`);
+
+    // Open each agent with a slight delay to avoid popup blockers
+    agents.forEach((agent, index) => {
+        setTimeout(() => {
+            console.log(`Opening ${agent.id} at ${agent.url}`);
+            const win = window.open(agent.url, `agent_${agent.id}`);
+            if (!win) {
+                console.warn(`Popup blocked for ${agent.id}. Please allow popups.`);
+                if (index === 0) {
+                    alert('Popup blocked! Please allow popups for this site, then click the button again.');
+                }
+            }
+        }, index * 500); // 500ms between each to avoid blocking
+    });
+}
+
+// Close builder function
+async function closeBuilder() {
+    if (confirm('Close the Network Builder?\n\nYour deployed agents will continue running on their respective ports.')) {
+        // Show shutdown message immediately
+        const container = document.querySelector('.wizard-content') || document.querySelector('.container');
+        if (container) {
+            container.innerHTML = `
+                <div style="text-align: center; padding: 60px 20px;">
+                    <h2 style="color: #4ade80; margin-bottom: 20px;">✅ Builder Shutdown Initiated</h2>
+                    <p style="color: #888; margin-bottom: 20px;">
+                        The Network Builder is shutting down. Your agents are still running.
+                    </p>
+                    <p style="color: #00d9ff; margin-bottom: 20px;">
+                        You can now close this browser tab.
+                    </p>
+                    <p style="color: #888; font-size: 0.9rem;">
+                        To start the builder again later, run:<br>
+                        <code style="background: #1a1a2e; padding: 8px 12px; border-radius: 4px; display: inline-block; margin-top: 10px; color: #4ade80;">
+                            python3 wontyoubemyneighbor.py
+                        </code>
+                    </p>
+                </div>
+            `;
+        }
+
+        // Hide progress and buttons
+        const progressContainer = document.querySelector('.progress-container');
+        if (progressContainer) progressContainer.style.display = 'none';
+        const buttonGroup = document.querySelector('.button-group');
+        if (buttonGroup) buttonGroup.style.display = 'none';
+
+        try {
+            // Call shutdown endpoint
+            await fetch('/api/wizard/shutdown', { method: 'POST' });
+            console.log('Shutdown request sent successfully');
+        } catch (error) {
+            // Server may have already shut down, which is expected
+            console.log('Shutdown in progress (connection closed as expected)');
+        }
     }
 }
 

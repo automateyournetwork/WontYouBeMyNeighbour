@@ -5,10 +5,12 @@ Tracks real-time OSPF and BGP state, serializes for LLM context injection,
 and provides snapshots for time-series analysis.
 """
 
+import asyncio
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import json
+import copy
 
 
 @dataclass
@@ -66,6 +68,29 @@ class NetworkStateManager:
 
         # Full interface configuration (from agent config)
         self._interfaces: List[Dict[str, Any]] = []
+
+        # Lock for thread-safe state access
+        self._state_lock = asyncio.Lock()
+
+    def get_ospf_state(self) -> Dict[str, Any]:
+        """Thread-safe accessor for OSPF state (returns a copy)"""
+        return copy.deepcopy(self._current_ospf_state)
+
+    def get_bgp_state(self) -> Dict[str, Any]:
+        """Thread-safe accessor for BGP state (returns a copy)"""
+        return copy.deepcopy(self._current_bgp_state)
+
+    def get_isis_state(self) -> Dict[str, Any]:
+        """Thread-safe accessor for IS-IS state (returns a copy)"""
+        return copy.deepcopy(self._current_isis_state)
+
+    def get_routing_table(self) -> List[Dict[str, Any]]:
+        """Thread-safe accessor for routing table (returns a copy)"""
+        return copy.deepcopy(self._current_routing_table)
+
+    def get_interfaces(self) -> List[Dict[str, Any]]:
+        """Thread-safe accessor for interfaces (returns a copy)"""
+        return copy.deepcopy(self._interfaces)
 
     def set_protocol_handlers(self, ospf_interface=None, bgp_speaker=None,
                               isis_speaker=None, ospfv3_speaker=None):

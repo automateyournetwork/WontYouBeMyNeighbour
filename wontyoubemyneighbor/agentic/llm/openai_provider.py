@@ -92,9 +92,14 @@ class OpenAIProvider(BaseLLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens
             )
-            return response.choices[0].message.content
-        except Exception as e:
+            # Safely access response choices
+            if not response.choices:
+                raise RuntimeError("OpenAI returned empty response")
+            return response.choices[0].message.content or ""
+        except openai.APIError as e:
             raise RuntimeError(f"OpenAI API error: {e}")
+        except (IndexError, AttributeError) as e:
+            raise RuntimeError(f"Invalid OpenAI response format: {e}")
 
     def get_provider_name(self) -> str:
         """Get provider name for logging"""

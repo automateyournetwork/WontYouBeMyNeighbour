@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RubberBand - Network Builder Wizard</title>
+    <title>ASI - Network Builder Wizard</title>
     <style>
         * {
             margin: 0;
@@ -207,9 +207,51 @@
             background: #1a2e1a;
         }
 
+        .mcp-card.mandatory {
+            border-color: #4ade80;
+            background: linear-gradient(135deg, #1a2e1a 0%, #16213e 100%);
+            cursor: default;
+            position: relative;
+        }
+
+        .mcp-card.mandatory::after {
+            content: 'LOCKED';
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #4ade80;
+            color: #1a1a2e;
+            font-size: 0.6rem;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .mcp-card.mandatory:hover {
+            border-color: #4ade80;
+        }
+
+        .mcp-card.custom {
+            border-color: #9333ea;
+            background: #1a1a2e;
+        }
+
+        .mcp-card.custom.selected {
+            border-color: #9333ea;
+            background: #2a1a3e;
+        }
+
         .mcp-card h4 {
             color: #00d9ff;
             margin-bottom: 5px;
+        }
+
+        .mcp-card.mandatory h4 {
+            color: #4ade80;
+        }
+
+        .mcp-card.custom h4 {
+            color: #9333ea;
         }
 
         .mcp-card p {
@@ -484,10 +526,7 @@
     <div class="container">
         <header>
             <div class="logo">
-                <h1>RubberBand Network Builder</h1>
-            </div>
-            <div style="display: flex; gap: 10px;">
-                <a href="/monitor" class="back-btn">Monitor Networks</a>
+                <h1>ASI Network Builder</h1>
             </div>
         </header>
 
@@ -518,30 +557,130 @@
         <!-- Step 1: Docker Network -->
         <div class="wizard-step active" id="step-1">
             <div class="wizard-content">
-                <h2>Step 1: Docker Network Configuration</h2>
-                <p class="subtitle">Configure the Docker network for your multi-agent deployment</p>
+                <h2>Step 1: Network Foundation</h2>
+                <p class="subtitle">Configure the network layers for your multi-agent deployment</p>
 
                 <div class="docker-status" id="docker-status">
                     <div class="spinner"></div>
                     <span>Checking Docker availability...</span>
                 </div>
 
-                <div class="form-group">
-                    <label for="network-name">Network Name</label>
-                    <input type="text" id="network-name" placeholder="e.g., springfield" value="springfield">
-                    <div class="hint">Unique name for the Docker network</div>
+                <!-- 3-Layer Network Architecture Info -->
+                <div class="alert alert-info" style="margin-bottom: 25px;">
+                    <strong>3-Layer Network Architecture:</strong>
+                    <div style="margin-top: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; text-align: center;">
+                        <div style="background: rgba(147, 51, 234, 0.2); padding: 10px; border-radius: 6px; border: 1px solid #9333ea;">
+                            <div style="font-size: 1.5rem;">🐳</div>
+                            <div style="color: #9333ea; font-weight: bold;">Docker Layer</div>
+                            <div style="font-size: 0.8rem; color: #888;">Container networking</div>
+                        </div>
+                        <div style="background: rgba(74, 222, 128, 0.2); padding: 10px; border-radius: 6px; border: 1px solid #4ade80;">
+                            <div style="font-size: 1.5rem;">🔗</div>
+                            <div style="color: #4ade80; font-weight: bold;">ASI Overlay</div>
+                            <div style="font-size: 0.8rem; color: #888;">IPv6 agent mesh (automatic)</div>
+                        </div>
+                        <div style="background: rgba(0, 217, 255, 0.2); padding: 10px; border-radius: 6px; border: 1px solid #00d9ff;">
+                            <div style="font-size: 1.5rem;">🌐</div>
+                            <div style="color: #00d9ff; font-weight: bold;">Underlay</div>
+                            <div style="font-size: 0.8rem; color: #888;">Your routing topology</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ASI Overlay Network (Automatic - Always IPv6) -->
+                <div style="background: rgba(74, 222, 128, 0.1); border: 1px solid #4ade80; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+                    <h3 style="color: #4ade80; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #4ade80; color: #1a1a2e; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">AUTOMATIC</span>
+                        ASI Agent Overlay Network (IPv6)
+                    </h3>
+                    <p style="color: #888; margin-bottom: 15px;">
+                        Every agent gets an IPv6 loopback address for visibility and management. This overlay network uses Neighbor Discovery (ND) for automatic agent-to-agent communication.
+                    </p>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Overlay Subnet</label>
+                            <input type="text" value="fd00:a510::/48" disabled style="background: #1a2e1a; border-color: #4ade80;">
+                            <div class="hint">ULA (Unique Local Address) range for agent mesh</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Agent Address Format</label>
+                            <input type="text" value="fd00:a510:0:NET::AGENT/64" disabled style="background: #1a2e1a; border-color: #4ade80;">
+                            <div class="hint">Each agent gets a unique IPv6 address</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 15px; margin-top: 10px;">
+                        <label style="display: flex; align-items: center; gap: 8px; color: #4ade80;">
+                            <input type="checkbox" id="enable-nd" checked>
+                            Enable Neighbor Discovery (ND)
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; color: #4ade80;">
+                            <input type="checkbox" id="enable-overlay-routes" checked>
+                            Install kernel routes
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Underlay Protocol Stack -->
+                <div style="background: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+                    <h3 style="color: #00d9ff; margin-bottom: 10px;">Underlay Protocol Stack</h3>
+                    <p style="color: #888; margin-bottom: 15px;">
+                        Choose the IP version for your user-defined routing topology (OSPF, BGP, IS-IS, etc.)
+                    </p>
+                    <div class="form-group">
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;">
+                            <label class="protocol-option" style="display: flex; flex-direction: column; align-items: center; padding: 20px; background: #16213e; border: 2px solid #2a2a4e; border-radius: 8px; cursor: pointer; transition: all 0.3s;" onclick="selectUnderlayProtocol('ipv6')">
+                                <input type="radio" name="underlay-protocol" value="ipv6" checked style="display: none;">
+                                <span style="font-size: 2rem; margin-bottom: 10px;">6️⃣</span>
+                                <span style="color: #00d9ff; font-weight: bold;">IPv6</span>
+                                <span style="font-size: 0.75rem; color: #888; text-align: center;">Recommended - Modern</span>
+                            </label>
+                            <label class="protocol-option" style="display: flex; flex-direction: column; align-items: center; padding: 20px; background: #16213e; border: 2px solid #2a2a4e; border-radius: 8px; cursor: pointer; transition: all 0.3s;" onclick="selectUnderlayProtocol('ipv4')">
+                                <input type="radio" name="underlay-protocol" value="ipv4" style="display: none;">
+                                <span style="font-size: 2rem; margin-bottom: 10px;">4️⃣</span>
+                                <span style="color: #00d9ff; font-weight: bold;">IPv4</span>
+                                <span style="font-size: 0.75rem; color: #888; text-align: center;">Legacy - Compatible</span>
+                            </label>
+                            <label class="protocol-option" style="display: flex; flex-direction: column; align-items: center; padding: 20px; background: #16213e; border: 2px solid #2a2a4e; border-radius: 8px; cursor: pointer; transition: all 0.3s;" onclick="selectUnderlayProtocol('dual')">
+                                <input type="radio" name="underlay-protocol" value="dual" style="display: none;">
+                                <span style="font-size: 2rem; margin-bottom: 10px;">🔄</span>
+                                <span style="color: #00d9ff; font-weight: bold;">Dual-Stack</span>
+                                <span style="font-size: 0.75rem; color: #888; text-align: center;">Both IPv4 + IPv6</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <hr style="margin: 25px 0; border-color: #2a2a4e;">
+
+                <!-- Docker Network Configuration -->
+                <h3 style="color: #9333ea; margin-bottom: 15px;">Docker Network Configuration</h3>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="network-name">Network Name</label>
+                        <input type="text" id="network-name" placeholder="e.g., springfield" value="springfield">
+                        <div class="hint">Unique name for the Docker network</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="docker-ip-version">IP Version</label>
+                        <select id="docker-ip-version" onchange="updateDockerNetworkFields()">
+                            <option value="ipv6" selected>IPv6 (Default)</option>
+                            <option value="ipv4">IPv4 (Legacy)</option>
+                        </select>
+                        <div class="hint">IP version for container networking</div>
+                    </div>
                 </div>
 
                 <div class="form-row">
                     <div class="form-group">
-                        <label for="subnet">Subnet (Optional)</label>
-                        <input type="text" id="subnet" placeholder="e.g., 172.20.0.0/16" value="172.20.0.0/16">
-                        <div class="hint">Leave empty for automatic assignment</div>
+                        <label for="subnet" id="subnet-label">Subnet</label>
+                        <input type="text" id="subnet" placeholder="e.g., fd00:docker:1::/64" value="fd00:docker:1::/64">
+                        <div class="hint" id="subnet-hint">Subnet for Docker containers</div>
                     </div>
                     <div class="form-group">
-                        <label for="gateway">Gateway (Optional)</label>
-                        <input type="text" id="gateway" placeholder="e.g., 172.20.0.1" value="172.20.0.1">
-                        <div class="hint">Default gateway for the network</div>
+                        <label for="gateway" id="gateway-label">Gateway</label>
+                        <input type="text" id="gateway" placeholder="e.g., fd00:docker:1::1" value="fd00:docker:1::1">
+                        <div class="hint" id="gateway-hint">Default gateway for containers</div>
                     </div>
                 </div>
 
@@ -564,15 +703,69 @@
         <!-- Step 2: MCP Servers -->
         <div class="wizard-step" id="step-2">
             <div class="wizard-content">
-                <h2>Step 2: MCP Server Selection</h2>
-                <p class="subtitle">Select which Model Context Protocol servers to enable for your agents</p>
+                <h2>Step 2: MCP Server Configuration</h2>
+                <p class="subtitle">Configure Model Context Protocol servers for your agents</p>
 
-                <div class="alert alert-info">
-                    MCPs provide additional capabilities to your RubberBand agents. Select the ones relevant to your use case.
+                <!-- Mandatory MCPs Section -->
+                <div style="margin-bottom: 30px;">
+                    <h3 style="color: #4ade80; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #4ade80; color: #1a1a2e; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">REQUIRED</span>
+                        Mandatory MCPs (Always Included)
+                    </h3>
+                    <p style="color: #888; font-size: 0.9rem; margin-bottom: 15px;">
+                        These 4 MCPs are automatically included with every agent and cannot be disabled.
+                    </p>
+                    <div class="mcp-grid" id="mandatory-mcp-grid">
+                        <!-- Mandatory MCPs loaded here -->
+                    </div>
                 </div>
 
-                <div class="mcp-grid" id="mcp-grid">
-                    <!-- MCPs will be loaded dynamically -->
+                <!-- Optional MCPs Section -->
+                <div style="margin-bottom: 30px;">
+                    <h3 style="color: #00d9ff; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #00d9ff; color: #1a1a2e; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">OPTIONAL</span>
+                        Optional MCPs (Click to Enable)
+                    </h3>
+                    <p style="color: #888; font-size: 0.9rem; margin-bottom: 15px;">
+                        Enable additional integrations. Some require configuration before use.
+                    </p>
+                    <div class="mcp-grid" id="optional-mcp-grid">
+                        <!-- Optional MCPs loaded here -->
+                    </div>
+                </div>
+
+                <!-- Custom MCP Import Section -->
+                <div style="background: #1a1a2e; padding: 20px; border-radius: 8px; border: 1px dashed #9333ea;">
+                    <h3 style="color: #9333ea; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #9333ea; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">CUSTOM</span>
+                        Import Custom MCP
+                    </h3>
+                    <p style="color: #888; font-size: 0.9rem; margin-bottom: 15px;">
+                        Add your own MCP server by providing a JSON configuration.
+                    </p>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                            <input type="file" id="custom-mcp-file" accept=".json" onchange="loadCustomMcpFile(this)" style="display: none;">
+                            <button class="btn btn-secondary" onclick="document.getElementById('custom-mcp-file').click()">Choose JSON File</button>
+                            <span id="custom-mcp-file-name" style="color: #888;"></span>
+                        </div>
+                        <label style="color: #888; font-size: 0.9rem;">Or Paste JSON Configuration</label>
+                        <textarea id="custom-mcp-json" rows="4" style="font-family: monospace; font-size: 0.85rem;" placeholder='{
+  "id": "my-custom-mcp",
+  "t": "custom",
+  "n": "My Custom MCP",
+  "d": "Description of what this MCP does",
+  "e": true,
+  "c": { "endpoint": "http://localhost:9000" }
+}'></textarea>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn btn-success" onclick="importCustomMcp()">Add Custom MCP</button>
+                        <span id="custom-mcp-status"></span>
+                    </div>
+
+                    <!-- Custom MCPs list -->
+                    <div id="custom-mcp-list" style="margin-top: 15px;"></div>
                 </div>
             </div>
 
@@ -935,7 +1128,7 @@ Or: Create a BGP router in AS 65001 that peers with neighbor 192.168.1.2 in AS 6
         <div class="wizard-step" id="step-5">
             <div class="wizard-content">
                 <h2>Step 5: LLM Provider Configuration</h2>
-                <p class="subtitle">Configure the AI provider for your RubberBand agents</p>
+                <p class="subtitle">Configure the AI provider for your ASI agents</p>
 
                 <div class="form-group">
                     <label for="llm-provider">LLM Provider</label>

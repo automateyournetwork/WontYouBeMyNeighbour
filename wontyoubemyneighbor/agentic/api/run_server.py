@@ -1,7 +1,7 @@
 """
-RubberBand API Server Runner
+ASI API Server Runner
 
-Starts the RubberBand REST API server.
+Starts the ASI REST API server.
 """
 
 import asyncio
@@ -15,11 +15,11 @@ except ImportError:
 
 
 async def main():
-    """Run RubberBand API server"""
-    parser = argparse.ArgumentParser(description="RubberBand Network Agent API Server")
+    """Run ASI API server"""
+    parser = argparse.ArgumentParser(description="ASI Network Agent API Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
-    parser.add_argument("--rubberband-id", default="rubberband-1", help="RubberBand instance ID")
+    parser.add_argument("--asi-id", default="asi-1", help="ASI instance ID")
     parser.add_argument("--openai-key", help="OpenAI API key")
     parser.add_argument("--claude-key", help="Anthropic Claude API key")
     parser.add_argument("--gemini-key", help="Google Gemini API key")
@@ -35,15 +35,15 @@ async def main():
     from ..integration.bridge import AgenticBridge
     from .server import create_api_server
 
-    print(f"Starting RubberBand API Server...")
-    print(f"  RubberBand ID: {args.rubberband_id}")
+    print(f"Starting ASI API Server...")
+    print(f"  ASI ID: {args.asi_id}")
     print(f"  Host: {args.host}")
     print(f"  Port: {args.port}")
     print(f"  Autonomous Mode: {args.autonomous}")
 
     # Create agentic bridge
     bridge = AgenticBridge(
-        rubberband_id=args.rubberband_id,
+        asi_id=args.asi_id,
         openai_key=args.openai_key,
         claude_key=args.claude_key,
         gemini_key=args.gemini_key,
@@ -63,7 +63,7 @@ async def main():
         port=args.port
     )
 
-    print(f"\n✓ RubberBand API Server ready!")
+    print(f"\n✓ ASI API Server ready!")
     print(f"\nAPI Endpoints:")
     print(f"  Health:      http://{args.host}:{args.port}/health")
     print(f"  Query:       http://{args.host}:{args.port}/api/query")

@@ -1,0 +1,14 @@
+{
+  "name": "BGP Anycast DNS/CDN",
+  "id": "bgp-anycast",
+  "version": "1.0.0",
+  "description": "Global anycast network for DNS or CDN services using BGP to advertise same prefix from multiple locations",
+  "category": "cdn",
+  "tags": ["anycast", "bgp", "dns", "cdn", "global", "distributed"],
+  "agent_count": 4,
+  "link_count": 4,
+  "protocols": ["ebgp"],
+  "use_cases": ["DNS infrastructure", "CDN edge nodes", "DDoS mitigation", "Global load balancing"],
+  "features": {"geo_distribution": "Automatic user routing to nearest site", "resilience": "Automatic failover on site failure"},
+  "requirements": {"min_agents": 2, "recommended_agents": 4, "service_ip": "192.0.2.1/32"}
+}

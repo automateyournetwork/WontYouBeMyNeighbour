@@ -1,9 +1,9 @@
 /**
- * RubberBand Dashboard - JavaScript Application
+ * ASI Dashboard - JavaScript Application
  * Handles WebSocket connection, chat, and status updates
  */
 
-class RubberBandDashboard {
+class ASIDashboard {
     constructor() {
         this.ws = null;
         this.reconnectAttempts = 0;
@@ -36,6 +36,9 @@ class RubberBandDashboard {
         this.configuredProtocols = new Set();
         this.protocolCardsRendered = false;
 
+        // Track intervals for cleanup
+        this._routeUpdateInterval = null;
+
         this.init();
     }
 
@@ -54,12 +57,28 @@ class RubberBandDashboard {
         // Connect WebSocket
         this.connect();
 
-        // Periodic route updates
-        setInterval(() => {
+        // Periodic route updates (with cleanup tracking)
+        this._routeUpdateInterval = setInterval(() => {
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                 this.ws.send(JSON.stringify({ type: 'get_routes' }));
             }
         }, 10000);
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => this.cleanup());
+    }
+
+    cleanup() {
+        // Clear intervals to prevent memory leaks
+        if (this._routeUpdateInterval) {
+            clearInterval(this._routeUpdateInterval);
+            this._routeUpdateInterval = null;
+        }
+        // Close WebSocket cleanly
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
     }
 
     connect() {
@@ -125,7 +144,7 @@ class RubberBandDashboard {
                     this.addLog(data.data);
                     break;
                 case 'chat_response':
-                    this.addChatMessage(data.data.response, 'rubberband');
+                    this.addChatMessage(data.data.response, 'asi');
                     this.elements.sendBtn.disabled = false;
                     this.elements.chatInput.disabled = false;
                     this.elements.chatInput.focus();
@@ -145,12 +164,18 @@ class RubberBandDashboard {
         // Agent Name
         if (status.agent_name) {
             this.elements.agentName.textContent = status.agent_name;
-            document.title = `${status.agent_name} - RubberBand Dashboard`;
+            document.title = `${status.agent_name} - ASI Dashboard`;
         }
 
         // Container Name (shown separately for clarity)
         if (status.container_name && this.elements.containerName) {
             this.elements.containerName.textContent = `[${status.container_name}]`;
+
+            // Update Agent Dashboard link with agent_id
+            const agentDashboardLink = document.getElementById('nav-agent-dashboard');
+            if (agentDashboardLink) {
+                agentDashboardLink.href = `/agent-dashboard?agent_id=${encodeURIComponent(status.container_name)}`;
+            }
         }
 
         // Router ID
@@ -629,7 +654,7 @@ class RubberBandDashboard {
                 message: message
             }));
         } else {
-            this.addChatMessage('Not connected to server. Please wait...', 'rubberband');
+            this.addChatMessage('Not connected to server. Please wait...', 'asi');
             this.elements.sendBtn.disabled = false;
             this.elements.chatInput.disabled = false;
         }
@@ -692,7 +717,7 @@ class RubberBandDashboard {
 
 // Initialize dashboard when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-    window.dashboard = new RubberBandDashboard();
+    window.dashboard = new ASIDashboard();
 });
 
 // Toggle to Logs tab

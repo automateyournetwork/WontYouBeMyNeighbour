@@ -1,4 +1,4 @@
-/* RubberBand Dashboard Styles */
+/* ASI Dashboard Styles */
 :root {
     --bg-primary: #0d1117;
     --bg-secondary: #161b22;
@@ -13,7 +13,7 @@
     --accent-red: #f85149;
     --accent-purple: #a371f7;
     --chat-user-bg: #1f6feb;
-    --chat-rubberband-bg: #21262d;
+    --chat-asi-bg: #21262d;
 }
 
 * {
@@ -183,9 +183,9 @@ body {
     border-bottom-right-radius: 4px;
 }
 
-.message.rubberband-message {
+.message.asi-message {
     align-self: flex-start;
-    background: var(--chat-rubberband-bg);
+    background: var(--chat-asi-bg);
     border: 1px solid var(--border-color);
     border-bottom-left-radius: 4px;
 }

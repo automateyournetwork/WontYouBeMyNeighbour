@@ -1,10 +1,10 @@
 #!/bin/bash
-# Test runner for RubberBand agentic layer
+# Test runner for ASI agentic layer
 
 set -e
 
 echo "=================================="
-echo "RubberBand Agentic Layer Test Suite"
+echo "ASI Agentic Layer Test Suite"
 echo "=================================="
 echo ""
 

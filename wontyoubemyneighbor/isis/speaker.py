@@ -265,15 +265,21 @@ class ISISSpeaker:
         """Generate and install our local LSP(s)"""
         # Originate L1 LSP
         if self.level in (LEVEL_1, LEVEL_1_2):
-            lsp = self._build_local_lsp(LEVEL_1)
-            self.dual_lsdb.l1_lsdb.install_lsp(lsp)
-            self.logger.debug(f"Originated L1 LSP seq={lsp.sequence_number}")
+            if self.dual_lsdb.l1_lsdb is None:
+                self.logger.error("Cannot originate L1 LSP: L1 LSDB not initialized")
+            else:
+                lsp = self._build_local_lsp(LEVEL_1)
+                self.dual_lsdb.l1_lsdb.install_lsp(lsp)
+                self.logger.debug(f"Originated L1 LSP seq={lsp.sequence_number}")
 
         # Originate L2 LSP
         if self.level in (LEVEL_2, LEVEL_1_2):
-            lsp = self._build_local_lsp(LEVEL_2)
-            self.dual_lsdb.l2_lsdb.install_lsp(lsp)
-            self.logger.debug(f"Originated L2 LSP seq={lsp.sequence_number}")
+            if self.dual_lsdb.l2_lsdb is None:
+                self.logger.error("Cannot originate L2 LSP: L2 LSDB not initialized")
+            else:
+                lsp = self._build_local_lsp(LEVEL_2)
+                self.dual_lsdb.l2_lsdb.install_lsp(lsp)
+                self.logger.debug(f"Originated L2 LSP seq={lsp.sequence_number}")
 
     def _build_local_lsp(self, level: int) -> LSP:
         """Build local LSP for specified level"""

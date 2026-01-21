@@ -326,13 +326,23 @@ class DNSServer:
         # Parse question
         offset = 12
         name_parts = []
+        max_iterations = 255  # Prevent infinite loops from malformed data
 
-        while offset < len(data):
+        while offset < len(data) and max_iterations > 0:
+            max_iterations -= 1
             length = data[offset]
             if length == 0:
                 offset += 1
                 break
-            name_parts.append(data[offset + 1:offset + 1 + length].decode('ascii'))
+            # Bounds check: ensure we have enough data for the label
+            if offset + 1 + length > len(data):
+                self.logger.warning(f"DNS query truncated: label needs {length} bytes at offset {offset}")
+                return None
+            try:
+                name_parts.append(data[offset + 1:offset + 1 + length].decode('ascii'))
+            except UnicodeDecodeError as e:
+                self.logger.warning(f"DNS query contains non-ASCII label: {e}")
+                return None
             offset += 1 + length
 
         query['name'] = '.'.join(name_parts)
@@ -489,6 +499,7 @@ class DNSServer:
             return
 
         self._queries_forwarded += 1
+        sock = None
 
         try:
             # Create socket for forwarding
@@ -505,10 +516,11 @@ class DNSServer:
             # Forward back to client
             self._socket.sendto(response, client_addr)
 
-            sock.close()
-
-        except Exception as e:
+        except (socket.timeout, socket.error, OSError) as e:
             self.logger.error(f"Failed to forward query: {e}")
+        finally:
+            if sock:
+                sock.close()
 
     def add_host(self, hostname: str, ip: str, zone_domain: str) -> None:
         """Convenience method to add a host record"""

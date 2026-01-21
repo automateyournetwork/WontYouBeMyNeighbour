@@ -1,0 +1,103 @@
+{
+  "links": [
+    {
+      "id": "core-interlink",
+      "a1": "core-1",
+      "i1": "eth1",
+      "a2": "core-2",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 1,
+      "subnet": "172.16.1.0/30",
+      "description": "Core interconnect"
+    },
+    {
+      "id": "core1-dist1",
+      "a1": "core-1",
+      "i1": "eth2",
+      "a2": "dist-1",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.10.0/30",
+      "description": "Core-1 to Distribution-1"
+    },
+    {
+      "id": "core1-dist2",
+      "a1": "core-1",
+      "i1": "eth3",
+      "a2": "dist-2",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.11.0/30",
+      "description": "Core-1 to Distribution-2"
+    },
+    {
+      "id": "core2-dist1",
+      "a1": "core-2",
+      "i1": "eth2",
+      "a2": "dist-1",
+      "i2": "eth2",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.12.0/30",
+      "description": "Core-2 to Distribution-1"
+    },
+    {
+      "id": "core2-dist2",
+      "a1": "core-2",
+      "i1": "eth3",
+      "a2": "dist-2",
+      "i2": "eth2",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.13.0/30",
+      "description": "Core-2 to Distribution-2"
+    },
+    {
+      "id": "dist1-access1",
+      "a1": "dist-1",
+      "i1": "eth3",
+      "a2": "access-1",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.20.0/30",
+      "description": "Distribution-1 to Access-1"
+    },
+    {
+      "id": "dist1-access2",
+      "a1": "dist-1",
+      "i1": "eth4",
+      "a2": "access-2",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.21.0/30",
+      "description": "Distribution-1 to Access-2"
+    },
+    {
+      "id": "dist2-access3",
+      "a1": "dist-2",
+      "i1": "eth3",
+      "a2": "access-3",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.22.0/30",
+      "description": "Distribution-2 to Access-3"
+    },
+    {
+      "id": "dist2-access4",
+      "a1": "dist-2",
+      "i1": "eth4",
+      "a2": "access-4",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.23.0/30",
+      "description": "Distribution-2 to Access-4"
+    }
+  ]
+}

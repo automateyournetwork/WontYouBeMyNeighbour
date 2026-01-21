@@ -590,9 +590,9 @@ class LSAFloodingManager:
                             elif lsa_header.ls_type in (SUMMARY_LSA_NETWORK, SUMMARY_LSA_ASBR):
                                 body = SummaryLSA(body_bytes)
                                 logger.debug(f"Parsed Summary LSA Type {lsa_header.ls_type} from {lsa_header.advertising_router}")
-                        except Exception as e:
-                            logger.debug(f"Could not parse LSA body type {lsa_header.ls_type}: {e}")
-                            # Continue with body=None if parsing fails
+                        except (ValueError, struct.error, AttributeError) as e:
+                            logger.warning(f"Could not parse LSA body type {lsa_header.ls_type} from {lsa_header.advertising_router}: {e}")
+                            # Continue with body=None - callers must handle None body gracefully
 
                         # Create LSA object with header and body
                         lsa = LSA(header=lsa_header, body=body)

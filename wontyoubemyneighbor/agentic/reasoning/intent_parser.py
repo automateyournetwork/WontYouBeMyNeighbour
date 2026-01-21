@@ -13,7 +13,7 @@ import json
 
 
 class IntentType(str, Enum):
-    """Types of network intents RubberBand can understand"""
+    """Types of network intents ASI can understand"""
 
     # Query intents
     QUERY_STATUS = "query_status"  # "What is the status of X?"
@@ -49,8 +49,8 @@ class IntentType(str, Enum):
     DIAGNOSTIC_TRACEROUTE = "diagnostic_traceroute"  # "Traceroute to 10.0.0.1"
 
     # Multi-agent intents
-    COORDINATE_CONSENSUS = "coordinate_consensus"  # "All RubberBands agree on X?"
-    GOSSIP_STATE = "gossip_state"  # "Share state with other RubberBands"
+    COORDINATE_CONSENSUS = "coordinate_consensus"  # "All ASIs agree on X?"
+    GOSSIP_STATE = "gossip_state"  # "Share state with other ASIs"
 
     # Unknown
     UNKNOWN = "unknown"

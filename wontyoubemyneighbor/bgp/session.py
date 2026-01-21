@@ -279,8 +279,8 @@ class BGPSession:
             try:
                 self.writer.close()
                 await self.writer.wait_closed()
-            except Exception:
-                pass
+            except (ConnectionError, OSError, asyncio.CancelledError) as e:
+                self.logger.debug(f"Error closing writer during collision resolution: {e}")
 
         # Accept the new connection
         self.reader = reader

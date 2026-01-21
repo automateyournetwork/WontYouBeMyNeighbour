@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>RubberBand Dashboard - Won't You Be My Neighbor</title>
+    <title>ASI Dashboard - Won't You Be My Neighbor</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
         <!-- Header -->
         <header class="header">
             <div class="header-left">
-                <h1 id="agent-name">RubberBand Dashboard</h1>
+                <h1 id="agent-name">ASI Dashboard</h1>
                 <span class="subtitle">Won't You Be My Neighbor</span>
                 <span class="container-name" id="container-name" style="font-size: 0.9rem; color: var(--accent-cyan); margin-left: 15px;"></span>
             </div>
@@ -22,12 +22,36 @@
             </div>
         </header>
 
+        <!-- Quick Navigation Bar -->
+        <nav class="quick-nav" style="display: flex; gap: 10px; padding: 12px 20px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-bottom: 2px solid var(--accent-cyan); flex-wrap: wrap; justify-content: center;">
+            <a href="/agent-dashboard" class="nav-link" id="nav-agent-dashboard" style="display: flex; align-items: center; gap: 8px; padding: 10px 18px; background: linear-gradient(135deg, #22d3ee 0%, #0891b2 100%); color: #000; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.3s; box-shadow: 0 2px 8px rgba(34, 211, 238, 0.3);">
+                <span style="font-size: 1.2rem;">📊</span>
+                <span>Agent Dashboard</span>
+                <span style="font-size: 0.7rem; background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 4px;">Testing • GAIT • Markmap</span>
+            </a>
+            <a href="/topology3d" class="nav-link" style="display: flex; align-items: center; gap: 8px; padding: 10px 18px; background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%); color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.3s; box-shadow: 0 2px 8px rgba(168, 85, 247, 0.3);">
+                <span style="font-size: 1.2rem;">🌐</span>
+                <span>3D Topology</span>
+                <span style="font-size: 0.7rem; background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 4px;">Three.js</span>
+            </a>
+            <a href="/monitor" class="nav-link" style="display: flex; align-items: center; gap: 8px; padding: 10px 18px; background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%); color: #000; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.3s; box-shadow: 0 2px 8px rgba(74, 222, 128, 0.3);">
+                <span style="font-size: 1.2rem;">🗺️</span>
+                <span>Full Agent Topology</span>
+                <span style="font-size: 0.7rem; background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 4px;">All Agents</span>
+            </a>
+            <a href="/wizard" class="nav-link" style="display: flex; align-items: center; gap: 8px; padding: 10px 18px; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: #000; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.3s; box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);">
+                <span style="font-size: 1.2rem;">🔧</span>
+                <span>Network Builder</span>
+                <span style="font-size: 0.7rem; background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 4px;">Wizard</span>
+            </a>
+        </nav>
+
         <!-- Main content -->
         <main class="main-content">
             <!-- Left panel: Chat -->
             <section class="panel chat-panel">
                 <div class="panel-header">
-                    <h2>Chat with RubberBand</h2>
+                    <h2>Chat with ASI</h2>
                     <span class="provider-badge" id="provider-badge">--</span>
                 </div>
                 <div class="chat-messages" id="chat-messages">
@@ -37,7 +61,7 @@
                     </div>
                 </div>
                 <div class="chat-input-container">
-                    <input type="text" id="chat-input" placeholder="Ask RubberBand something..." autocomplete="off">
+                    <input type="text" id="chat-input" placeholder="Ask ASI something..." autocomplete="off">
                     <button id="send-btn" class="send-btn">Send</button>
                 </div>
             </section>

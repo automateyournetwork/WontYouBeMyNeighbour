@@ -1,0 +1,14 @@
+{
+  "name": "WAN Hub-and-Spoke",
+  "id": "wan-hub-spoke",
+  "version": "1.0.0",
+  "description": "Enterprise WAN with dual hubs and GRE tunnels to branch offices using iBGP",
+  "category": "wan",
+  "tags": ["wan", "hub-spoke", "gre", "bgp", "tunnel", "branch"],
+  "agent_count": 5,
+  "link_count": 7,
+  "protocols": ["ibgp", "ospf", "dhcp"],
+  "use_cases": ["Enterprise WAN", "Branch connectivity", "Multi-site network", "Disaster recovery"],
+  "features": {"redundancy": "Dual hubs with backup tunnels", "scalability": "Add spokes as needed"},
+  "requirements": {"min_agents": 3, "recommended_agents": 5, "tunnel_type": "GRE over Internet"}
+}

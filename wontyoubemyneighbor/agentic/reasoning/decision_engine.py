@@ -2,7 +2,7 @@
 Decision Engine
 
 Makes intelligent routing decisions based on network state analysis.
-Provides explainability for all decisions made by RubberBand.
+Provides explainability for all decisions made by ASI.
 """
 
 from typing import Dict, Any, List, Optional, Tuple

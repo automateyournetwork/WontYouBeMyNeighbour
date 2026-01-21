@@ -1,0 +1,14 @@
+{
+  "name": "Campus Network",
+  "id": "campus-network",
+  "version": "1.0.0",
+  "description": "Multi-building campus network with OSPF multi-area design and VRRP for gateway redundancy",
+  "category": "campus",
+  "tags": ["campus", "ospf", "multi-area", "vrrp", "dhcp", "enterprise"],
+  "agent_count": 8,
+  "link_count": 9,
+  "protocols": ["ospf", "vrrp", "dhcp"],
+  "use_cases": ["University campus", "Corporate campus", "Hospital complex", "Government facility"],
+  "features": {"redundancy": "VRRP for gateway failover", "scalability": "OSPF multi-area for building isolation", "services": "DHCP on access switches"},
+  "requirements": {"min_agents": 6, "recommended_agents": 8, "igp": "OSPF Multi-Area"}
+}

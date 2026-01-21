@@ -1,0 +1,13 @@
+{
+  "links": [
+    {"id": "pe1-p1", "a1": "pe-1", "i1": "eth1", "a2": "p-1", "i2": "eth1", "t": "ethernet", "c": 10, "subnet": "172.16.1.0/30", "description": "PE-1 to P-1"},
+    {"id": "pe1-p2", "a1": "pe-1", "i1": "eth2", "a2": "p-2", "i2": "eth1", "t": "ethernet", "c": 10, "subnet": "172.16.2.0/30", "description": "PE-1 to P-2"},
+    {"id": "pe2-p1", "a1": "pe-2", "i1": "eth1", "a2": "p-1", "i2": "eth2", "t": "ethernet", "c": 10, "subnet": "172.16.3.0/30", "description": "PE-2 to P-1"},
+    {"id": "pe2-p2", "a1": "pe-2", "i1": "eth2", "a2": "p-2", "i2": "eth2", "t": "ethernet", "c": 10, "subnet": "172.16.4.0/30", "description": "PE-2 to P-2"},
+    {"id": "pe3-p1", "a1": "pe-3", "i1": "eth1", "a2": "p-1", "i2": "eth3", "t": "ethernet", "c": 10, "subnet": "172.16.5.0/30", "description": "PE-3 to P-1"},
+    {"id": "pe3-p2", "a1": "pe-3", "i1": "eth2", "a2": "p-2", "i2": "eth3", "t": "ethernet", "c": 10, "subnet": "172.16.6.0/30", "description": "PE-3 to P-2"},
+    {"id": "pe4-p1", "a1": "pe-4", "i1": "eth1", "a2": "p-1", "i2": "eth4", "t": "ethernet", "c": 10, "subnet": "172.16.7.0/30", "description": "PE-4 to P-1"},
+    {"id": "pe4-p2", "a1": "pe-4", "i1": "eth2", "a2": "p-2", "i2": "eth4", "t": "ethernet", "c": 10, "subnet": "172.16.8.0/30", "description": "PE-4 to P-2"},
+    {"id": "p1-p2", "a1": "p-1", "i1": "eth5", "a2": "p-2", "i2": "eth5", "t": "ethernet", "c": 1, "subnet": "172.16.9.0/30", "description": "P Core Interconnect"}
+  ]
+}

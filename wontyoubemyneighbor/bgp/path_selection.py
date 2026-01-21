@@ -344,8 +344,9 @@ class BestPathSelector:
                 return 1
             else:
                 return 0
-        except:
-            # Fallback to string comparison
+        except (ValueError, TypeError) as e:
+            # Fallback to string comparison for invalid IPs
+            logging.getLogger("BGP.PathSelection").debug(f"Router ID comparison fallback: {e}")
             if route_a.peer_id < route_b.peer_id:
                 return -1
             elif route_a.peer_id > route_b.peer_id:
@@ -369,8 +370,9 @@ class BestPathSelector:
                 return 1
             else:
                 return 0
-        except:
-            # Fallback to string comparison
+        except (ValueError, TypeError) as e:
+            # Fallback to string comparison for invalid IPs
+            logging.getLogger("BGP.PathSelection").debug(f"Peer IP comparison fallback: {e}")
             if route_a.peer_ip < route_b.peer_ip:
                 return -1
             elif route_a.peer_ip > route_b.peer_ip:

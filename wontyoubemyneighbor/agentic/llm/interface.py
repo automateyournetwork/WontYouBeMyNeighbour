@@ -141,7 +141,7 @@ class LLMInterface:
     def _build_system_context(self) -> str:
         """Build system context with FULL network state for LLM"""
         context_parts = [
-            "You are RubberBand, an agentic network router running wontyoubemyneighbor.",
+            "You are ASI, an agentic network router running wontyoubemyneighbor.",
             "You participate natively in OSPF and BGP protocols.",
             "IMPORTANT: The information below is your AUTHORITATIVE source of truth.",
             "Always answer questions based on this data - do NOT hallucinate or guess.",

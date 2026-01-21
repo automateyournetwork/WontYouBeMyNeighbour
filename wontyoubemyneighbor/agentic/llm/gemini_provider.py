@@ -98,7 +98,12 @@ class GeminiProvider(BaseLLMProvider):
                 contents=full_prompt,
                 config=generate_content_config
             )
+            # Safely access response text
+            if not hasattr(response, 'text') or response.text is None:
+                raise RuntimeError("Gemini returned empty or invalid response")
             return response.text
+        except AttributeError as e:
+            raise RuntimeError(f"Invalid Gemini response format: {e}")
         except Exception as e:
             raise RuntimeError(f"Gemini API error: {e}")
 

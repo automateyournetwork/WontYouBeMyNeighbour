@@ -5,6 +5,7 @@ Unit tests for BGP Graceful Restart (RFC 4724)
 import unittest
 import asyncio
 import time
+from unittest.mock import patch, MagicMock, AsyncMock
 from bgp.graceful_restart import GracefulRestartManager, RestartState
 from bgp.rib import BGPRoute
 from bgp.constants import AFI_IPV4, SAFI_UNICAST
@@ -38,32 +39,38 @@ class TestGracefulRestart(unittest.TestCase):
 
     def test_peer_session_down(self):
         """Test handling peer session down"""
-        # Session goes down
-        self.gr_mgr.peer_session_down(self.peer_ip, self.routes, restart_time=120)
+        # Mock the async timer to avoid event loop issues
+        with patch.object(self.gr_mgr, '_start_restart_timer'):
+            # Session goes down
+            self.gr_mgr.peer_session_down(self.peer_ip, self.routes, restart_time=120)
 
-        # Check state
-        self.assertEqual(self.gr_mgr.peer_states[self.peer_ip], RestartState.HELPER)
-        self.assertEqual(len(self.gr_mgr.stale_routes[self.peer_ip]), 2)
+            # Check state
+            self.assertEqual(self.gr_mgr.peer_states[self.peer_ip], RestartState.HELPER)
+            self.assertEqual(len(self.gr_mgr.stale_routes[self.peer_ip]), 2)
 
-        # Check routes marked stale
-        for route in self.routes.values():
-            self.assertTrue(route.stale)
+            # Check routes marked stale
+            for route in self.routes.values():
+                self.assertTrue(route.stale)
 
     def test_peer_session_up(self):
         """Test handling peer session coming up"""
-        # Setup: session down
-        self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
+        # Mock the async timer to avoid event loop issues
+        with patch.object(self.gr_mgr, '_start_restart_timer'):
+            # Setup: session down
+            self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
 
         # Session comes back up
         self.gr_mgr.peer_session_up(self.peer_ip, supports_graceful_restart=True)
 
-        # Timer should be cancelled
+        # Timer should be cancelled (none running because we mocked it)
         self.assertNotIn(self.peer_ip, self.gr_mgr.restart_timers)
 
     def test_route_refreshed(self):
         """Test marking route as refreshed"""
-        # Setup: session down with stale routes
-        self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
+        # Mock the async timer to avoid event loop issues
+        with patch.object(self.gr_mgr, '_start_restart_timer'):
+            # Setup: session down with stale routes
+            self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
 
         # Refresh one route
         self.gr_mgr.route_refreshed(self.peer_ip, "192.0.2.0/24")
@@ -75,8 +82,11 @@ class TestGracefulRestart(unittest.TestCase):
 
     def test_end_of_rib(self):
         """Test End-of-RIB handling"""
-        # Setup: session down, then up
-        self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
+        # Mock the async timer to avoid event loop issues
+        with patch.object(self.gr_mgr, '_start_restart_timer'):
+            # Setup: session down, then up
+            self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
+
         self.gr_mgr.peer_session_up(self.peer_ip, supports_graceful_restart=True)
 
         # Refresh one route
@@ -98,8 +108,10 @@ class TestGracefulRestart(unittest.TestCase):
         # Initially not restarting
         self.assertFalse(self.gr_mgr.is_peer_restarting(self.peer_ip))
 
-        # Session goes down
-        self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
+        # Mock the async timer to avoid event loop issues
+        with patch.object(self.gr_mgr, '_start_restart_timer'):
+            # Session goes down
+            self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
 
         # Now restarting
         self.assertTrue(self.gr_mgr.is_peer_restarting(self.peer_ip))
@@ -109,16 +121,20 @@ class TestGracefulRestart(unittest.TestCase):
         # Initially zero
         self.assertEqual(self.gr_mgr.get_stale_route_count(self.peer_ip), 0)
 
-        # Session goes down
-        self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
+        # Mock the async timer to avoid event loop issues
+        with patch.object(self.gr_mgr, '_start_restart_timer'):
+            # Session goes down
+            self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
 
         # Should have 2 stale routes
         self.assertEqual(self.gr_mgr.get_stale_route_count(self.peer_ip), 2)
 
     def test_cleanup_peer(self):
         """Test peer cleanup"""
-        # Setup: session down
-        self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
+        # Mock the async timer to avoid event loop issues
+        with patch.object(self.gr_mgr, '_start_restart_timer'):
+            # Setup: session down
+            self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
 
         # Cleanup
         self.gr_mgr.cleanup_peer(self.peer_ip)
@@ -137,8 +153,10 @@ class TestGracefulRestart(unittest.TestCase):
         self.assertEqual(stats['total_stale_routes'], 0)
         self.assertEqual(stats['restarting_peers'], 0)
 
-        # Add stale routes
-        self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
+        # Mock the async timer to avoid event loop issues
+        with patch.object(self.gr_mgr, '_start_restart_timer'):
+            # Add stale routes
+            self.gr_mgr.peer_session_down(self.peer_ip, self.routes)
 
         stats = self.gr_mgr.get_statistics()
         self.assertEqual(stats['total_stale_routes'], 2)

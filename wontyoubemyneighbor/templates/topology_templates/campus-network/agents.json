@@ -1,0 +1,117 @@
+[
+  {
+    "id": "core-1",
+    "n": "Campus Core-1",
+    "r": "10.0.0.1",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.0.1/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.1.1/30"], "s": "up", "l1": {"peer_agent": "core-2", "peer_if": "eth1", "subnet": "172.16.1.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.10.1/30"], "s": "up", "l1": {"peer_agent": "bldg-a-1", "peer_if": "eth1", "subnet": "172.16.10.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["172.16.11.1/30"], "s": "up", "l1": {"peer_agent": "bldg-b-1", "peer_if": "eth1", "subnet": "172.16.11.0/30"}},
+      {"id": "vrrp0", "n": "vrrp0", "t": "vlan", "a": ["192.168.1.2/24"], "s": "up", "description": "VRRP Virtual IP Group"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.0.1", "a": "0.0.0.0", "loopback_ip": "10.0.0.1", "nets": ["172.16.1.0/30", "172.16.10.0/30", "172.16.11.0/30", "192.168.1.0/24"]}
+    ]
+  },
+  {
+    "id": "core-2",
+    "n": "Campus Core-2",
+    "r": "10.0.0.2",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.0.2/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.1.2/30"], "s": "up", "l1": {"peer_agent": "core-1", "peer_if": "eth1", "subnet": "172.16.1.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.12.1/30"], "s": "up", "l1": {"peer_agent": "bldg-a-1", "peer_if": "eth2", "subnet": "172.16.12.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["172.16.13.1/30"], "s": "up", "l1": {"peer_agent": "bldg-b-1", "peer_if": "eth2", "subnet": "172.16.13.0/30"}},
+      {"id": "vrrp0", "n": "vrrp0", "t": "vlan", "a": ["192.168.1.3/24"], "s": "up", "description": "VRRP Backup"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.0.2", "a": "0.0.0.0", "loopback_ip": "10.0.0.2", "nets": ["172.16.1.0/30", "172.16.12.0/30", "172.16.13.0/30", "192.168.1.0/24"]}
+    ]
+  },
+  {
+    "id": "bldg-a-1",
+    "n": "Building A Distribution",
+    "r": "10.0.1.1",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.1.1/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.10.2/30"], "s": "up", "l1": {"peer_agent": "core-1", "peer_if": "eth2", "subnet": "172.16.10.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.12.2/30"], "s": "up", "l1": {"peer_agent": "core-2", "peer_if": "eth2", "subnet": "172.16.12.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["172.16.20.1/30"], "s": "up", "l1": {"peer_agent": "bldg-a-acc1", "peer_if": "eth1", "subnet": "172.16.20.0/30"}},
+      {"id": "eth4", "n": "eth4", "t": "eth", "a": ["172.16.21.1/30"], "s": "up", "l1": {"peer_agent": "bldg-a-acc2", "peer_if": "eth1", "subnet": "172.16.21.0/30"}}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.1.1", "a": "0.0.0.1", "loopback_ip": "10.0.1.1", "nets": ["172.16.10.0/30", "172.16.12.0/30", "172.16.20.0/30", "172.16.21.0/30"]}
+    ]
+  },
+  {
+    "id": "bldg-b-1",
+    "n": "Building B Distribution",
+    "r": "10.0.1.2",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.1.2/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.11.2/30"], "s": "up", "l1": {"peer_agent": "core-1", "peer_if": "eth3", "subnet": "172.16.11.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.13.2/30"], "s": "up", "l1": {"peer_agent": "core-2", "peer_if": "eth3", "subnet": "172.16.13.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["172.16.30.1/30"], "s": "up", "l1": {"peer_agent": "bldg-b-acc1", "peer_if": "eth1", "subnet": "172.16.30.0/30"}},
+      {"id": "eth4", "n": "eth4", "t": "eth", "a": ["172.16.31.1/30"], "s": "up", "l1": {"peer_agent": "bldg-b-acc2", "peer_if": "eth1", "subnet": "172.16.31.0/30"}}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.1.2", "a": "0.0.0.2", "loopback_ip": "10.0.1.2", "nets": ["172.16.11.0/30", "172.16.13.0/30", "172.16.30.0/30", "172.16.31.0/30"]}
+    ]
+  },
+  {
+    "id": "bldg-a-acc1",
+    "n": "Building A Access-1",
+    "r": "10.0.2.1",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.2.1/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.20.2/30"], "s": "up", "l1": {"peer_agent": "bldg-a-1", "peer_if": "eth3", "subnet": "172.16.20.0/30"}},
+      {"id": "vlan100", "n": "vlan100", "t": "vlan", "a": ["192.168.100.1/24"], "s": "up", "description": "Floor 1 Users"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.2.1", "a": "0.0.0.1", "loopback_ip": "10.0.2.1", "nets": ["172.16.20.0/30", "192.168.100.0/24"]},
+      {"p": "dhcp", "pools": [{"name": "floor1", "network": "192.168.100.0/24", "range_start": "192.168.100.50", "range_end": "192.168.100.200", "gateway": "192.168.100.1", "dns": ["10.0.0.10"]}]}
+    ]
+  },
+  {
+    "id": "bldg-a-acc2",
+    "n": "Building A Access-2",
+    "r": "10.0.2.2",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.2.2/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.21.2/30"], "s": "up", "l1": {"peer_agent": "bldg-a-1", "peer_if": "eth4", "subnet": "172.16.21.0/30"}},
+      {"id": "vlan101", "n": "vlan101", "t": "vlan", "a": ["192.168.101.1/24"], "s": "up", "description": "Floor 2 Users"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.2.2", "a": "0.0.0.1", "loopback_ip": "10.0.2.2", "nets": ["172.16.21.0/30", "192.168.101.0/24"]},
+      {"p": "dhcp", "pools": [{"name": "floor2", "network": "192.168.101.0/24", "range_start": "192.168.101.50", "range_end": "192.168.101.200", "gateway": "192.168.101.1", "dns": ["10.0.0.10"]}]}
+    ]
+  },
+  {
+    "id": "bldg-b-acc1",
+    "n": "Building B Access-1",
+    "r": "10.0.2.3",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.2.3/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.30.2/30"], "s": "up", "l1": {"peer_agent": "bldg-b-1", "peer_if": "eth3", "subnet": "172.16.30.0/30"}},
+      {"id": "vlan200", "n": "vlan200", "t": "vlan", "a": ["192.168.200.1/24"], "s": "up", "description": "Lab Network"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.2.3", "a": "0.0.0.2", "loopback_ip": "10.0.2.3", "nets": ["172.16.30.0/30", "192.168.200.0/24"]}
+    ]
+  },
+  {
+    "id": "bldg-b-acc2",
+    "n": "Building B Access-2",
+    "r": "10.0.2.4",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.2.4/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.31.2/30"], "s": "up", "l1": {"peer_agent": "bldg-b-1", "peer_if": "eth4", "subnet": "172.16.31.0/30"}},
+      {"id": "vlan201", "n": "vlan201", "t": "vlan", "a": ["192.168.201.1/24"], "s": "up", "description": "Conference Rooms"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.2.4", "a": "0.0.0.2", "loopback_ip": "10.0.2.4", "nets": ["172.16.31.0/30", "192.168.201.0/24"]},
+      {"p": "dhcp", "pools": [{"name": "conf", "network": "192.168.201.0/24", "range_start": "192.168.201.50", "range_end": "192.168.201.150", "gateway": "192.168.201.1", "dns": ["10.0.0.10"]}]}
+    ]
+  }
+]

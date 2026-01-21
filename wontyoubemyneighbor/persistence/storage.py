@@ -24,13 +24,13 @@ def get_default_storage_path() -> Path:
         Path to storage directory
     """
     # Check for environment variable first
-    env_path = os.environ.get("RUBBERBAND_STORAGE_PATH")
+    env_path = os.environ.get("ASI_STORAGE_PATH")
     if env_path:
         return Path(env_path)
 
     # Default to user's home directory
     home = Path.home()
-    return home / ".rubberband" / "storage"
+    return home / ".asi" / "storage"
 
 
 def ensure_storage_dirs(base_path: Optional[Path] = None) -> Dict[str, Path]:

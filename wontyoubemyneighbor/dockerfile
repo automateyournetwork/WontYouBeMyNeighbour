@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Set PYTHONPATH so bgp, ospf, etc. can be imported as top-level packages
+ENV PYTHONPATH=/app
+
 # Expose Web UI port
 EXPOSE 8888
 

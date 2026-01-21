@@ -1,0 +1,30 @@
+{
+  "name": "Spine-Leaf Data Center",
+  "id": "spine-leaf-datacenter",
+  "version": "1.0.0",
+  "description": "Modern data center topology with VXLAN/EVPN overlay for multi-tenant environments",
+  "category": "datacenter",
+  "tags": ["spine-leaf", "vxlan", "evpn", "bgp", "datacenter", "multi-tenant"],
+  "agent_count": 6,
+  "link_count": 8,
+  "protocols": ["ebgp", "vxlan", "evpn"],
+  "use_cases": [
+    "Cloud provider infrastructure",
+    "Enterprise private cloud",
+    "Multi-tenant data center",
+    "Container orchestration underlay"
+  ],
+  "features": {
+    "redundancy": "Dual spine for high availability",
+    "scalability": "Easily extend with more leaves",
+    "isolation": "VXLAN VNIs for tenant separation",
+    "control_plane": "BGP EVPN for MAC/IP learning"
+  },
+  "requirements": {
+    "min_agents": 4,
+    "recommended_agents": 6,
+    "mtu": 9000,
+    "underlay": "eBGP",
+    "overlay": "VXLAN with EVPN"
+  }
+}

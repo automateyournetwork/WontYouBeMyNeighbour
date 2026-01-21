@@ -215,8 +215,8 @@ class BGPAgent:
                             try:
                                 session.writer.close()
                                 await session.writer.wait_closed()
-                            except:
-                                pass
+                            except (ConnectionError, OSError, asyncio.CancelledError) as e:
+                                self.logger.debug(f"Error closing writer during collision: {e}")
                         session.reader = None
                         session.writer = None
 
@@ -237,8 +237,8 @@ class BGPAgent:
             try:
                 writer.close()
                 await writer.wait_closed()
-            except:
-                pass
+            except (ConnectionError, OSError, asyncio.CancelledError) as close_err:
+                self.logger.debug(f"Error closing writer after connection error: {close_err}")
 
     def add_peer(self, config: BGPSessionConfig) -> BGPSession:
         """

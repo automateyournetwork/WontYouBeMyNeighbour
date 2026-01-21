@@ -1,5 +1,5 @@
 """
-RubberBand CLI Chat Interface
+ASI CLI Chat Interface
 
 Interactive command-line interface for natural language network management.
 """
@@ -17,9 +17,9 @@ except ImportError:
     READLINE_AVAILABLE = False
 
 
-class RubberBandCLI:
+class ASICLI:
     """
-    Interactive CLI for chatting with RubberBand.
+    Interactive CLI for chatting with ASI.
 
     Features:
     - Natural language queries
@@ -52,9 +52,9 @@ class RubberBandCLI:
         """Print welcome banner"""
         print()
         print("=" * 60)
-        print("       RubberBand - Your Agentic Network Router")
+        print("       ASI - Your Agentic Network Router")
         print("=" * 60)
-        print(f"  RubberBand ID: {self.bridge.rubberband_id}")
+        print(f"  ASI ID: {self.bridge.asi_id}")
         print(f"  LLM Providers: {len(self.bridge.llm.providers)}")
         print(f"  Turn Limit: {self.bridge.llm.max_turns}")
         print()
@@ -72,7 +72,7 @@ class RubberBandCLI:
 
     async def _cmd_help(self, args):
         """Show help"""
-        print("\nRubberBand CLI Commands:")
+        print("\nASI CLI Commands:")
         print()
         print("  /help       - Show this help")
         print("  /stats      - Show statistics")
@@ -93,7 +93,7 @@ class RubberBandCLI:
         """Show statistics"""
         stats = self.bridge.get_statistics()
 
-        print("\nRubberBand Statistics:")
+        print("\nASI Statistics:")
         print()
         print(f"LLM:")
         print(f"  Turns: {stats['llm']['turns']}/{stats['llm']['max_turns']}")
@@ -180,7 +180,7 @@ class RubberBandCLI:
         # Regular query
         try:
             print()
-            print("RubberBand: ", end="", flush=True)
+            print("ASI: ", end="", flush=True)
 
             response = await self.bridge.query(user_input)
 
@@ -240,7 +240,7 @@ class RubberBandCLI:
 
             response = await self.bridge.query(query)
 
-            print(f"RubberBand: {response}\n")
+            print(f"ASI: {response}\n")
 
             await asyncio.sleep(0.5)  # Small delay between queries
 
@@ -249,13 +249,13 @@ class RubberBandCLI:
 
 async def run_cli():
     """
-    Run RubberBand CLI from command line.
+    Run ASI CLI from command line.
 
     Usage:
         python -m wontyoubemyneighbor.agentic.cli.chat
     """
-    parser = argparse.ArgumentParser(description="RubberBand Network Agent CLI")
-    parser.add_argument("--rubberband-id", default="rubberband-cli", help="RubberBand instance ID")
+    parser = argparse.ArgumentParser(description="ASI Network Agent CLI")
+    parser.add_argument("--asi-id", default="asi-cli", help="ASI instance ID")
     parser.add_argument("--openai-key", help="OpenAI API key")
     parser.add_argument("--claude-key", help="Anthropic Claude API key")
     parser.add_argument("--gemini-key", help="Google Gemini API key")
@@ -269,7 +269,7 @@ async def run_cli():
 
     # Create agentic bridge
     bridge = AgenticBridge(
-        rubberband_id=args.rubberband_id,
+        asi_id=args.asi_id,
         openai_key=args.openai_key,
         claude_key=args.claude_key,
         gemini_key=args.gemini_key,
@@ -277,14 +277,14 @@ async def run_cli():
     )
 
     # Initialize
-    print("Initializing RubberBand...")
+    print("Initializing ASI...")
     await bridge.initialize()
 
     # Start bridge
     await bridge.start()
 
     # Create CLI
-    cli = RubberBandCLI(bridge)
+    cli = ASICLI(bridge)
 
     try:
         if args.batch:

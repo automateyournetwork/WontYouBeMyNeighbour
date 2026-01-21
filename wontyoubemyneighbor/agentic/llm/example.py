@@ -61,12 +61,12 @@ async def example_usage():
 
         response = await llm.query(query)
         if response:
-            print(f"\nRubberBand: {response}")
+            print(f"\nASI: {response}")
         else:
             print("\nNo response received.")
 
     # Save conversation history
-    llm.save_conversation("/tmp/rubberband_conversation.json")
+    llm.save_conversation("/tmp/asi_conversation.json")
     print(f"\n\nConversation saved. Turns used: {llm.current_turn}/{llm.max_turns}")
 
 

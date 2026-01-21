@@ -1,0 +1,1938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Network Topology - Won't You Be My Neighbor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-tertiary: #0d1117;
+            --border-color: #2a2a4e;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --accent-cyan: #00d9ff;
+            --accent-green: #4ade80;
+            --accent-yellow: #facc15;
+            --accent-red: #ef4444;
+            --accent-purple: #a78bfa;
+            --accent-pink: #f472b6;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            overflow: hidden;
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        /* Header Overlay */
+        .header-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding: 15px 20px;
+            background: linear-gradient(to bottom, rgba(26, 26, 46, 0.95) 0%, rgba(26, 26, 46, 0) 100%);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+        }
+
+        .logo h1 {
+            color: var(--accent-cyan);
+            font-size: 1.4rem;
+        }
+
+        .logo .subtitle {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-link {
+            background: rgba(0, 217, 255, 0.1);
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            padding: 8px 16px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: all 0.3s;
+        }
+
+        .nav-link:hover, .nav-link.active {
+            background: var(--accent-cyan);
+            color: var(--bg-primary);
+        }
+
+        /* Controls Panel */
+        .controls-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(22, 33, 62, 0.95);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 15px;
+            z-index: 100;
+            min-width: 250px;
+        }
+
+        .controls-panel h3 {
+            color: var(--accent-cyan);
+            font-size: 0.9rem;
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 8px;
+        }
+
+        .control-group {
+            margin-bottom: 12px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+            accent-color: var(--accent-cyan);
+        }
+
+        .control-btn {
+            background: transparent;
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            margin-right: 5px;
+            margin-bottom: 5px;
+            transition: all 0.2s;
+        }
+
+        .control-btn:hover {
+            background: var(--accent-cyan);
+            color: var(--bg-primary);
+        }
+
+        .control-btn.active {
+            background: var(--accent-cyan);
+            color: var(--bg-primary);
+        }
+
+        /* Info Panel */
+        .info-panel {
+            position: absolute;
+            top: 80px;
+            right: 20px;
+            background: rgba(22, 33, 62, 0.95);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 15px;
+            z-index: 100;
+            min-width: 280px;
+            max-height: calc(100vh - 120px);
+            overflow-y: auto;
+        }
+
+        .info-panel h3 {
+            color: var(--accent-cyan);
+            font-size: 0.9rem;
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 8px;
+        }
+
+        .agent-info {
+            display: none;
+        }
+
+        .agent-info.visible {
+            display: block;
+        }
+
+        .agent-info h4 {
+            color: var(--accent-green);
+            font-size: 1rem;
+            margin-bottom: 10px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            font-size: 0.85rem;
+        }
+
+        .info-row .label {
+            color: var(--text-secondary);
+        }
+
+        .info-row .value {
+            color: var(--text-primary);
+        }
+
+        .protocol-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 0.75rem;
+            margin: 2px;
+        }
+
+        .protocol-ospf { background: rgba(74, 222, 128, 0.2); color: var(--accent-green); }
+        .protocol-bgp { background: rgba(167, 139, 250, 0.2); color: var(--accent-purple); }
+        .protocol-isis { background: rgba(250, 204, 21, 0.2); color: var(--accent-yellow); }
+        .protocol-mpls { background: rgba(244, 114, 182, 0.2); color: var(--accent-pink); }
+        .protocol-vxlan { background: rgba(0, 217, 255, 0.2); color: var(--accent-cyan); }
+
+        /* Legend */
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(22, 33, 62, 0.95);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 15px;
+            z-index: 100;
+        }
+
+        .legend h3 {
+            color: var(--accent-cyan);
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            font-size: 0.8rem;
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+        }
+
+        /* Stats Bar */
+        .stats-bar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(22, 33, 62, 0.95);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 10px 20px;
+            z-index: 100;
+            display: flex;
+            gap: 30px;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-item .value {
+            font-size: 1.5rem;
+            color: var(--accent-cyan);
+            font-weight: bold;
+        }
+
+        .stat-item .label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        /* Loading */
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: var(--accent-cyan);
+            font-size: 1.2rem;
+            z-index: 200;
+        }
+
+        .loading.hidden {
+            display: none;
+        }
+
+        /* Tooltip */
+        .tooltip {
+            position: absolute;
+            background: rgba(22, 33, 62, 0.95);
+            border: 1px solid var(--accent-cyan);
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 0.8rem;
+            pointer-events: none;
+            z-index: 150;
+            display: none;
+        }
+
+        /* View mode badge */
+        .view-mode-badge {
+            display: none;
+            background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-green) 100%);
+            color: var(--bg-primary);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            margin-left: 12px;
+            animation: pulse-badge 2s ease-in-out infinite;
+        }
+
+        .view-mode-badge.visible {
+            display: inline-block;
+        }
+
+        @keyframes pulse-badge {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.85; transform: scale(1.02); }
+        }
+
+        /* Enhanced layer legend */
+        .layer-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: bold;
+        }
+
+        .layer-badge.docker { background: rgba(147, 51, 234, 0.2); color: #9333ea; }
+        .layer-badge.overlay { background: rgba(74, 222, 128, 0.2); color: #4ade80; }
+        .layer-badge.underlay { background: rgba(0, 217, 255, 0.2); color: #00d9ff; }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <div class="loading" id="loading">Loading network topology...</div>
+        <div class="tooltip" id="tooltip"></div>
+    </div>
+
+    <!-- Header -->
+    <div class="header-overlay">
+        <div class="logo">
+            <h1 id="pageTitle">3D Network Topology</h1>
+            <span class="subtitle" id="pageSubtitle">Interactive 3D Visualization</span>
+            <span class="view-mode-badge" id="viewModeBadge">PER-AGENT VIEW</span>
+        </div>
+        <div class="nav-links">
+            <a href="/wizard" class="nav-link" id="wizardLink">Network Builder</a>
+            <a href="/monitor" class="nav-link">Full Agent Topology</a>
+            <a href="/agent-dashboard" class="nav-link">Agent Dashboard</a>
+            <a href="/topology3d" class="nav-link active">3D Topology</a>
+            <a href="/" class="nav-link">Chat View</a>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls-panel">
+        <h3>Controls</h3>
+
+        <!-- 3-Layer Network Visibility Toggle -->
+        <div class="control-group" style="margin-bottom: 15px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color);">
+            <label style="color: var(--accent-cyan); font-weight: bold; margin-bottom: 8px; display: block;">Network Layers</label>
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="layerDocker" checked style="accent-color: #9333ea;">
+                    <span style="display: inline-flex; align-items: center; gap: 6px;">
+                        <span style="width: 12px; height: 12px; border-radius: 50%; background: #9333ea;"></span>
+                        Docker Network
+                    </span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="layerOverlay" checked style="accent-color: #4ade80;">
+                    <span style="display: inline-flex; align-items: center; gap: 6px;">
+                        <span style="width: 12px; height: 12px; border-radius: 50%; background: #4ade80;"></span>
+                        ASI Overlay (IPv6)
+                    </span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="layerUnderlay" checked style="accent-color: #00d9ff;">
+                    <span style="display: inline-flex; align-items: center; gap: 6px;">
+                        <span style="width: 12px; height: 12px; border-radius: 50%; background: #00d9ff;"></span>
+                        Underlay (User)
+                    </span>
+                </label>
+            </div>
+            <div style="margin-top: 8px; display: flex; gap: 5px;">
+                <button class="control-btn" id="btnShowAll" style="font-size: 0.7rem; padding: 4px 8px;">All</button>
+                <button class="control-btn" id="btnDockerOnly" style="font-size: 0.7rem; padding: 4px 8px;">Docker</button>
+                <button class="control-btn" id="btnOverlayOnly" style="font-size: 0.7rem; padding: 4px 8px;">Overlay</button>
+                <button class="control-btn" id="btnUnderlayOnly" style="font-size: 0.7rem; padding: 4px 8px;">Underlay</button>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label>Rotation Speed</label>
+            <input type="range" id="rotationSpeed" min="0" max="100" value="20">
+        </div>
+        <div class="control-group">
+            <label>Node Size</label>
+            <input type="range" id="nodeSize" min="50" max="200" value="100">
+        </div>
+        <div class="control-group">
+            <label>Link Opacity</label>
+            <input type="range" id="linkOpacity" min="0" max="100" value="60">
+        </div>
+        <div style="margin-top: 15px;">
+            <button class="control-btn" id="btnAutoRotate">Auto Rotate</button>
+            <button class="control-btn" id="btnResetView">Reset View</button>
+            <button class="control-btn" id="btnRefresh">Refresh Data</button>
+        </div>
+        <div style="margin-top: 10px;">
+            <button class="control-btn" id="btnTopView">Top</button>
+            <button class="control-btn" id="btnFrontView">Front</button>
+            <button class="control-btn" id="btnSideView">Side</button>
+        </div>
+
+        <!-- Label Controls -->
+        <div class="control-group" style="margin-top: 15px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+            <label style="color: var(--accent-cyan); font-weight: bold; margin-bottom: 8px; display: block;">Labels</label>
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="labelNames" checked style="accent-color: #00d9ff;">
+                    <span>Node Names</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="labelDockerIp" checked style="accent-color: #9333ea;">
+                    <span>Docker IPs</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="labelOverlayIp" checked style="accent-color: #4ade80;">
+                    <span>Overlay IPv6</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="labelInterfaces" checked style="accent-color: #facc15;">
+                    <span>Interfaces</span>
+                </label>
+            </div>
+            <div style="margin-top: 8px;">
+                <button class="control-btn" id="btnAllLabels" style="font-size: 0.7rem; padding: 4px 8px;">All Labels</button>
+                <button class="control-btn" id="btnNoLabels" style="font-size: 0.7rem; padding: 4px 8px;">No Labels</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Agent Info -->
+    <div class="info-panel">
+        <h3>Selected Agent</h3>
+        <div class="agent-info" id="agentInfo">
+            <h4 id="agentName">-</h4>
+            <div class="info-row">
+                <span class="label">Router ID</span>
+                <span class="value" id="agentRouterId">-</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Status</span>
+                <span class="value" id="agentStatus">-</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Protocols</span>
+                <span class="value" id="agentProtocols">-</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Neighbors</span>
+                <span class="value" id="agentNeighbors">-</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Routes</span>
+                <span class="value" id="agentRoutes">-</span>
+            </div>
+
+            <!-- 3-Layer Network Addresses -->
+            <div style="margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border-color);">
+                <div style="color: var(--accent-cyan); font-size: 0.8rem; margin-bottom: 6px; font-weight: bold;">Network Layers</div>
+                <div class="info-row" style="background: rgba(147, 51, 234, 0.1); padding: 4px 6px; border-radius: 4px; margin-bottom: 4px;">
+                    <span class="label" style="color: #9333ea;">Docker IP</span>
+                    <span class="value" id="agentDockerIp" style="font-family: monospace; font-size: 0.8rem;">-</span>
+                </div>
+                <div class="info-row" style="background: rgba(74, 222, 128, 0.1); padding: 4px 6px; border-radius: 4px; margin-bottom: 4px;">
+                    <span class="label" style="color: #4ade80;">Overlay IPv6</span>
+                    <span class="value" id="agentOverlayIpv6" style="font-family: monospace; font-size: 0.75rem;">-</span>
+                </div>
+                <div class="info-row" style="background: rgba(0, 217, 255, 0.1); padding: 4px 6px; border-radius: 4px;">
+                    <span class="label" style="color: #00d9ff;">Underlay</span>
+                    <span class="value" id="agentUnderlayInfo" style="font-family: monospace; font-size: 0.8rem;">-</span>
+                </div>
+            </div>
+        </div>
+        <div id="noSelection" style="color: var(--text-secondary); font-size: 0.85rem;">
+            Click on a node to view details
+        </div>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+        <h3>3-Layer Architecture</h3>
+        <div class="legend-item" style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
+            <div class="legend-color" style="background: #9333ea;"></div>
+            <span>Layer 1: Docker</span>
+        </div>
+        <div class="legend-item" style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
+            <div class="legend-color" style="background: #4ade80;"></div>
+            <span>Layer 2: ASI Overlay</span>
+        </div>
+        <div class="legend-item" style="margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
+            <div class="legend-color" style="background: #00d9ff;"></div>
+            <span>Layer 3: Underlay</span>
+        </div>
+
+        <h3 style="margin-top: 10px;">Protocol Colors</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #4ade80;"></div>
+            <span>OSPF</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #a78bfa;"></div>
+            <span>BGP</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #facc15;"></div>
+            <span>IS-IS</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #f472b6;"></div>
+            <span>MPLS</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ef4444;"></div>
+            <span>Down</span>
+        </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-bar">
+        <div class="stat-item">
+            <div class="value" id="statAgents">0</div>
+            <div class="label">Agents</div>
+        </div>
+        <div class="stat-item">
+            <div class="value" id="statLinks">0</div>
+            <div class="label">Links</div>
+        </div>
+        <div class="stat-item">
+            <div class="value" id="statProtocols">0</div>
+            <div class="label">Protocols</div>
+        </div>
+        <div class="stat-item">
+            <div class="value" id="statRoutes">0</div>
+            <div class="label">Routes</div>
+        </div>
+    </div>
+
+    <script>
+        // Three.js Scene Setup
+        let scene, camera, renderer, controls;
+        let nodes = [];
+        let links = [];
+        let nodeObjects = {};
+        let linkObjects = [];
+        let labelObjects = [];  // For text labels
+        let selectedNode = null;
+        let autoRotate = false;
+        let rotationSpeed = 0.002;
+        let showLabels = true;  // Toggle for labels
+
+        // 3-Layer Network visibility state
+        let layerVisibility = {
+            docker: true,
+            overlay: true,
+            underlay: true
+        };
+
+        // Label visibility state
+        let labelVisibility = {
+            names: true,
+            dockerIp: true,
+            overlayIp: true,
+            interfaces: true
+        };
+
+        // Per-agent view mode
+        let perAgentMode = false;
+        let focusedAgentId = null;
+
+        // Check URL parameters for agent-specific view
+        const urlParams = new URLSearchParams(window.location.search);
+        const agentParam = urlParams.get('agent');
+        if (agentParam) {
+            perAgentMode = true;
+            focusedAgentId = agentParam;
+        }
+
+        // Layer colors (3-Layer Architecture)
+        const layerColors = {
+            docker: 0x9333ea,    // Purple - Docker network layer
+            overlay: 0x4ade80,   // Green - ASI IPv6 overlay
+            underlay: 0x00d9ff   // Cyan - User-defined underlay
+        };
+
+        // Protocol colors
+        const protocolColors = {
+            ospf: 0x4ade80,
+            bgp: 0xa78bfa,
+            isis: 0xfacc15,
+            mpls: 0xf472b6,
+            vxlan: 0x00d9ff,
+            evpn: 0x00d9ff,
+            default: 0x888888,
+            down: 0xef4444
+        };
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a2e);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 100, 200);
+            camera.lookAt(0, 0, 0);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(100, 100, 50);
+            scene.add(directionalLight);
+
+            const pointLight = new THREE.PointLight(0x00d9ff, 0.5, 300);
+            pointLight.position.set(0, 50, 0);
+            scene.add(pointLight);
+
+            // Grid helper - main grid
+            const gridHelper = new THREE.GridHelper(200, 20, 0x2a2a4e, 0x2a2a4e);
+            scene.add(gridHelper);
+
+            // Create 3-layer architecture visualization planes (subtle floating grids)
+            // Layer 1: Docker Network (bottom, purple)
+            const dockerPlane = new THREE.GridHelper(150, 10, layerColors.docker, layerColors.docker);
+            dockerPlane.position.y = -25;
+            dockerPlane.material.opacity = 0.15;
+            dockerPlane.material.transparent = true;
+            scene.add(dockerPlane);
+
+            // Layer 2: ASI Overlay (middle, green)
+            const overlayPlane = new THREE.GridHelper(150, 10, layerColors.overlay, layerColors.overlay);
+            overlayPlane.position.y = 0;
+            overlayPlane.material.opacity = 0.12;
+            overlayPlane.material.transparent = true;
+            scene.add(overlayPlane);
+
+            // Layer 3: Underlay (top, cyan)
+            const underlayPlane = new THREE.GridHelper(150, 10, layerColors.underlay, layerColors.underlay);
+            underlayPlane.position.y = 25;
+            underlayPlane.material.opacity = 0.1;
+            underlayPlane.material.transparent = true;
+            scene.add(underlayPlane);
+
+            // Axis helper (smaller)
+            // const axisHelper = new THREE.AxesHelper(30);
+            // scene.add(axisHelper);
+
+            // Mouse controls
+            setupMouseControls();
+
+            // Event listeners
+            window.addEventListener('resize', onWindowResize);
+            document.getElementById('rotationSpeed').addEventListener('input', (e) => {
+                rotationSpeed = e.target.value / 5000;
+            });
+            document.getElementById('nodeSize').addEventListener('input', updateNodeSizes);
+            document.getElementById('linkOpacity').addEventListener('input', updateLinkOpacity);
+            document.getElementById('btnAutoRotate').addEventListener('click', toggleAutoRotate);
+            document.getElementById('btnResetView').addEventListener('click', resetView);
+            document.getElementById('btnRefresh').addEventListener('click', loadTopology);
+            document.getElementById('btnTopView').addEventListener('click', () => setView('top'));
+            document.getElementById('btnFrontView').addEventListener('click', () => setView('front'));
+            document.getElementById('btnSideView').addEventListener('click', () => setView('side'));
+
+            // 3-Layer visibility toggles
+            document.getElementById('layerDocker').addEventListener('change', (e) => {
+                layerVisibility.docker = e.target.checked;
+                updateLayerVisibility();
+            });
+            document.getElementById('layerOverlay').addEventListener('change', (e) => {
+                layerVisibility.overlay = e.target.checked;
+                updateLayerVisibility();
+            });
+            document.getElementById('layerUnderlay').addEventListener('change', (e) => {
+                layerVisibility.underlay = e.target.checked;
+                updateLayerVisibility();
+            });
+
+            // Quick layer selection buttons
+            document.getElementById('btnShowAll').addEventListener('click', () => {
+                setLayerVisibility(true, true, true);
+            });
+            document.getElementById('btnDockerOnly').addEventListener('click', () => {
+                setLayerVisibility(true, false, false);
+            });
+            document.getElementById('btnOverlayOnly').addEventListener('click', () => {
+                setLayerVisibility(false, true, false);
+            });
+            document.getElementById('btnUnderlayOnly').addEventListener('click', () => {
+                setLayerVisibility(false, false, true);
+            });
+
+            // Label visibility controls
+            document.getElementById('labelNames').addEventListener('change', (e) => {
+                labelVisibility.names = e.target.checked;
+                updateLabelVisibility();
+            });
+            document.getElementById('labelDockerIp').addEventListener('change', (e) => {
+                labelVisibility.dockerIp = e.target.checked;
+                updateLabelVisibility();
+            });
+            document.getElementById('labelOverlayIp').addEventListener('change', (e) => {
+                labelVisibility.overlayIp = e.target.checked;
+                updateLabelVisibility();
+            });
+            document.getElementById('labelInterfaces').addEventListener('change', (e) => {
+                labelVisibility.interfaces = e.target.checked;
+                updateLabelVisibility();
+            });
+
+            // Quick label buttons
+            document.getElementById('btnAllLabels').addEventListener('click', () => {
+                setAllLabelVisibility(true);
+            });
+            document.getElementById('btnNoLabels').addEventListener('click', () => {
+                setAllLabelVisibility(false);
+            });
+
+            renderer.domElement.addEventListener('click', onMouseClick);
+            renderer.domElement.addEventListener('mousemove', onMouseMove);
+
+            // Update UI for per-agent mode
+            if (perAgentMode) {
+                document.getElementById('pageTitle').textContent = 'Agent 3D View';
+                document.getElementById('pageSubtitle').textContent = `Focused on: ${focusedAgentId}`;
+                // Show the view mode badge
+                const viewModeBadge = document.getElementById('viewModeBadge');
+                if (viewModeBadge) viewModeBadge.classList.add('visible');
+                // Hide the wizard link in per-agent mode
+                const wizardLink = document.getElementById('wizardLink');
+                if (wizardLink) wizardLink.style.display = 'none';
+            }
+
+            // Load data
+            loadTopology();
+
+            // Start animation loop
+            animate();
+        }
+
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        let cameraDistance = 200;
+        let cameraAngleX = 0;
+        let cameraAngleY = Math.PI / 6;
+
+        function setupMouseControls() {
+            const canvas = renderer.domElement;
+
+            canvas.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+            });
+
+            canvas.addEventListener('mouseup', () => {
+                isDragging = false;
+            });
+
+            canvas.addEventListener('mouseleave', () => {
+                isDragging = false;
+            });
+
+            canvas.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+
+                const deltaX = e.clientX - previousMousePosition.x;
+                const deltaY = e.clientY - previousMousePosition.y;
+
+                cameraAngleX += deltaX * 0.01;
+                cameraAngleY = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, cameraAngleY + deltaY * 0.01));
+
+                updateCameraPosition();
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+            });
+
+            canvas.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                cameraDistance = Math.max(50, Math.min(500, cameraDistance + e.deltaY * 0.5));
+                updateCameraPosition();
+            });
+        }
+
+        function updateCameraPosition() {
+            camera.position.x = cameraDistance * Math.sin(cameraAngleX) * Math.cos(cameraAngleY);
+            camera.position.y = cameraDistance * Math.sin(cameraAngleY);
+            camera.position.z = cameraDistance * Math.cos(cameraAngleX) * Math.cos(cameraAngleY);
+            camera.lookAt(0, 0, 0);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        async function loadTopology() {
+            try {
+                let topologyData = {
+                    nodes: [],
+                    links: []
+                };
+
+                // First, try to load all deployed networks from orchestrator
+                try {
+                    const networksResponse = await fetch('/api/wizard/networks');
+                    const networks = await networksResponse.json();
+
+                    if (networks && networks.length > 0) {
+                        // Load details for each network
+                        for (const network of networks) {
+                            const detailsResponse = await fetch(`/api/wizard/networks/${network.network_id}/status`);
+                            const details = await detailsResponse.json();
+
+                            if (details.agents) {
+                                // Store network-level info
+                                const networkSubnet = details.subnet;
+                                const networkSubnet6 = details.subnet6;  // Docker IPv6 subnet if available
+
+                                Object.entries(details.agents).forEach(([agentId, agent]) => {
+                                    // Determine protocols from agent config or API response
+                                    let protocols = [];
+                                    if (agent.config?.protos) {
+                                        agent.config.protos.forEach(p => {
+                                            if (p.p) protocols.push(p.p);
+                                        });
+                                    }
+                                    if (protocols.length === 0) protocols.push('deployed');
+
+                                    // Get underlay info from API or derive from protocols
+                                    let underlayInfo = agent.underlay_info;
+                                    if (!underlayInfo && protocols.length > 0) {
+                                        underlayInfo = protocols.filter(p => p !== 'deployed').join(', ');
+                                    }
+
+                                    // Determine Docker IP - use IPv6 if subnet6 available, otherwise IPv4
+                                    const dockerIp = agent.docker_ip || agent.ip_address;
+
+                                    topologyData.nodes.push({
+                                        id: agentId,
+                                        name: agent.config?.n || agentId,
+                                        status: agent.status || 'unknown',
+                                        protocols: protocols,
+                                        neighbors: 0,
+                                        routes: 0,
+                                        // 3-Layer Network Info
+                                        ip: dockerIp,
+                                        docker_ip: dockerIp,  // Layer 1: Docker
+                                        docker_subnet: networkSubnet6 || networkSubnet,  // Show IPv6 subnet if available
+                                        overlay_ipv6: agent.ipv6_overlay || null,  // Layer 2: ASI Overlay
+                                        underlay_info: underlayInfo || null,  // Layer 3: User protocols
+                                        port: agent.webui_port,
+                                        network: network.network_id
+                                    });
+                                });
+
+                                // Create links between agents - categorize by layer
+                                const agentIds = Object.keys(details.agents);
+                                for (let i = 0; i < agentIds.length; i++) {
+                                    for (let j = i + 1; j < agentIds.length; j++) {
+                                        const agent1 = details.agents[agentIds[i]];
+                                        const agent2 = details.agents[agentIds[j]];
+
+                                        // Layer 1: Docker network link (always exists between containers on same network)
+                                        topologyData.links.push({
+                                            source: agentIds[i],
+                                            target: agentIds[j],
+                                            protocol: networkSubnet6 ? 'Docker IPv6' : 'Docker',
+                                            layer: 'docker',
+                                            status: 'up'
+                                        });
+
+                                        // Layer 2: ASI Overlay link - if both have IPv6 overlay addresses
+                                        if (agent1.ipv6_overlay && agent2.ipv6_overlay) {
+                                            topologyData.links.push({
+                                                source: agentIds[i],
+                                                target: agentIds[j],
+                                                protocol: 'ASI-Overlay',
+                                                layer: 'overlay',
+                                                status: 'up'
+                                            });
+                                        }
+
+                                        // Layer 3: Underlay protocol links - based on configured protocols
+                                        const protos1 = agent1.config?.protos || [];
+                                        const protos2 = agent2.config?.protos || [];
+
+                                        // Find common protocols between agents
+                                        protos1.forEach(p1 => {
+                                            if (p1.p && protos2.some(p2 => p2.p === p1.p)) {
+                                                topologyData.links.push({
+                                                    source: agentIds[i],
+                                                    target: agentIds[j],
+                                                    protocol: p1.p.toUpperCase(),
+                                                    layer: 'underlay',
+                                                    status: 'up'
+                                                });
+                                            }
+                                        });
+
+                                        // If no common protocols but both have underlay_info, add generic underlay link
+                                        if (protos1.length === 0 && protos2.length === 0 &&
+                                            (agent1.underlay_info || agent2.underlay_info)) {
+                                            topologyData.links.push({
+                                                source: agentIds[i],
+                                                target: agentIds[j],
+                                                protocol: 'Underlay',
+                                                layer: 'underlay',
+                                                status: 'up'
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (orchError) {
+                    console.log('No orchestrator data, trying single agent status...');
+                }
+
+                // If no orchestrator data, try single agent status
+                if (topologyData.nodes.length === 0) {
+                    const response = await fetch('/api/status');
+                    const status = await response.json();
+
+                    if (status.router_id) {
+                        const protocols = [];
+                        if (status.ospf) protocols.push('ospf');
+                        if (status.bgp) protocols.push('bgp');
+
+                        topologyData.nodes.push({
+                            id: status.router_id,
+                            name: status.agent_name || `Router ${status.router_id}`,
+                            status: status.running ? 'running' : 'stopped',
+                            protocols: protocols,
+                            neighbors: (status.ospf?.neighbors || 0) + (status.bgp?.total_peers || 0),
+                            routes: (status.ospf?.routes || 0) + (status.bgp?.loc_rib_routes || 0)
+                        });
+
+                        // Add OSPF neighbors as nodes
+                        if (status.ospf?.neighbor_details) {
+                            status.ospf.neighbor_details.forEach(neighbor => {
+                                if (!topologyData.nodes.find(n => n.id === neighbor.router_id)) {
+                                    topologyData.nodes.push({
+                                        id: neighbor.router_id,
+                                        name: neighbor.router_id,
+                                        status: neighbor.is_full ? 'running' : 'initializing',
+                                        protocols: ['ospf'],
+                                        neighbors: 1,
+                                        routes: 0
+                                    });
+                                }
+                                topologyData.links.push({
+                                    source: status.router_id,
+                                    target: neighbor.router_id,
+                                    protocol: 'OSPF',
+                                    status: neighbor.is_full ? 'up' : 'down'
+                                });
+                            });
+                        }
+
+                        // Add BGP peers as nodes
+                        if (status.bgp?.peer_details) {
+                            status.bgp.peer_details.forEach(peer => {
+                                if (!topologyData.nodes.find(n => n.id === peer.ip)) {
+                                    topologyData.nodes.push({
+                                        id: peer.ip,
+                                        name: `AS ${peer.remote_as}`,
+                                        status: peer.state === 'Established' ? 'running' : 'initializing',
+                                        protocols: ['bgp'],
+                                        neighbors: 1,
+                                        routes: 0
+                                    });
+                                }
+                                topologyData.links.push({
+                                    source: status.router_id,
+                                    target: peer.ip,
+                                    protocol: 'BGP',
+                                    status: peer.state === 'Established' ? 'up' : 'down'
+                                });
+                            });
+                        }
+                    }
+                }
+
+                // If still no data, create demo topology
+                if (topologyData.nodes.length === 0) {
+                    topologyData = createDemoTopology();
+                }
+
+                nodes = topologyData.nodes;
+                links = topologyData.links;
+
+                // Filter for per-agent mode
+                if (perAgentMode && focusedAgentId) {
+                    filterForPerAgentView();
+                }
+
+                createVisualization();
+                updateStats();
+                document.getElementById('loading').classList.add('hidden');
+
+            } catch (error) {
+                console.error('Failed to load topology:', error);
+                // Create demo topology
+                const demo = createDemoTopology();
+                nodes = demo.nodes;
+                links = demo.links;
+                createVisualization();
+                updateStats();
+                document.getElementById('loading').classList.add('hidden');
+            }
+        }
+
+        function createDemoTopology() {
+            return {
+                nodes: [
+                    // Demo nodes with 3-layer network info
+                    { id: 'spine1', name: 'Spine-1', status: 'running', protocols: ['bgp', 'ospf'], neighbors: 4, routes: 120,
+                      docker_ip: '172.20.0.2', overlay_ipv6: 'fd00:a510:0:1::1/64', underlay_info: 'BGP AS65001, OSPF Area 0' },
+                    { id: 'spine2', name: 'Spine-2', status: 'running', protocols: ['bgp', 'ospf'], neighbors: 4, routes: 115,
+                      docker_ip: '172.20.0.3', overlay_ipv6: 'fd00:a510:0:1::2/64', underlay_info: 'BGP AS65001, OSPF Area 0' },
+                    { id: 'leaf1', name: 'Leaf-1', status: 'running', protocols: ['bgp', 'vxlan'], neighbors: 2, routes: 45,
+                      docker_ip: '172.20.0.4', overlay_ipv6: 'fd00:a510:0:1::3/64', underlay_info: 'BGP AS65101, VXLAN VNI 10001' },
+                    { id: 'leaf2', name: 'Leaf-2', status: 'running', protocols: ['bgp', 'vxlan'], neighbors: 2, routes: 48,
+                      docker_ip: '172.20.0.5', overlay_ipv6: 'fd00:a510:0:1::4/64', underlay_info: 'BGP AS65102, VXLAN VNI 10001' },
+                    { id: 'leaf3', name: 'Leaf-3', status: 'running', protocols: ['bgp', 'vxlan'], neighbors: 2, routes: 42,
+                      docker_ip: '172.20.0.6', overlay_ipv6: 'fd00:a510:0:1::5/64', underlay_info: 'BGP AS65103, VXLAN VNI 10002' },
+                    { id: 'leaf4', name: 'Leaf-4', status: 'initializing', protocols: ['bgp', 'vxlan'], neighbors: 1, routes: 20,
+                      docker_ip: '172.20.0.7', overlay_ipv6: 'fd00:a510:0:1::6/64', underlay_info: 'BGP AS65104' },
+                    { id: 'border1', name: 'Border-1', status: 'running', protocols: ['bgp', 'mpls'], neighbors: 3, routes: 200,
+                      docker_ip: '172.20.0.8', overlay_ipv6: 'fd00:a510:0:1::7/64', underlay_info: 'BGP AS65001, MPLS LDP' },
+                    { id: 'border2', name: 'Border-2', status: 'running', protocols: ['bgp', 'mpls'], neighbors: 3, routes: 195,
+                      docker_ip: '172.20.0.9', overlay_ipv6: 'fd00:a510:0:1::8/64', underlay_info: 'BGP AS65001, MPLS LDP' },
+                ],
+                links: [
+                    // Layer 1: Docker network links (purple)
+                    { source: 'spine1', target: 'spine2', protocol: 'Docker', layer: 'docker', status: 'up' },
+                    { source: 'spine1', target: 'leaf1', protocol: 'Docker', layer: 'docker', status: 'up' },
+                    { source: 'spine1', target: 'leaf2', protocol: 'Docker', layer: 'docker', status: 'up' },
+                    { source: 'spine2', target: 'leaf3', protocol: 'Docker', layer: 'docker', status: 'up' },
+                    { source: 'spine2', target: 'leaf4', protocol: 'Docker', layer: 'docker', status: 'up' },
+                    { source: 'spine1', target: 'border1', protocol: 'Docker', layer: 'docker', status: 'up' },
+                    { source: 'spine2', target: 'border2', protocol: 'Docker', layer: 'docker', status: 'up' },
+
+                    // Layer 2: ASI Overlay links (green) - full mesh via ND
+                    { source: 'spine1', target: 'spine2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine1', target: 'leaf1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine1', target: 'leaf2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine1', target: 'leaf3', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine2', target: 'leaf1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine2', target: 'leaf2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine2', target: 'leaf3', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine1', target: 'border1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine2', target: 'border2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'border1', target: 'border2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+
+                    // Layer 3: Underlay links (cyan) - user-defined BGP/OSPF peerings
+                    { source: 'spine1', target: 'leaf1', protocol: 'BGP', layer: 'underlay', status: 'up' },
+                    { source: 'spine1', target: 'leaf2', protocol: 'BGP', layer: 'underlay', status: 'up' },
+                    { source: 'spine1', target: 'leaf3', protocol: 'BGP', layer: 'underlay', status: 'up' },
+                    { source: 'spine1', target: 'leaf4', protocol: 'BGP', layer: 'underlay', status: 'down' },
+                    { source: 'spine2', target: 'leaf1', protocol: 'BGP', layer: 'underlay', status: 'up' },
+                    { source: 'spine2', target: 'leaf2', protocol: 'BGP', layer: 'underlay', status: 'up' },
+                    { source: 'spine2', target: 'leaf3', protocol: 'BGP', layer: 'underlay', status: 'up' },
+                    { source: 'spine2', target: 'leaf4', protocol: 'BGP', layer: 'underlay', status: 'up' },
+                    { source: 'spine1', target: 'border1', protocol: 'OSPF', layer: 'underlay', status: 'up' },
+                    { source: 'spine1', target: 'border2', protocol: 'OSPF', layer: 'underlay', status: 'up' },
+                    { source: 'spine2', target: 'border1', protocol: 'OSPF', layer: 'underlay', status: 'up' },
+                    { source: 'spine2', target: 'border2', protocol: 'OSPF', layer: 'underlay', status: 'up' },
+                ]
+            };
+        }
+
+        function createVisualization() {
+            // Clear existing
+            Object.values(nodeObjects).forEach(obj => scene.remove(obj.group));
+            linkObjects.forEach(obj => scene.remove(obj));
+            labelObjects.forEach(obj => scene.remove(obj));
+            nodeObjects = {};
+            linkObjects = [];
+            labelObjects = [];
+
+            // Position nodes in 3D space with better layout
+            const nodePositions = {};
+            const radius = 70;
+            const nodeCount = nodes.length;
+
+            // Use a more organized layout based on node count
+            // For small networks: circular
+            // For larger networks: multi-tier
+
+            // Calculate optimal layout
+            if (perAgentMode) {
+                // Per-agent mode: focused agent in center, neighbors in a ring around it
+                const focusedNode = nodes.find(n => n.isFocused);
+                const neighbors = nodes.filter(n => n.isNeighbor);
+
+                if (focusedNode) {
+                    // Place focused agent at center
+                    nodePositions[focusedNode.id] = { x: 0, y: 0, z: 0 };
+
+                    // Place neighbors in a ring around the focused agent
+                    neighbors.forEach((node, i) => {
+                        const angle = (i / neighbors.length) * Math.PI * 2;
+                        nodePositions[node.id] = {
+                            x: Math.cos(angle) * radius * 0.7,
+                            y: 0,
+                            z: Math.sin(angle) * radius * 0.7
+                        };
+                    });
+                }
+            } else if (nodeCount <= 3) {
+                // Triangle layout for 3 nodes
+                nodes.forEach((node, i) => {
+                    const angle = (i / nodeCount) * Math.PI * 2 - Math.PI / 2;
+                    nodePositions[node.id] = {
+                        x: Math.cos(angle) * radius * 0.6,
+                        y: 0,
+                        z: Math.sin(angle) * radius * 0.6
+                    };
+                });
+            } else if (nodeCount <= 6) {
+                // Single ring
+                nodes.forEach((node, i) => {
+                    const angle = (i / nodeCount) * Math.PI * 2;
+                    nodePositions[node.id] = {
+                        x: Math.cos(angle) * radius,
+                        y: 0,
+                        z: Math.sin(angle) * radius
+                    };
+                });
+            } else {
+                // Multi-tier layout for larger networks
+                const tiers = Math.ceil(Math.sqrt(nodeCount / 4));
+                nodes.forEach((node, i) => {
+                    const tier = Math.floor(i / 6);
+                    const posInTier = i % 6;
+                    const nodesInTier = Math.min(6, nodeCount - tier * 6);
+                    const angle = (posInTier / nodesInTier) * Math.PI * 2;
+                    const tierRadius = radius - tier * 15;
+                    const y = tier * 25 - (tiers * 12);
+
+                    nodePositions[node.id] = {
+                        x: Math.cos(angle) * tierRadius,
+                        y: y,
+                        z: Math.sin(angle) * tierRadius
+                    };
+                });
+            }
+
+            // Create nodes with labels
+            nodes.forEach(node => {
+                const pos = nodePositions[node.id];
+                const color = getNodeColor(node);
+
+                // Determine node size based on focus/neighbor status
+                let sphereRadius = 6;
+                let glowRadius = 9;
+                let emissiveIntensity = 0.3;
+
+                if (node.isFocused) {
+                    // Focused agent is larger and more prominent
+                    sphereRadius = 10;
+                    glowRadius = 15;
+                    emissiveIntensity = 0.5;
+                } else if (node.isNeighbor) {
+                    // Neighbors are slightly smaller
+                    sphereRadius = 5;
+                    glowRadius = 8;
+                }
+
+                // Main sphere
+                const geometry = new THREE.SphereGeometry(sphereRadius, 32, 32);
+                const material = new THREE.MeshPhongMaterial({
+                    color: color,
+                    emissive: color,
+                    emissiveIntensity: emissiveIntensity,
+                    shininess: 100
+                });
+                const sphere = new THREE.Mesh(geometry, material);
+                sphere.position.set(pos.x, pos.y, pos.z);
+
+                // Glow effect
+                const glowGeometry = new THREE.SphereGeometry(glowRadius, 32, 32);
+                const glowMaterial = new THREE.MeshBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: node.isFocused ? 0.4 : 0.2
+                });
+                const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+                glow.position.copy(sphere.position);
+
+                // Create 3-layer visual rings around node
+                // Ring sizes scale with node size
+                const ringScale = node.isFocused ? 1.5 : 1;
+                const ringThickness = node.isFocused ? 0.5 : 0.3;
+
+                // Layer 1: Docker (Purple outer ring)
+                if (node.docker_ip || node.ip) {
+                    const dockerRing = new THREE.Mesh(
+                        new THREE.TorusGeometry(8 * ringScale, ringThickness, 8, 32),
+                        new THREE.MeshBasicMaterial({ color: layerColors.docker, transparent: true, opacity: 0.6 })
+                    );
+                    dockerRing.position.copy(sphere.position);
+                    dockerRing.rotation.x = Math.PI / 2;
+                    dockerRing.userData = { layer: 'docker' };
+                    scene.add(dockerRing);
+                    labelObjects.push(dockerRing);
+                }
+
+                // Layer 2: Overlay (Green middle ring)
+                if (node.overlay_ipv6) {
+                    const overlayRing = new THREE.Mesh(
+                        new THREE.TorusGeometry(10 * ringScale, ringThickness, 8, 32),
+                        new THREE.MeshBasicMaterial({ color: layerColors.overlay, transparent: true, opacity: 0.6 })
+                    );
+                    overlayRing.position.copy(sphere.position);
+                    overlayRing.rotation.x = Math.PI / 2;
+                    overlayRing.userData = { layer: 'overlay' };
+                    scene.add(overlayRing);
+                    labelObjects.push(overlayRing);
+                }
+
+                // Layer 3: Underlay (Cyan inner ring for protocol connections)
+                if (node.underlay_info || (node.protocols && node.protocols.length > 0)) {
+                    const underlayRing = new THREE.Mesh(
+                        new THREE.TorusGeometry(12 * ringScale, ringThickness, 8, 32),
+                        new THREE.MeshBasicMaterial({ color: layerColors.underlay, transparent: true, opacity: 0.6 })
+                    );
+                    underlayRing.position.copy(sphere.position);
+                    underlayRing.rotation.x = Math.PI / 2;
+                    underlayRing.userData = { layer: 'underlay' };
+                    scene.add(underlayRing);
+                    labelObjects.push(underlayRing);
+                }
+
+                // Create text labels for the node
+                const labelResult = createNodeLabels(node, pos);
+                scene.add(labelResult.group);
+                labelObjects.push(labelResult.group);
+
+                // Group
+                const group = new THREE.Group();
+                group.add(sphere);
+                group.add(glow);
+                scene.add(group);
+
+                nodeObjects[node.id] = {
+                    group: group,
+                    sphere: sphere,
+                    glow: glow,
+                    data: node,
+                    position: pos,
+                    labelGroup: labelResult.group
+                };
+            });
+
+            // Create links with layer-specific coloring and curved paths
+            links.forEach(link => {
+                const sourcePos = nodePositions[link.source];
+                const targetPos = nodePositions[link.target];
+
+                if (sourcePos && targetPos) {
+                    // Create curved links with different heights per layer
+                    let curveHeight, lineWidth, opacity;
+                    if (link.layer === 'docker') {
+                        curveHeight = 5;
+                        lineWidth = 2;
+                        opacity = 0.7;
+                    } else if (link.layer === 'overlay') {
+                        curveHeight = 12;
+                        lineWidth = 2;
+                        opacity = 0.8;
+                    } else if (link.layer === 'underlay') {
+                        curveHeight = -3;
+                        lineWidth = 3;
+                        opacity = 0.9;
+                    } else {
+                        curveHeight = 0;
+                        lineWidth = 2;
+                        opacity = 0.6;
+                    }
+
+                    // Calculate midpoint with curve
+                    const midX = (sourcePos.x + targetPos.x) / 2;
+                    const midY = (sourcePos.y + targetPos.y) / 2 + curveHeight;
+                    const midZ = (sourcePos.z + targetPos.z) / 2;
+
+                    // Create quadratic bezier curve
+                    const curve = new THREE.QuadraticBezierCurve3(
+                        new THREE.Vector3(sourcePos.x, sourcePos.y, sourcePos.z),
+                        new THREE.Vector3(midX, midY, midZ),
+                        new THREE.Vector3(targetPos.x, targetPos.y, targetPos.z)
+                    );
+
+                    const points = curve.getPoints(20);
+                    const geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+                    // Determine color based on layer or protocol
+                    let color;
+                    if (link.layer === 'docker') {
+                        color = layerColors.docker;
+                    } else if (link.layer === 'overlay') {
+                        color = layerColors.overlay;
+                    } else if (link.layer === 'underlay') {
+                        color = layerColors.underlay;
+                    } else {
+                        color = link.status === 'up' ?
+                            protocolColors[link.protocol.toLowerCase()] || 0x888888 :
+                            protocolColors.down;
+                    }
+
+                    const material = new THREE.LineBasicMaterial({
+                        color: color,
+                        transparent: true,
+                        opacity: opacity,
+                        linewidth: lineWidth
+                    });
+
+                    const line = new THREE.Line(geometry, material);
+                    line.userData = link;  // Store link data for visibility filtering
+                    scene.add(line);
+                    linkObjects.push(line);
+
+                    // Add link label for interfaces if enabled
+                    if (labelVisibility.interfaces && link.protocol) {
+                        const linkLabel = createLinkLabel(link, sourcePos, targetPos);
+                        linkLabel.position.y = midY + 2;
+                        scene.add(linkLabel);
+                        labelObjects.push(linkLabel);
+                    }
+                }
+            });
+        }
+
+        function getNodeColor(node) {
+            if (node.status === 'stopped' || node.status === 'down') {
+                return protocolColors.down;
+            }
+            if (node.protocols && node.protocols.length > 0) {
+                return protocolColors[node.protocols[0]] || protocolColors.default;
+            }
+            return protocolColors.default;
+        }
+
+        // Create text sprite for labels
+        function createTextSprite(text, color = '#ffffff', fontSize = 14, bgColor = null) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+
+            // Set canvas size based on text
+            context.font = `bold ${fontSize}px Arial`;
+            const textWidth = context.measureText(text).width;
+            canvas.width = Math.max(256, textWidth + 20);
+            canvas.height = fontSize * 1.5 + 10;
+
+            // Re-apply font after resize
+            context.font = `bold ${fontSize}px Arial`;
+
+            // Background if specified
+            if (bgColor) {
+                context.fillStyle = bgColor;
+                context.roundRect(0, 0, canvas.width, canvas.height, 4);
+                context.fill();
+            }
+
+            // Text
+            context.fillStyle = color;
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(text, canvas.width / 2, canvas.height / 2);
+
+            // Create sprite
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.needsUpdate = true;
+
+            const spriteMaterial = new THREE.SpriteMaterial({
+                map: texture,
+                transparent: true,
+                depthTest: false
+            });
+
+            const sprite = new THREE.Sprite(spriteMaterial);
+            sprite.scale.set(canvas.width / 10, canvas.height / 10, 1);
+
+            return sprite;
+        }
+
+        // Create multi-line label group for a node
+        function createNodeLabels(node, position) {
+            const labelGroup = new THREE.Group();
+            const labels = [];
+            let yOffset = 10;  // Start above node
+
+            // Node name label
+            if (labelVisibility.names) {
+                const nameLabel = createTextSprite(node.name, '#00d9ff', 16);
+                nameLabel.position.set(position.x, position.y + yOffset, position.z);
+                nameLabel.userData = { type: 'name', nodeId: node.id };
+                labelGroup.add(nameLabel);
+                labels.push(nameLabel);
+                yOffset += 4;
+            }
+
+            // Docker IP label (Layer 1 - Purple)
+            if (labelVisibility.dockerIp && (node.docker_ip || node.ip)) {
+                const dockerIp = node.docker_ip || node.ip;
+                const dockerLabel = createTextSprite(`🐳 ${dockerIp}`, '#9333ea', 12, 'rgba(147, 51, 234, 0.2)');
+                dockerLabel.position.set(position.x, position.y + yOffset, position.z);
+                dockerLabel.userData = { type: 'dockerIp', nodeId: node.id };
+                labelGroup.add(dockerLabel);
+                labels.push(dockerLabel);
+                yOffset += 3.5;
+            }
+
+            // Overlay IPv6 label (Layer 2 - Green)
+            if (labelVisibility.overlayIp && node.overlay_ipv6) {
+                // Truncate long IPv6 addresses
+                let ipv6Display = node.overlay_ipv6;
+                if (ipv6Display.length > 20) {
+                    const parts = ipv6Display.split('::');
+                    ipv6Display = parts[0] + '::' + (parts[1] || '').substring(0, 8);
+                }
+                const overlayLabel = createTextSprite(`📡 ${ipv6Display}`, '#4ade80', 11, 'rgba(74, 222, 128, 0.2)');
+                overlayLabel.position.set(position.x, position.y + yOffset, position.z);
+                overlayLabel.userData = { type: 'overlayIp', nodeId: node.id };
+                labelGroup.add(overlayLabel);
+                labels.push(overlayLabel);
+                yOffset += 3.5;
+            }
+
+            // Interface label (Layer 3 - Cyan/Yellow)
+            if (labelVisibility.interfaces && node.underlay_info) {
+                // Truncate long underlay info
+                let underlayDisplay = node.underlay_info;
+                if (underlayDisplay.length > 25) {
+                    underlayDisplay = underlayDisplay.substring(0, 22) + '...';
+                }
+                const interfaceLabel = createTextSprite(`🔗 ${underlayDisplay}`, '#facc15', 10, 'rgba(250, 204, 21, 0.15)');
+                interfaceLabel.position.set(position.x, position.y + yOffset, position.z);
+                interfaceLabel.userData = { type: 'interface', nodeId: node.id };
+                labelGroup.add(interfaceLabel);
+                labels.push(interfaceLabel);
+            }
+
+            return { group: labelGroup, labels: labels };
+        }
+
+        // Create link label
+        function createLinkLabel(link, sourcePos, targetPos) {
+            // Calculate midpoint
+            const midX = (sourcePos.x + targetPos.x) / 2;
+            const midY = (sourcePos.y + targetPos.y) / 2;
+            const midZ = (sourcePos.z + targetPos.z) / 2;
+
+            // Different colors for different layers
+            let color, text;
+            if (link.layer === 'docker') {
+                color = '#9333ea';
+                text = link.protocol || 'Docker';
+            } else if (link.layer === 'overlay') {
+                color = '#4ade80';
+                text = 'ASI';
+            } else if (link.layer === 'underlay') {
+                color = '#00d9ff';
+                text = link.protocol || 'Underlay';
+            } else {
+                color = '#888888';
+                text = link.protocol || '';
+            }
+
+            const label = createTextSprite(text, color, 9);
+            label.position.set(midX, midY + 2, midZ);
+            label.userData = { type: 'linkLabel', link: link };
+
+            return label;
+        }
+
+        function updateNodeSizes(e) {
+            const scale = e.target.value / 100;
+            Object.values(nodeObjects).forEach(obj => {
+                obj.sphere.scale.set(scale, scale, scale);
+                obj.glow.scale.set(scale, scale, scale);
+            });
+        }
+
+        function updateLinkOpacity(e) {
+            const opacity = e.target.value / 100;
+            linkObjects.forEach(line => {
+                line.material.opacity = opacity;
+            });
+        }
+
+        function toggleAutoRotate() {
+            autoRotate = !autoRotate;
+            document.getElementById('btnAutoRotate').classList.toggle('active', autoRotate);
+        }
+
+        function resetView() {
+            cameraAngleX = 0;
+            cameraAngleY = Math.PI / 6;
+            cameraDistance = 200;
+            updateCameraPosition();
+        }
+
+        function setView(view) {
+            switch(view) {
+                case 'top':
+                    cameraAngleX = 0;
+                    cameraAngleY = Math.PI / 2 - 0.1;
+                    break;
+                case 'front':
+                    cameraAngleX = 0;
+                    cameraAngleY = 0;
+                    break;
+                case 'side':
+                    cameraAngleX = Math.PI / 2;
+                    cameraAngleY = 0;
+                    break;
+            }
+            updateCameraPosition();
+        }
+
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function onMouseClick(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            const spheres = Object.values(nodeObjects).map(obj => obj.sphere);
+            const intersects = raycaster.intersectObjects(spheres);
+
+            if (intersects.length > 0) {
+                const clickedSphere = intersects[0].object;
+                const nodeEntry = Object.entries(nodeObjects).find(([id, obj]) => obj.sphere === clickedSphere);
+
+                if (nodeEntry) {
+                    selectNode(nodeEntry[1]);
+                }
+            } else {
+                deselectNode();
+            }
+        }
+
+        function onMouseMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            if (!isDragging) {
+                raycaster.setFromCamera(mouse, camera);
+                const spheres = Object.values(nodeObjects).map(obj => obj.sphere);
+                const intersects = raycaster.intersectObjects(spheres);
+
+                const tooltip = document.getElementById('tooltip');
+
+                if (intersects.length > 0) {
+                    const hoveredSphere = intersects[0].object;
+                    const nodeEntry = Object.entries(nodeObjects).find(([id, obj]) => obj.sphere === hoveredSphere);
+
+                    if (nodeEntry) {
+                        const node = nodeEntry[1].data;
+                        tooltip.innerHTML = `<strong>${node.name}</strong><br>${node.status}`;
+                        tooltip.style.display = 'block';
+                        tooltip.style.left = event.clientX + 15 + 'px';
+                        tooltip.style.top = event.clientY + 15 + 'px';
+                        document.body.style.cursor = 'pointer';
+                    }
+                } else {
+                    tooltip.style.display = 'none';
+                    document.body.style.cursor = 'default';
+                }
+            }
+        }
+
+        // 3-Layer visibility helper functions
+        function setLayerVisibility(docker, overlay, underlay) {
+            layerVisibility.docker = docker;
+            layerVisibility.overlay = overlay;
+            layerVisibility.underlay = underlay;
+
+            document.getElementById('layerDocker').checked = docker;
+            document.getElementById('layerOverlay').checked = overlay;
+            document.getElementById('layerUnderlay').checked = underlay;
+
+            // Also sync label visibility with layer visibility
+            // When showing only one layer, only show that layer's labels
+            if (docker && !overlay && !underlay) {
+                // Docker only - show Docker IP labels
+                labelVisibility.dockerIp = true;
+                labelVisibility.overlayIp = false;
+                labelVisibility.interfaces = false;
+            } else if (!docker && overlay && !underlay) {
+                // Overlay only - show Overlay IPv6 labels
+                labelVisibility.dockerIp = false;
+                labelVisibility.overlayIp = true;
+                labelVisibility.interfaces = false;
+            } else if (!docker && !overlay && underlay) {
+                // Underlay only - show interface labels
+                labelVisibility.dockerIp = false;
+                labelVisibility.overlayIp = false;
+                labelVisibility.interfaces = true;
+            } else {
+                // All or multiple - show all labels
+                labelVisibility.dockerIp = docker;
+                labelVisibility.overlayIp = overlay;
+                labelVisibility.interfaces = underlay;
+            }
+
+            // Update label checkboxes
+            document.getElementById('labelDockerIp').checked = labelVisibility.dockerIp;
+            document.getElementById('labelOverlayIp').checked = labelVisibility.overlayIp;
+            document.getElementById('labelInterfaces').checked = labelVisibility.interfaces;
+
+            updateLayerVisibility();
+        }
+
+        function updateLayerVisibility() {
+            // Update node visibility based on layer settings
+            Object.values(nodeObjects).forEach(obj => {
+                const node = obj.data;
+                let visible = false;
+
+                // Show node if any of its layers are visible
+                if (layerVisibility.docker && node.docker_ip) visible = true;
+                if (layerVisibility.overlay && node.overlay_ipv6) visible = true;
+                if (layerVisibility.underlay && node.underlay_info) visible = true;
+
+                // If no layer-specific info, show based on general visibility
+                if (!node.docker_ip && !node.overlay_ipv6 && !node.underlay_info) {
+                    visible = layerVisibility.docker || layerVisibility.overlay || layerVisibility.underlay;
+                }
+
+                obj.group.visible = visible;
+            });
+
+            // Update link visibility based on layer settings
+            linkObjects.forEach(linkObj => {
+                const link = linkObj.userData;
+                let visible = false;
+
+                if (link) {
+                    if (layerVisibility.docker && link.layer === 'docker') visible = true;
+                    if (layerVisibility.overlay && link.layer === 'overlay') visible = true;
+                    if (layerVisibility.underlay && link.layer === 'underlay') visible = true;
+
+                    // Default: show if any layer is visible
+                    if (!link.layer) {
+                        visible = layerVisibility.docker || layerVisibility.overlay || layerVisibility.underlay;
+                    }
+                } else {
+                    visible = layerVisibility.docker || layerVisibility.overlay || layerVisibility.underlay;
+                }
+
+                linkObj.visible = visible;
+            });
+
+            // Update ring and label visibility based on layers
+            labelObjects.forEach(obj => {
+                if (obj.userData) {
+                    // Handle rings (have 'layer' property)
+                    if (obj.userData.layer) {
+                        if (obj.userData.layer === 'docker') {
+                            obj.visible = layerVisibility.docker;
+                        } else if (obj.userData.layer === 'overlay') {
+                            obj.visible = layerVisibility.overlay;
+                        } else if (obj.userData.layer === 'underlay') {
+                            obj.visible = layerVisibility.underlay;
+                        }
+                    }
+                    // Handle text labels (have 'type' property)
+                    if (obj.userData.type) {
+                        if (obj.userData.type === 'dockerIp') {
+                            obj.visible = layerVisibility.docker && labelVisibility.dockerIp;
+                        } else if (obj.userData.type === 'overlayIp') {
+                            obj.visible = layerVisibility.overlay && labelVisibility.overlayIp;
+                        } else if (obj.userData.type === 'interface') {
+                            obj.visible = layerVisibility.underlay && labelVisibility.interfaces;
+                        } else if (obj.userData.type === 'name') {
+                            // Name labels always visible if any layer is visible
+                            obj.visible = (layerVisibility.docker || layerVisibility.overlay || layerVisibility.underlay) && labelVisibility.names;
+                        } else if (obj.userData.type === 'linkLabel') {
+                            // Link labels follow their layer
+                            const link = obj.userData.link;
+                            if (link) {
+                                if (link.layer === 'docker') obj.visible = layerVisibility.docker;
+                                else if (link.layer === 'overlay') obj.visible = layerVisibility.overlay;
+                                else if (link.layer === 'underlay') obj.visible = layerVisibility.underlay;
+                                else obj.visible = true;
+                            }
+                        }
+                    }
+                }
+                // Handle label groups (THREE.Group containing multiple labels)
+                if (obj.isGroup && obj.children) {
+                    obj.children.forEach(child => {
+                        if (child.userData && child.userData.type) {
+                            if (child.userData.type === 'dockerIp') {
+                                child.visible = layerVisibility.docker && labelVisibility.dockerIp;
+                            } else if (child.userData.type === 'overlayIp') {
+                                child.visible = layerVisibility.overlay && labelVisibility.overlayIp;
+                            } else if (child.userData.type === 'interface') {
+                                child.visible = layerVisibility.underlay && labelVisibility.interfaces;
+                            } else if (child.userData.type === 'name') {
+                                child.visible = (layerVisibility.docker || layerVisibility.overlay || layerVisibility.underlay) && labelVisibility.names;
+                            }
+                        }
+                    });
+                }
+            });
+        }
+
+        // Per-agent view filtering
+        function filterForPerAgentView() {
+            if (!focusedAgentId) return;
+
+            // Find the focused agent (try matching by id, name, or partial match)
+            let focusedNode = nodes.find(n =>
+                n.id === focusedAgentId ||
+                n.name === focusedAgentId ||
+                n.id.includes(focusedAgentId) ||
+                n.name.includes(focusedAgentId)
+            );
+
+            if (!focusedNode) {
+                console.log('Focused agent not found:', focusedAgentId);
+                return;
+            }
+
+            // Mark the focused node
+            focusedNode.isFocused = true;
+
+            // Update title with actual agent name
+            document.getElementById('pageSubtitle').textContent = `Focused on: ${focusedNode.name}`;
+
+            // Find all links connected to the focused agent
+            const connectedLinks = links.filter(l =>
+                l.source === focusedNode.id || l.target === focusedNode.id
+            );
+
+            // Find all neighbor node IDs
+            const neighborIds = new Set();
+            connectedLinks.forEach(l => {
+                if (l.source === focusedNode.id) {
+                    neighborIds.add(l.target);
+                } else {
+                    neighborIds.add(l.source);
+                }
+            });
+
+            // Filter nodes to only focused agent and its neighbors
+            nodes = nodes.filter(n => n.id === focusedNode.id || neighborIds.has(n.id));
+
+            // Mark neighbors
+            nodes.forEach(n => {
+                if (neighborIds.has(n.id)) {
+                    n.isNeighbor = true;
+                }
+            });
+
+            // Filter links to only those involving the focused agent
+            links = connectedLinks;
+
+            console.log(`Per-agent view: ${focusedNode.name} with ${neighborIds.size} neighbors`);
+        }
+
+        // Label visibility functions
+        function setAllLabelVisibility(visible) {
+            labelVisibility.names = visible;
+            labelVisibility.dockerIp = visible;
+            labelVisibility.overlayIp = visible;
+            labelVisibility.interfaces = visible;
+
+            document.getElementById('labelNames').checked = visible;
+            document.getElementById('labelDockerIp').checked = visible;
+            document.getElementById('labelOverlayIp').checked = visible;
+            document.getElementById('labelInterfaces').checked = visible;
+
+            updateLabelVisibility();
+        }
+
+        function updateLabelVisibility() {
+            // Recreate visualization with new label settings
+            createVisualization();
+        }
+
+        function selectNode(nodeObj) {
+            // Reset previous selection
+            if (selectedNode) {
+                selectedNode.glow.material.opacity = 0.2;
+            }
+
+            selectedNode = nodeObj;
+            nodeObj.glow.material.opacity = 0.5;
+
+            const node = nodeObj.data;
+            document.getElementById('agentInfo').classList.add('visible');
+            document.getElementById('noSelection').style.display = 'none';
+            document.getElementById('agentName').textContent = node.name;
+            document.getElementById('agentRouterId').textContent = node.id;
+            document.getElementById('agentStatus').textContent = node.status;
+
+            const protocolsHtml = node.protocols ? node.protocols.map(p =>
+                `<span class="protocol-badge protocol-${p}">${p.toUpperCase()}</span>`
+            ).join('') : '-';
+            document.getElementById('agentProtocols').innerHTML = protocolsHtml;
+
+            document.getElementById('agentNeighbors').textContent = node.neighbors || 0;
+            document.getElementById('agentRoutes').textContent = node.routes || 0;
+
+            // Update 3-Layer network info
+            document.getElementById('agentDockerIp').textContent = node.docker_ip || node.ip || '-';
+            document.getElementById('agentOverlayIpv6').textContent = node.overlay_ipv6 || '-';
+            document.getElementById('agentUnderlayInfo').textContent = node.underlay_info || (node.protocols ? node.protocols.join(', ') : '-');
+        }
+
+        function deselectNode() {
+            if (selectedNode) {
+                selectedNode.glow.material.opacity = 0.2;
+                selectedNode = null;
+            }
+            document.getElementById('agentInfo').classList.remove('visible');
+            document.getElementById('noSelection').style.display = 'block';
+        }
+
+        function updateStats() {
+            document.getElementById('statAgents').textContent = nodes.length;
+            document.getElementById('statLinks').textContent = links.length;
+
+            const protocols = new Set();
+            nodes.forEach(n => {
+                if (n.protocols) n.protocols.forEach(p => protocols.add(p));
+            });
+            document.getElementById('statProtocols').textContent = protocols.size;
+
+            const totalRoutes = nodes.reduce((sum, n) => sum + (n.routes || 0), 0);
+            document.getElementById('statRoutes').textContent = totalRoutes;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (autoRotate) {
+                cameraAngleX += rotationSpeed;
+                updateCameraPosition();
+            }
+
+            const time = Date.now() * 0.001;
+
+            // Animate node glows with layer-aware pulsing
+            Object.values(nodeObjects).forEach((obj, i) => {
+                const node = obj.data;
+                let basePulse = 0.15;
+                let pulseSpeed = 2;
+
+                // Focused nodes pulse more prominently
+                if (node.isFocused) {
+                    basePulse = 0.35;
+                    pulseSpeed = 1.5;
+                }
+
+                const pulse = basePulse + Math.sin(time * pulseSpeed + i) * 0.1;
+                if (obj !== selectedNode) {
+                    obj.glow.material.opacity = pulse;
+                }
+            });
+
+            // Animate layer rings - rotate slowly and pulse
+            labelObjects.forEach((obj, i) => {
+                if (obj.userData && obj.userData.layer) {
+                    // Rotate rings
+                    if (obj.rotation) {
+                        obj.rotation.z += 0.002;
+                    }
+                    // Pulse opacity
+                    if (obj.material) {
+                        const layerOffset = obj.userData.layer === 'docker' ? 0 : (obj.userData.layer === 'overlay' ? 2 : 4);
+                        obj.material.opacity = 0.4 + Math.sin(time * 1.5 + i * 0.5 + layerOffset) * 0.2;
+                    }
+                }
+            });
+
+            // Animate link opacity for "data flow" effect
+            linkObjects.forEach((linkObj, i) => {
+                const link = linkObj.userData;
+                if (link && link.status === 'up') {
+                    // Subtle pulsing to show "active" connection
+                    const baseopacity = link.layer === 'overlay' ? 0.7 : 0.5;
+                    linkObj.material.opacity = baseopacity + Math.sin(time * 3 + i * 0.3) * 0.15;
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        // Initialize
+        init();
+    </script>
+</body>
+</html>

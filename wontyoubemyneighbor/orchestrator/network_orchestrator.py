@@ -12,6 +12,7 @@ import asyncio
 import ipaddress
 import logging
 import re
+import traceback
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
@@ -30,6 +31,7 @@ class NetworkDeployment:
     status: str = "pending"  # pending, deploying, running, stopping, stopped, error
     docker_network: Optional[str] = None
     subnet: Optional[str] = None
+    subnet6: Optional[str] = None  # Docker IPv6 subnet if dual-stack enabled
     agents: Dict[str, AgentContainer] = field(default_factory=dict)
     error_message: Optional[str] = None
     started_at: Optional[str] = None
@@ -110,7 +112,8 @@ class NetworkOrchestrator:
         network: TOONNetwork,
         image: Optional[str] = None,
         api_keys: Optional[Dict[str, str]] = None,
-        parallel: bool = True
+        parallel: bool = True,
+        network_foundation: Optional[Dict[str, Any]] = None
     ) -> NetworkDeployment:
         """
         Launch a complete network deployment
@@ -120,6 +123,10 @@ class NetworkOrchestrator:
             image: Docker image for agents
             api_keys: LLM API keys
             parallel: Launch agents in parallel
+            network_foundation: Network foundation settings (3-layer architecture)
+                - underlay_protocol: 'ipv4', 'ipv6', or 'dual'
+                - overlay: ASI agent mesh settings (IPv6)
+                - docker_ipv6: Docker IPv6 settings
 
         Returns:
             NetworkDeployment status
@@ -140,24 +147,42 @@ class NetworkOrchestrator:
             deployment.status = "deploying"
             deployment.started_at = datetime.now().isoformat()
 
-            # Step 1: Create Docker network
+            # Step 1: Create Docker network (Layer 1 of 3-layer architecture)
             self.logger.info(f"Creating Docker network for {network.n}...")
             docker_net_name = network.docker.n if network.docker else network.id
             subnet = network.docker.subnet if network.docker else None
             gateway = network.docker.gw if network.docker else None
 
+            # Extract IPv6 dual-stack settings from network foundation
+            subnet6 = None
+            gateway6 = None
+            enable_ipv6 = False
+
+            if network_foundation:
+                docker_ipv6 = network_foundation.get("docker_ipv6", {})
+                if docker_ipv6.get("enabled", False):
+                    enable_ipv6 = True
+                    subnet6 = docker_ipv6.get("subnet")
+                    gateway6 = docker_ipv6.get("gateway")
+                    self.logger.info(f"Docker IPv6 dual-stack enabled: {subnet6}")
+
             network_info = self.docker.create_network(
                 name=docker_net_name,
                 subnet=subnet,
                 gateway=gateway,
+                subnet6=subnet6,
+                gateway6=gateway6,
+                enable_ipv6=enable_ipv6,
                 labels={
-                    "rubberband.network_id": network.id,
-                    "rubberband.network_name": network.n
+                    "asi.network_id": network.id,
+                    "asi.network_name": network.n,
+                    "asi.ipv6_enabled": str(enable_ipv6).lower()
                 }
             )
 
             deployment.docker_network = docker_net_name
             deployment.subnet = network_info.subnet
+            deployment.subnet6 = subnet6  # Store IPv6 subnet if dual-stack enabled
 
             # Step 2: Pre-calculate agent IPs for BGP peer resolution
             agent_to_ip, router_id_to_ip = self._calculate_agent_ips(
@@ -171,6 +196,8 @@ class NetworkOrchestrator:
 
             # Step 3: Launch agents
             self.logger.info(f"Launching {len(network.agents)} agents...")
+            for i, agent in enumerate(network.agents):
+                self.logger.info(f"  Agent {i+1}/{len(network.agents)}: {agent.id} ({agent.n})")
 
             if parallel:
                 # Launch all agents in parallel
@@ -181,14 +208,22 @@ class NetworkOrchestrator:
                         image=image,
                         api_keys=api_keys,
                         ip_mapping=ip_mapping,
-                        assigned_ip=agent_to_ip.get(agent.id)
+                        assigned_ip=agent_to_ip.get(agent.id),
+                        agent_index=i + 1,  # 1-based index for IPv6 overlay addressing
+                        network_foundation=network_foundation
                     )
-                    for agent in network.agents
+                    for i, agent in enumerate(network.agents)
                 ]
                 agent_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                for agent, result in zip(network.agents, agent_results):
+                self.logger.info(f"Processing {len(agent_results)} launch results...")
+                for i, (agent, result) in enumerate(zip(network.agents, agent_results)):
                     if isinstance(result, Exception):
+                        # Log full traceback for debugging, but store clean message
+                        self.logger.error(
+                            f"Failed to launch agent {agent.n}: {result}\n"
+                            f"{''.join(traceback.format_exception(type(result), result, result.__traceback__))}"
+                        )
                         # Use agent name for human-readable container names
                         clean_name = re.sub(r'[^a-zA-Z0-9_-]', '-', agent.n).lower().strip('-')
                         deployment.agents[agent.id] = AgentContainer(
@@ -199,9 +234,10 @@ class NetworkOrchestrator:
                         )
                     else:
                         deployment.agents[agent.id] = result
+                        self.logger.info(f"  Agent {i+1}: {agent.id} -> {result.status} (port: {result.webui_port})")
             else:
                 # Launch agents sequentially
-                for agent in network.agents:
+                for i, agent in enumerate(network.agents):
                     try:
                         result = await self.launcher.launch(
                             agent=agent,
@@ -209,7 +245,9 @@ class NetworkOrchestrator:
                             image=image,
                             api_keys=api_keys,
                             ip_mapping=ip_mapping,
-                            assigned_ip=agent_to_ip.get(agent.id)
+                            assigned_ip=agent_to_ip.get(agent.id),
+                            agent_index=i + 1,  # 1-based index for IPv6 overlay addressing
+                            network_foundation=network_foundation
                         )
                         deployment.agents[agent.id] = result
                     except Exception as e:
@@ -245,6 +283,28 @@ class NetworkOrchestrator:
             deployment.status = "error"
             deployment.error_message = str(e)
             self.logger.error(f"Failed to launch network {network.id}: {e}")
+
+            # Cleanup any successfully launched containers on failure
+            cleanup_errors = []
+            for agent_id, agent_container in deployment.agents.items():
+                if agent_container.status == "running":
+                    try:
+                        await self.launcher.stop(agent_id, remove=True)
+                        self.logger.info(f"Cleaned up agent {agent_id} after deployment failure")
+                    except Exception as cleanup_error:
+                        cleanup_errors.append(f"{agent_id}: {cleanup_error}")
+                        self.logger.warning(f"Failed to cleanup agent {agent_id}: {cleanup_error}")
+
+            if cleanup_errors:
+                deployment.error_message += f"; Cleanup errors: {', '.join(cleanup_errors)}"
+
+            # Remove the Docker network if it was created
+            if docker_net_name:
+                try:
+                    self.docker.delete_network(docker_net_name, force=True)
+                    self.logger.info(f"Cleaned up Docker network {docker_net_name} after deployment failure")
+                except Exception as net_error:
+                    self.logger.warning(f"Failed to cleanup network {docker_net_name}: {net_error}")
 
         return deployment
 

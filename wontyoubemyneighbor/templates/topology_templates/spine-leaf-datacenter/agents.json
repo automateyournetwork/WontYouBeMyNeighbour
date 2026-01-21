@@ -1,0 +1,118 @@
+[
+  {
+    "id": "spine-1",
+    "n": "Spine-1",
+    "r": "10.0.0.1",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.0.1/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.1.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "leaf-1", "peer_if": "eth1", "subnet": "172.16.1.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.2.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "leaf-2", "peer_if": "eth1", "subnet": "172.16.2.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["172.16.3.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "leaf-3", "peer_if": "eth1", "subnet": "172.16.3.0/30"}},
+      {"id": "eth4", "n": "eth4", "t": "eth", "a": ["172.16.4.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "leaf-4", "peer_if": "eth1", "subnet": "172.16.4.0/30"}}
+    ],
+    "protos": [
+      {"p": "ebgp", "r": "10.0.0.1", "asn": 65000, "loopback_ip": "10.0.0.1", "peers": [
+        {"ip": "172.16.1.2", "asn": 65001, "description": "Leaf-1"},
+        {"ip": "172.16.2.2", "asn": 65002, "description": "Leaf-2"},
+        {"ip": "172.16.3.2", "asn": 65003, "description": "Leaf-3"},
+        {"ip": "172.16.4.2", "asn": 65004, "description": "Leaf-4"}
+      ], "nets": ["10.0.0.1/32"]}
+    ]
+  },
+  {
+    "id": "spine-2",
+    "n": "Spine-2",
+    "r": "10.0.0.2",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.0.2/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.5.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "leaf-1", "peer_if": "eth2", "subnet": "172.16.5.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.6.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "leaf-2", "peer_if": "eth2", "subnet": "172.16.6.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["172.16.7.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "leaf-3", "peer_if": "eth2", "subnet": "172.16.7.0/30"}},
+      {"id": "eth4", "n": "eth4", "t": "eth", "a": ["172.16.8.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "leaf-4", "peer_if": "eth2", "subnet": "172.16.8.0/30"}}
+    ],
+    "protos": [
+      {"p": "ebgp", "r": "10.0.0.2", "asn": 65000, "loopback_ip": "10.0.0.2", "peers": [
+        {"ip": "172.16.5.2", "asn": 65001, "description": "Leaf-1"},
+        {"ip": "172.16.6.2", "asn": 65002, "description": "Leaf-2"},
+        {"ip": "172.16.7.2", "asn": 65003, "description": "Leaf-3"},
+        {"ip": "172.16.8.2", "asn": 65004, "description": "Leaf-4"}
+      ], "nets": ["10.0.0.2/32"]}
+    ]
+  },
+  {
+    "id": "leaf-1",
+    "n": "Leaf-1",
+    "r": "10.0.1.1",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.1.1/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.1.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "spine-1", "peer_if": "eth1", "subnet": "172.16.1.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.5.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "spine-2", "peer_if": "eth1", "subnet": "172.16.5.0/30"}},
+      {"id": "vxlan0", "n": "vxlan0", "t": "tun", "a": [], "s": "up", "mtu": 8950}
+    ],
+    "protos": [
+      {"p": "ebgp", "r": "10.0.1.1", "asn": 65001, "loopback_ip": "10.0.1.1", "peers": [
+        {"ip": "172.16.1.1", "asn": 65000, "description": "Spine-1"},
+        {"ip": "172.16.5.1", "asn": 65000, "description": "Spine-2"}
+      ], "nets": ["10.0.1.1/32", "192.168.10.0/24", "192.168.11.0/24"]},
+      {"p": "vxlan", "vtep_ip": "10.0.1.1", "vnis": [{"vni": 10010, "vlan": 10, "name": "Tenant-A"}, {"vni": 10011, "vlan": 11, "name": "Tenant-B"}]},
+      {"p": "evpn", "rd": "10.0.1.1:1", "rts": ["65000:10010", "65000:10011"]}
+    ]
+  },
+  {
+    "id": "leaf-2",
+    "n": "Leaf-2",
+    "r": "10.0.1.2",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.1.2/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.2.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "spine-1", "peer_if": "eth2", "subnet": "172.16.2.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.6.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "spine-2", "peer_if": "eth2", "subnet": "172.16.6.0/30"}},
+      {"id": "vxlan0", "n": "vxlan0", "t": "tun", "a": [], "s": "up", "mtu": 8950}
+    ],
+    "protos": [
+      {"p": "ebgp", "r": "10.0.1.2", "asn": 65002, "loopback_ip": "10.0.1.2", "peers": [
+        {"ip": "172.16.2.1", "asn": 65000, "description": "Spine-1"},
+        {"ip": "172.16.6.1", "asn": 65000, "description": "Spine-2"}
+      ], "nets": ["10.0.1.2/32", "192.168.20.0/24", "192.168.21.0/24"]},
+      {"p": "vxlan", "vtep_ip": "10.0.1.2", "vnis": [{"vni": 10010, "vlan": 10, "name": "Tenant-A"}, {"vni": 10020, "vlan": 20, "name": "Tenant-C"}]},
+      {"p": "evpn", "rd": "10.0.1.2:1", "rts": ["65000:10010", "65000:10020"]}
+    ]
+  },
+  {
+    "id": "leaf-3",
+    "n": "Leaf-3",
+    "r": "10.0.1.3",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.1.3/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.3.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "spine-1", "peer_if": "eth3", "subnet": "172.16.3.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.7.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "spine-2", "peer_if": "eth3", "subnet": "172.16.7.0/30"}},
+      {"id": "vxlan0", "n": "vxlan0", "t": "tun", "a": [], "s": "up", "mtu": 8950}
+    ],
+    "protos": [
+      {"p": "ebgp", "r": "10.0.1.3", "asn": 65003, "loopback_ip": "10.0.1.3", "peers": [
+        {"ip": "172.16.3.1", "asn": 65000, "description": "Spine-1"},
+        {"ip": "172.16.7.1", "asn": 65000, "description": "Spine-2"}
+      ], "nets": ["10.0.1.3/32", "192.168.30.0/24"]},
+      {"p": "vxlan", "vtep_ip": "10.0.1.3", "vnis": [{"vni": 10011, "vlan": 11, "name": "Tenant-B"}, {"vni": 10030, "vlan": 30, "name": "Tenant-D"}]},
+      {"p": "evpn", "rd": "10.0.1.3:1", "rts": ["65000:10011", "65000:10030"]}
+    ]
+  },
+  {
+    "id": "leaf-4",
+    "n": "Leaf-4",
+    "r": "10.0.1.4",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.1.4/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.4.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "spine-1", "peer_if": "eth4", "subnet": "172.16.4.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.8.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "spine-2", "peer_if": "eth4", "subnet": "172.16.8.0/30"}},
+      {"id": "vxlan0", "n": "vxlan0", "t": "tun", "a": [], "s": "up", "mtu": 8950}
+    ],
+    "protos": [
+      {"p": "ebgp", "r": "10.0.1.4", "asn": 65004, "loopback_ip": "10.0.1.4", "peers": [
+        {"ip": "172.16.4.1", "asn": 65000, "description": "Spine-1"},
+        {"ip": "172.16.8.1", "asn": 65000, "description": "Spine-2"}
+      ], "nets": ["10.0.1.4/32", "192.168.40.0/24"]},
+      {"p": "vxlan", "vtep_ip": "10.0.1.4", "vnis": [{"vni": 10020, "vlan": 20, "name": "Tenant-C"}, {"vni": 10030, "vlan": 30, "name": "Tenant-D"}]},
+      {"p": "evpn", "rd": "10.0.1.4:1", "rts": ["65000:10020", "65000:10030"]}
+    ]
+  }
+]

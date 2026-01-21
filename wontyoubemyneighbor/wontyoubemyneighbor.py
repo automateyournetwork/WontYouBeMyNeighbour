@@ -40,6 +40,7 @@ Usage - OSPFv2, OSPFv3, and BGP together:
 import asyncio
 import argparse
 import logging
+import os
 import signal
 import sys
 import subprocess
@@ -129,7 +130,7 @@ class WontYouBeMyNeighbor:
         """Load agent config from environment variable"""
         import os
         import json
-        config_json = os.environ.get('RUBBERBAND_AGENT_CONFIG')
+        config_json = os.environ.get('ASI_AGENT_CONFIG')
         if config_json:
             try:
                 config = json.loads(config_json)
@@ -139,7 +140,7 @@ class WontYouBeMyNeighbor:
                 )
             except json.JSONDecodeError as e:
                 logging.getLogger("WontYouBeMyNeighbor").warning(
-                    f"Failed to parse RUBBERBAND_AGENT_CONFIG: {e}"
+                    f"Failed to parse ASI_AGENT_CONFIG: {e}"
                 )
 
 
@@ -184,7 +185,7 @@ class RouteRedistributor:
         if isis_speaker:
             self.active_protocols.append("isis")
 
-    async def start(self):
+    async def start(self) -> None:
         """Start universal route redistribution loop"""
         self.running = True
 
@@ -212,7 +213,7 @@ class RouteRedistributor:
                 self.logger.error(f"Redistribution error: {e}")
                 await asyncio.sleep(5)
 
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop redistribution"""
         self.running = False
 
@@ -1316,27 +1317,36 @@ async def run_server_only(args: argparse.Namespace):
     Args:
         args: Parsed command-line arguments
     """
+    import webbrowser
+    import threading
+
     logger = logging.getLogger("ServerOnly")
 
+    # Determine display host (use localhost if binding to 0.0.0.0)
+    display_host = "localhost" if args.webui_host == "0.0.0.0" else args.webui_host
+    wizard_url = f"http://{display_host}:{args.webui_port}/wizard"
+
     logger.info("=" * 60)
-    logger.info("  Won't You Be My Neighbor - Server Only Mode")
+    logger.info("  Won't You Be My Neighbor - Network Builder")
     logger.info("=" * 60)
-    logger.info(f"  Web UI: http://{args.webui_host}:{args.webui_port}/")
-    logger.info(f"  Wizard: http://{args.webui_host}:{args.webui_port}/wizard")
-    logger.info(f"  Monitor: http://{args.webui_host}:{args.webui_port}/monitor")
+    logger.info(f"  Builder: {wizard_url}")
+    logger.info(f"  Monitor: http://{display_host}:{args.webui_port}/monitor")
+    logger.info(f"  3D Topology: http://{display_host}:{args.webui_port}/topology3d")
+    logger.info("")
+    logger.info("  After building, agents will run on ports 8801, 8802, 8803...")
     logger.info("=" * 60)
 
     # Create minimal app instance (no routing)
-    rubberband_app = WontYouBeMyNeighbor()
-    rubberband_app.router_id = "0.0.0.0"  # Placeholder
-    rubberband_app.running = True
-    rubberband_app.load_config_from_env()  # Load interfaces from orchestrator config
+    asi_app = WontYouBeMyNeighbor()
+    asi_app.router_id = "0.0.0.0"  # Placeholder
+    asi_app.running = True
+    asi_app.load_config_from_env()  # Load interfaces from orchestrator config
 
     try:
         from webui.server import create_webui_server
         import uvicorn
 
-        webui_app = create_webui_server(rubberband_app, None)
+        webui_app = create_webui_server(asi_app, None)
 
         webui_config = uvicorn.Config(
             webui_app,
@@ -1345,6 +1355,17 @@ async def run_server_only(args: argparse.Namespace):
             log_level="info"
         )
         webui_server = uvicorn.Server(webui_config)
+
+        # Auto-launch browser after short delay (unless disabled)
+        if not getattr(args, 'no_browser', False):
+            def open_browser():
+                import time
+                time.sleep(1.5)  # Wait for server to start
+                webbrowser.open(wizard_url)
+                logger.info(f"Opened browser to {wizard_url}")
+
+            browser_thread = threading.Thread(target=open_browser, daemon=True)
+            browser_thread.start()
 
         # Run until interrupted
         await webui_server.serve()
@@ -1368,9 +1389,9 @@ async def run_unified_agent(args: argparse.Namespace):
     logger = logging.getLogger("UnifiedAgent")
 
     # Create main application instance
-    rubberband_app = WontYouBeMyNeighbor()
-    rubberband_app.router_id = args.router_id
-    rubberband_app.load_config_from_env()  # Load interfaces from orchestrator config
+    asi_app = WontYouBeMyNeighbor()
+    asi_app.router_id = args.router_id
+    asi_app.load_config_from_env()  # Load interfaces from orchestrator config
 
     ospf_agent = None
     ospfv3_speaker = None
@@ -1442,8 +1463,8 @@ async def run_unified_agent(args: argparse.Namespace):
                 unicast_peer=args.unicast_peer,
                 kernel_route_manager=kernel_route_manager
             )
-            rubberband_app.set_ospf(ospf_agent)
-            rubberband_app.area_id = args.area
+            asi_app.set_ospf(ospf_agent)
+            asi_app.area_id = args.area
             tasks.append(asyncio.create_task(ospf_agent.start()))
 
         # Initialize OSPFv3 if requested
@@ -1480,8 +1501,8 @@ async def run_unified_agent(args: argparse.Namespace):
                             if addr.startswith('fe80:'):
                                 link_local = addr
                                 break
-                except:
-                    pass
+                except (ValueError, KeyError, OSError) as e:
+                    logger.debug(f"Failed to get interface addresses for {args.ospfv3_interface}: {e}")
 
                 if not link_local:
                     logger.error(f"Could not find link-local address for {args.ospfv3_interface}. "
@@ -1507,7 +1528,7 @@ async def run_unified_agent(args: argparse.Namespace):
             )
 
             # Start OSPFv3 speaker
-            rubberband_app.set_ospfv3(ospfv3_speaker)
+            asi_app.set_ospfv3(ospfv3_speaker)
             tasks.append(asyncio.create_task(ospfv3_speaker.start()))
 
         # Get local IP from interface if available (for BGP next-hop)
@@ -1595,7 +1616,7 @@ async def run_unified_agent(args: argparse.Namespace):
                     logger.warning(f"  ⚠ No ROAs loaded from {args.bgp_rpki_roa_file}")
 
             # Start BGP speaker
-            rubberband_app.set_bgp(bgp_speaker)
+            asi_app.set_bgp(bgp_speaker)
             await bgp_speaker.start()
 
             # Originate local networks if specified
@@ -1653,16 +1674,16 @@ async def run_unified_agent(args: argparse.Namespace):
 
         # Check if at least one LLM API key is provided
         if not openai_key and not claude_key and not gemini_key:
-            logger.warning("No LLM API keys provided. RubberBand will work but won't have AI responses. "
+            logger.warning("No LLM API keys provided. ASI will work but won't have AI responses. "
                          "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GOOGLE_API_KEY environment variables "
                          "or use --openai-key, --claude-key, or --gemini-key flags.")
 
-        # Determine RubberBand ID
-        rubberband_id = args.rubberband_id if args.rubberband_id else f"rubberband-{args.router_id.replace('.', '-')}"
+        # Determine ASI ID
+        asi_id = args.asi_id if args.asi_id else f"asi-{args.router_id.replace('.', '-')}"
 
         # Create agentic bridge
         bridge = AgenticBridge(
-            rubberband_id=rubberband_id,
+            asi_id=asi_id,
             openai_key=openai_key,
             claude_key=claude_key,
             gemini_key=gemini_key,
@@ -1670,9 +1691,9 @@ async def run_unified_agent(args: argparse.Namespace):
         )
 
         # Pass full agent config to bridge for LLM visibility
-        if rubberband_app.config:
-            bridge.set_agent_config(rubberband_app.config)
-            logger.info(f"✓ Passed agent config to agentic bridge ({len(rubberband_app.interfaces)} interfaces)")
+        if asi_app.config:
+            bridge.set_agent_config(asi_app.config)
+            logger.info(f"✓ Passed agent config to agentic bridge ({len(asi_app.interfaces)} interfaces)")
 
         # Connect OSPF if available
         if ospf_agent:
@@ -1697,7 +1718,75 @@ async def run_unified_agent(args: argparse.Namespace):
 
         # Store bridge reference
         agentic_bridge = bridge
-        rubberband_app.set_agentic_bridge(bridge)
+        asi_app.set_agentic_bridge(bridge)
+
+        # Initialize IPv6 Neighbor Discovery for ASI Overlay (Layer 2: Agent Mesh)
+        nd_protocol = None
+        ipv6_overlay = os.environ.get('ASI_OVERLAY_IPV6')
+        nd_enabled = os.environ.get('ASI_OVERLAY_ND_ENABLED', 'true').lower() == 'true'
+
+        if ipv6_overlay and nd_enabled:
+            try:
+                from agentic.discovery.neighbor_discovery import (
+                    start_neighbor_discovery,
+                    stop_neighbor_discovery,
+                    get_neighbor_discovery
+                )
+
+                logger.info(f"Initializing IPv6 Neighbor Discovery...")
+                logger.info(f"  Overlay IPv6: {ipv6_overlay}")
+
+                # Configure IPv6 overlay address on a dummy interface for actual connectivity
+                try:
+                    import subprocess
+                    ipv6_addr = ipv6_overlay.split('/')[0]
+                    prefix_len = ipv6_overlay.split('/')[1] if '/' in ipv6_overlay else '64'
+
+                    # Create dummy interface for ASI overlay
+                    subprocess.run(['ip', 'link', 'add', 'asi0', 'type', 'dummy'],
+                                   capture_output=True, check=False)
+                    subprocess.run(['ip', 'link', 'set', 'asi0', 'up'],
+                                   capture_output=True, check=False)
+                    subprocess.run(['ip', '-6', 'addr', 'add', f'{ipv6_addr}/{prefix_len}', 'dev', 'asi0'],
+                                   capture_output=True, check=False)
+
+                    # Add route to the ASI overlay network via eth0 (Docker network)
+                    # This enables IPv6 connectivity to other agents in the same Docker network
+                    overlay_prefix = ':'.join(ipv6_addr.split(':')[:4]) + '::/64'
+                    subprocess.run(['ip', '-6', 'route', 'add', overlay_prefix, 'dev', 'eth0'],
+                                   capture_output=True, check=False)
+
+                    logger.info(f"  ✓ Configured asi0 interface with {ipv6_addr}/{prefix_len}")
+                    logger.info(f"  ✓ Added route for {overlay_prefix} via eth0")
+                except Exception as e:
+                    logger.warning(f"  Could not configure IPv6 overlay interface: {e}")
+
+                agent_id = os.environ.get('ASI_AGENT_ID', asi_id)
+                agent_name = os.environ.get('ASI_AGENT_NAME', f"agent-{args.router_id}")
+
+                nd_protocol = await start_neighbor_discovery(
+                    local_ipv6=ipv6_overlay,
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    router_id=args.router_id
+                )
+
+                # Add listener for neighbor discovery events
+                def nd_event_handler(event: str, neighbor):
+                    if event == "neighbor_discovered":
+                        logger.info(f"ND: Discovered neighbor {neighbor.agent_name or neighbor.ipv6_address}")
+                    elif event == "neighbor_removed":
+                        logger.info(f"ND: Lost neighbor {neighbor.agent_name or neighbor.ipv6_address}")
+
+                nd_protocol.add_listener(nd_event_handler)
+
+                logger.info(f"✓ IPv6 Neighbor Discovery started on ASI overlay")
+            except ImportError as e:
+                logger.warning(f"Neighbor Discovery module not available: {e}")
+            except Exception as e:
+                logger.warning(f"Could not start Neighbor Discovery: {e}")
+        elif ipv6_overlay and not nd_enabled:
+            logger.info(f"IPv6 Overlay configured ({ipv6_overlay}) but ND disabled")
 
         # Start REST API server if requested (optional, separate from Web UI)
         if args.agentic_api:
@@ -1727,7 +1816,7 @@ async def run_unified_agent(args: argparse.Namespace):
             logger.info(f"✓ REST API started at http://{args.agentic_api_host}:{args.agentic_api_port}")
             logger.info(f"  Documentation: http://{args.agentic_api_host}:{args.agentic_api_port}/docs")
 
-        logger.info(f"  RubberBand ID: {rubberband_id}")
+        logger.info(f"  ASI ID: {asi_id}")
         if args.autonomous_mode:
             logger.warning(f"  ⚠ AUTONOMOUS MODE ENABLED - Actions may execute without approval")
 
@@ -1738,8 +1827,8 @@ async def run_unified_agent(args: argparse.Namespace):
                 from webui.server import create_webui_server
                 import uvicorn
 
-                # Create Web UI server with access to rubberband_app and bridge
-                webui_app = create_webui_server(rubberband_app, bridge)
+                # Create Web UI server with access to asi_app and bridge
+                webui_app = create_webui_server(asi_app, bridge)
 
                 # Start Web UI server as background task
                 webui_config = uvicorn.Config(
@@ -1800,6 +1889,15 @@ async def run_unified_agent(args: argparse.Namespace):
         if agentic_bridge:
             logger.info("Stopping Agentic bridge...")
             await agentic_bridge.stop()
+
+        # Stop Neighbor Discovery if running
+        if nd_protocol:
+            logger.info("Stopping Neighbor Discovery...")
+            try:
+                from agentic.discovery.neighbor_discovery import stop_neighbor_discovery
+                await stop_neighbor_discovery()
+            except Exception as e:
+                logger.warning(f"Error stopping ND: {e}")
 
         logger.info("Shutdown complete")
 
@@ -2117,8 +2215,8 @@ Notes:
                        help="Google Gemini API key for agentic interface")
     agentic_group.add_argument("--autonomous-mode", action="store_true",
                        help="Enable autonomous mode for agentic interface (dangerous actions without approval)")
-    agentic_group.add_argument("--rubberband-id", default=None,
-                       help="RubberBand instance ID for agentic interface (default: based on router-id)")
+    agentic_group.add_argument("--asi-id", default=None,
+                       help="ASI instance ID for agentic interface (default: based on router-id)")
 
     # Web UI arguments
     webui_group = parser.add_argument_group('Web UI Options')
@@ -2126,10 +2224,12 @@ Notes:
                        help="Enable Web Dashboard UI (default: enabled)")
     webui_group.add_argument("--webui-host", default="0.0.0.0",
                        help="Web UI host to bind to (default: 0.0.0.0)")
-    webui_group.add_argument("--webui-port", type=int, default=8888,
-                       help="Web UI port (default: 8888)")
+    webui_group.add_argument("--webui-port", type=int, default=8000,
+                       help="Web UI port for builder (default: 8000)")
     webui_group.add_argument("--no-webui", action="store_true",
                        help="Disable Web UI")
+    webui_group.add_argument("--no-browser", action="store_true",
+                       help="Don't auto-launch browser on startup")
 
     args = parser.parse_args()
 
@@ -2140,8 +2240,18 @@ Notes:
     # Setup logging
     setup_logging(args.log_level)
 
-    # Server-only mode - just run WebUI for wizard/monitor
-    if args.server_only:
+    # Determine if we should run in builder mode (default) or routing mode
+    # Builder mode: no router-id specified, just launch the wizard
+    # Routing mode: router-id and protocols specified (for containers)
+    has_routing_config = (
+        args.router_id is not None or
+        args.interface is not None or
+        args.bgp_local_as is not None or
+        args.ospfv3_interface is not None
+    )
+
+    # Server-only/builder mode - default if no routing config provided
+    if args.server_only or not has_routing_config:
         args.webui = True
         try:
             asyncio.run(run_server_only(args))
@@ -2153,9 +2263,9 @@ Notes:
             sys.exit(1)
         return
 
-    # Validate configuration for routing mode
+    # Validate configuration for routing mode (container/agent mode)
     if not args.router_id:
-        print("Error: --router-id is required (or use --server-only for wizard mode)")
+        print("Error: --router-id is required for routing mode")
         parser.print_help()
         sys.exit(1)
 

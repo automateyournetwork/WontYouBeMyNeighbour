@@ -1,0 +1,30 @@
+{
+  "name": "MPLS Service Provider Core",
+  "id": "mpls-service-provider",
+  "version": "1.0.0",
+  "description": "Service provider MPLS backbone with L3VPN for multi-customer environments",
+  "category": "service-provider",
+  "tags": ["mpls", "ldp", "l3vpn", "vpnv4", "service-provider", "carrier"],
+  "agent_count": 6,
+  "link_count": 9,
+  "protocols": ["ospf", "mpls", "ldp", "ibgp", "ebgp"],
+  "use_cases": [
+    "ISP core network",
+    "Carrier backbone",
+    "Enterprise MPLS WAN",
+    "Multi-tenant VPN services"
+  ],
+  "features": {
+    "redundancy": "Dual P routers for resilience",
+    "scalability": "Add PE routers for new POPs",
+    "isolation": "VRF-based customer separation",
+    "control_plane": "MP-BGP VPNv4 for VPN routes"
+  },
+  "requirements": {
+    "min_agents": 4,
+    "recommended_agents": 6,
+    "mtu": 9000,
+    "igp": "OSPF Area 0",
+    "label_protocol": "LDP"
+  }
+}

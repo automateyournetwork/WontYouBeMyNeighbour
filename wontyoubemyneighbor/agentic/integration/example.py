@@ -18,7 +18,7 @@ async def example_basic_queries():
 
     # Create agentic bridge
     bridge = AgenticBridge(
-        rubberband_id="rubberband-demo",
+        asi_id="asi-demo",
         autonomous_mode=False  # Require approval for actions
     )
 
@@ -37,7 +37,7 @@ async def example_basic_queries():
     print("\nExample queries:")
     for query in queries:
         print(f"\nUser: {query}")
-        print("RubberBand: [Would process via LLM and return structured response]")
+        print("ASI: [Would process via LLM and return structured response]")
 
 
 async def example_with_ospf():
@@ -132,7 +132,7 @@ async def example_full_integration():
             self.rib = {}
 
     # Create agentic bridge
-    bridge = AgenticBridge(rubberband_id="rubberband-full-demo")
+    bridge = AgenticBridge(asi_id="asi-full-demo")
 
     # Create connectors
     ospf_conn = OSPFConnector(MockOSPFInterface())
@@ -147,7 +147,7 @@ async def example_full_integration():
     # Get statistics
     stats = bridge.get_statistics()
     print("\nBridge Statistics:")
-    print(f"  RubberBand ID: {stats['rubberband_id']}")
+    print(f"  ASI ID: {stats['asi_id']}")
     print(f"  LLM Turns: {stats['llm']['turns']}/{stats['llm']['max_turns']}")
     print(f"  State Snapshots: {stats['state']['snapshots']}")
     print(f"  Completed Actions: {stats['actions']['completed']}")
@@ -160,12 +160,12 @@ async def example_autonomous_decision():
     print("=" * 60)
 
     bridge = AgenticBridge(
-        rubberband_id="rubberband-auto",
+        asi_id="asi-auto",
         autonomous_mode=True  # Allow autonomous actions
     )
 
     print("\n✓ Autonomous mode enabled")
-    print("\nRubberBand can now make safe decisions autonomously:")
+    print("\nASI can now make safe decisions autonomously:")
     print("  ✓ Small metric adjustments")
     print("  ✓ Anomaly detection and alerting")
     print("  ✓ Route analytics and recommendations")
@@ -175,30 +175,30 @@ async def example_autonomous_decision():
     print("  ⚠ Graceful shutdown")
 
 
-async def example_multi_rubberband():
-    """Example: Multiple RubberBand instances with coordination"""
+async def example_multi_asi():
+    """Example: Multiple ASI instances with coordination"""
     print("\n" + "=" * 60)
-    print("Multi-RubberBand Coordination Example")
+    print("Multi-ASI Coordination Example")
     print("=" * 60)
 
-    # Create three RubberBand instances
-    rubberband1 = AgenticBridge(rubberband_id="rubberband-1")
-    rubberband2 = AgenticBridge(rubberband_id="rubberband-2")
-    rubberband3 = AgenticBridge(rubberband_id="rubberband-3")
+    # Create three ASI instances
+    asi1 = AgenticBridge(asi_id="asi-1")
+    asi2 = AgenticBridge(asi_id="asi-2")
+    asi3 = AgenticBridge(asi_id="asi-3")
 
     # Register as gossip peers
-    rubberband1.gossip.register_peer("rubberband-2", "192.168.1.2")
-    rubberband1.gossip.register_peer("rubberband-3", "192.168.1.3")
+    asi1.gossip.register_peer("asi-2", "192.168.1.2")
+    asi1.gossip.register_peer("asi-3", "192.168.1.3")
 
-    rubberband2.gossip.register_peer("rubberband-1", "192.168.1.1")
-    rubberband2.gossip.register_peer("rubberband-3", "192.168.1.3")
+    asi2.gossip.register_peer("asi-1", "192.168.1.1")
+    asi2.gossip.register_peer("asi-3", "192.168.1.3")
 
-    rubberband3.gossip.register_peer("rubberband-1", "192.168.1.1")
-    rubberband3.gossip.register_peer("rubberband-2", "192.168.1.2")
+    asi3.gossip.register_peer("asi-1", "192.168.1.1")
+    asi3.gossip.register_peer("asi-2", "192.168.1.2")
 
-    print("\n✓ Three RubberBand instances configured")
+    print("\n✓ Three ASI instances configured")
     print("✓ Gossip protocol mesh established")
-    print("\nRubberBands can now:")
+    print("\nASIs can now:")
     print("  • Share network state via gossip")
     print("  • Coordinate decisions via consensus")
     print("  • Alert each other of anomalies")
@@ -212,7 +212,7 @@ async def main():
     await example_with_bgp()
     await example_full_integration()
     await example_autonomous_decision()
-    await example_multi_rubberband()
+    await example_multi_asi()
 
     print("\n" + "=" * 60)
     print("Integration Examples Complete!")
@@ -221,7 +221,7 @@ async def main():
     print("  1. Configure LLM API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY)")
     print("  2. Connect to real OSPF/BGP instances")
     print("  3. Start the agentic bridge")
-    print("  4. Query RubberBand via natural language!")
+    print("  4. Query ASI via natural language!")
 
 
 if __name__ == "__main__":

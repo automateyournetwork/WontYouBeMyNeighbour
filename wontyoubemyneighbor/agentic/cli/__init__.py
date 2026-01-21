@@ -1,12 +1,12 @@
 """
 CLI Chat Interface
 
-Interactive command-line interface for natural language conversations with RubberBand.
+Interactive command-line interface for natural language conversations with ASI.
 """
 
-from .chat import RubberBandCLI, run_cli
+from .chat import ASICLI, run_cli
 
 __all__ = [
-    "RubberBandCLI",
+    "ASICLI",
     "run_cli",
 ]

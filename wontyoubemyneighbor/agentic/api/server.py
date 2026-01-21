@@ -1,5 +1,5 @@
 """
-RubberBand REST API Server
+ASI REST API Server
 
 FastAPI-based REST API for natural language network management.
 """
@@ -67,9 +67,9 @@ class VoteRequest(BaseModel):
     reason: Optional[str] = None
 
 
-class RubberBandAPI:
+class ASIAPI:
     """
-    RubberBand REST API
+    ASI REST API
 
     Provides HTTP endpoints for:
     - Natural language queries
@@ -91,7 +91,7 @@ class RubberBandAPI:
 
         self.bridge = agentic_bridge
         self.app = FastAPI(
-            title="RubberBand Network Agent API",
+            title="ASI Network Agent API",
             description="Natural language interface for network management",
             version="1.0.0"
         )
@@ -115,8 +115,8 @@ class RubberBandAPI:
         async def root():
             """API root"""
             return {
-                "service": "RubberBand Network Agent",
-                "rubberband_id": self.bridge.rubberband_id,
+                "service": "ASI Network Agent",
+                "asi_id": self.bridge.asi_id,
                 "version": "1.0.0",
                 "endpoints": {
                     "query": "/api/query",
@@ -133,7 +133,7 @@ class RubberBandAPI:
             """Health check"""
             return {
                 "status": "healthy",
-                "rubberband_id": self.bridge.rubberband_id,
+                "asi_id": self.bridge.asi_id,
                 "timestamp": datetime.utcnow().isoformat()
             }
 
@@ -390,7 +390,7 @@ class RubberBandAPI:
 
 def create_api_server(agentic_bridge, host: str = "0.0.0.0", port: int = 8080):
     """
-    Create and configure RubberBand API server.
+    Create and configure ASI API server.
 
     Args:
         agentic_bridge: Instance of AgenticBridge
@@ -398,12 +398,12 @@ def create_api_server(agentic_bridge, host: str = "0.0.0.0", port: int = 8080):
         port: Port to listen on
 
     Returns:
-        Tuple of (RubberBandAPI, uvicorn server config)
+        Tuple of (ASIAPI, uvicorn server config)
     """
     if not FASTAPI_AVAILABLE:
         raise RuntimeError("FastAPI not installed. Install with: pip install fastapi uvicorn")
 
-    api = RubberBandAPI(agentic_bridge)
+    api = ASIAPI(agentic_bridge)
 
     # Return API instance and server config
     return api, {
