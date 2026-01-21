@@ -1,12 +1,12 @@
 """
 CLI Chat Interface
 
-Interactive command-line interface for natural language conversations with Ralph.
+Interactive command-line interface for natural language conversations with ASI.
 """
 
-from .chat import RalphCLI, run_cli
+from .chat import ASICLI, run_cli
 
 __all__ = [
-    "RalphCLI",
+    "ASICLI",
     "run_cli",
 ]

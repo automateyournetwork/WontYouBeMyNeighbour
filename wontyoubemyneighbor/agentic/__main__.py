@@ -1,5 +1,5 @@
 """
-Ralph Agentic Network Router - Main Entry Point
+ASI Agentic Network Router - Main Entry Point
 
 Usage:
     python -m wontyoubemyneighbor.agentic --help
@@ -13,9 +13,9 @@ import argparse
 
 
 def main():
-    """Main entry point for Ralph agentic interface"""
+    """Main entry point for ASI agentic interface"""
     parser = argparse.ArgumentParser(
-        description="Ralph: Agentic Network Router",
+        description="ASI: Agentic Network Router",
         epilog="For more information, see wontyoubemyneighbor/agentic/README.md"
     )
 
@@ -23,7 +23,7 @@ def main():
 
     # CLI command
     cli_parser = subparsers.add_parser("cli", help="Start interactive CLI")
-    cli_parser.add_argument("--ralph-id", default="ralph-cli", help="Ralph instance ID")
+    cli_parser.add_argument("--asi-id", default="asi-cli", help="ASI instance ID")
     cli_parser.add_argument("--openai-key", help="OpenAI API key")
     cli_parser.add_argument("--claude-key", help="Anthropic Claude API key")
     cli_parser.add_argument("--gemini-key", help="Google Gemini API key")
@@ -34,7 +34,7 @@ def main():
     api_parser = subparsers.add_parser("api", help="Start REST API server")
     api_parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     api_parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
-    api_parser.add_argument("--ralph-id", default="ralph-api", help="Ralph instance ID")
+    api_parser.add_argument("--asi-id", default="asi-api", help="ASI instance ID")
     api_parser.add_argument("--openai-key", help="OpenAI API key")
     api_parser.add_argument("--claude-key", help="Anthropic Claude API key")
     api_parser.add_argument("--gemini-key", help="Google Gemini API key")
@@ -75,7 +75,7 @@ def main():
 
     elif args.command == "version":
         from . import __version__, __author__
-        print(f"Ralph Agentic Network Router v{__version__}")
+        print(f"ASI Agentic Network Router v{__version__}")
         print(f"Author: {__author__}")
 
 

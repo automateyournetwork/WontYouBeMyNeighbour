@@ -5,10 +5,12 @@ Tracks real-time OSPF and BGP state, serializes for LLM context injection,
 and provides snapshots for time-series analysis.
 """
 
+import asyncio
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, asdict
 from datetime import datetime
 import json
+import copy
 
 
 @dataclass
@@ -52,19 +54,59 @@ class NetworkStateManager:
     def __init__(self, snapshot_retention: int = 100):
         self.ospf_interface = None
         self.bgp_speaker = None
+        self.isis_speaker = None
+        self.ospfv3_speaker = None
         self.snapshot_retention = snapshot_retention
         self.snapshots: List[NetworkSnapshot] = []
 
         # Current state caches
         self._current_ospf_state: Dict[str, Any] = {}
         self._current_bgp_state: Dict[str, Any] = {}
+        self._current_isis_state: Dict[str, Any] = {}
         self._current_routing_table: List[Dict[str, Any]] = []
         self._interface_stats: Dict[str, Any] = {}
 
-    def set_protocol_handlers(self, ospf_interface=None, bgp_speaker=None):
-        """Inject OSPF and BGP protocol handlers"""
-        self.ospf_interface = ospf_interface
-        self.bgp_speaker = bgp_speaker
+        # Full interface configuration (from agent config)
+        self._interfaces: List[Dict[str, Any]] = []
+
+        # Lock for thread-safe state access
+        self._state_lock = asyncio.Lock()
+
+    def get_ospf_state(self) -> Dict[str, Any]:
+        """Thread-safe accessor for OSPF state (returns a copy)"""
+        return copy.deepcopy(self._current_ospf_state)
+
+    def get_bgp_state(self) -> Dict[str, Any]:
+        """Thread-safe accessor for BGP state (returns a copy)"""
+        return copy.deepcopy(self._current_bgp_state)
+
+    def get_isis_state(self) -> Dict[str, Any]:
+        """Thread-safe accessor for IS-IS state (returns a copy)"""
+        return copy.deepcopy(self._current_isis_state)
+
+    def get_routing_table(self) -> List[Dict[str, Any]]:
+        """Thread-safe accessor for routing table (returns a copy)"""
+        return copy.deepcopy(self._current_routing_table)
+
+    def get_interfaces(self) -> List[Dict[str, Any]]:
+        """Thread-safe accessor for interfaces (returns a copy)"""
+        return copy.deepcopy(self._interfaces)
+
+    def set_protocol_handlers(self, ospf_interface=None, bgp_speaker=None,
+                              isis_speaker=None, ospfv3_speaker=None):
+        """Inject protocol handlers (preserves existing values)"""
+        if ospf_interface is not None:
+            self.ospf_interface = ospf_interface
+        if bgp_speaker is not None:
+            self.bgp_speaker = bgp_speaker
+        if isis_speaker is not None:
+            self.isis_speaker = isis_speaker
+        if ospfv3_speaker is not None:
+            self.ospfv3_speaker = ospfv3_speaker
+
+    def set_interfaces(self, interfaces: List[Dict[str, Any]]):
+        """Set full interface configuration from agent config"""
+        self._interfaces = interfaces
 
     async def update_state(self):
         """
@@ -78,7 +120,51 @@ class NetworkStateManager:
         if self.bgp_speaker:
             self._current_bgp_state = await self._get_bgp_state()
 
+        if self.isis_speaker:
+            self._current_isis_state = await self._get_isis_state()
+
         self._current_routing_table = await self._get_routing_table()
+
+    async def _get_isis_state(self) -> Dict[str, Any]:
+        """Extract IS-IS state from speaker"""
+        if not self.isis_speaker:
+            return {}
+
+        try:
+            # Get adjacencies
+            adjacencies = []
+            if hasattr(self.isis_speaker, 'adjacencies'):
+                for adj in self.isis_speaker.adjacencies.values():
+                    adjacencies.append({
+                        "system_id": adj.neighbor_system_id,
+                        "state": adj.state.name if hasattr(adj.state, 'name') else str(adj.state),
+                        "level": adj.level,
+                        "interface": adj.interface_name
+                    })
+
+            # Get LSDB stats
+            lsdb_stats = {}
+            if hasattr(self.isis_speaker, 'dual_lsdb'):
+                if self.isis_speaker.dual_lsdb.l1_lsdb:
+                    lsdb_stats['l1_lsps'] = len(self.isis_speaker.dual_lsdb.l1_lsdb.lsps)
+                if self.isis_speaker.dual_lsdb.l2_lsdb:
+                    lsdb_stats['l2_lsps'] = len(self.isis_speaker.dual_lsdb.l2_lsdb.lsps)
+
+            # Get route count
+            route_count = 0
+            if hasattr(self.isis_speaker, 'spf_calculator'):
+                routes = self.isis_speaker.spf_calculator.get_combined_routing_table()
+                route_count = len(routes)
+
+            return {
+                "system_id": getattr(self.isis_speaker, 'system_id', 'N/A'),
+                "adjacencies": adjacencies,
+                "adjacency_count": len(adjacencies),
+                "lsdb": lsdb_stats,
+                "route_count": route_count
+            }
+        except Exception:
+            return {}
 
     async def _get_ospf_state(self) -> Dict[str, Any]:
         """Extract OSPF state from interface"""
@@ -89,12 +175,10 @@ class NetworkStateManager:
         neighbors = []
         for neighbor in self.ospf_interface.neighbors.values():
             neighbors.append({
-                "neighbor_id": neighbor.neighbor_id,
-                "state": neighbor.state,
-                "address": neighbor.address,
+                "neighbor_id": neighbor.router_id,
+                "state": neighbor.get_state_name(),
+                "address": neighbor.ip_address,
                 "priority": neighbor.priority,
-                "dr": neighbor.dr,
-                "bdr": neighbor.bdr,
                 "state_changes": getattr(neighbor, "state_changes", 0)
             })
 
@@ -108,9 +192,10 @@ class NetworkStateManager:
         }
 
         if hasattr(self.ospf_interface, "lsdb"):
-            for lsa in self.ospf_interface.lsdb.values():
+            # LSDB is a LinkStateDatabase object, use get_all_lsas()
+            for lsa in self.ospf_interface.lsdb.get_all_lsas():
                 lsdb_summary["total_lsas"] += 1
-                lsa_type = lsa.get("type", 0)
+                lsa_type = lsa.header.ls_type
                 if lsa_type == 1:
                     lsdb_summary["router_lsas"] += 1
                 elif lsa_type == 2:
@@ -123,7 +208,7 @@ class NetworkStateManager:
         return {
             "router_id": self.ospf_interface.router_id,
             "area_id": getattr(self.ospf_interface, "area_id", "0.0.0.0"),
-            "interface_name": self.ospf_interface.interface_name,
+            "interface_name": getattr(self.ospf_interface, "interface", ""),
             "neighbors": neighbors,
             "neighbor_count": len(neighbors),
             "full_neighbors": sum(1 for n in neighbors if n["state"] == "Full"),
@@ -137,32 +222,31 @@ class NetworkStateManager:
 
         # Gather peer state
         peers = []
-        for peer in self.bgp_speaker.peers.values():
+        for peer in self.bgp_speaker.agent.sessions.values():
             peers.append({
-                "peer": str(peer.peer_addr),
-                "peer_as": peer.peer_as,
-                "state": peer.state,
-                "local_addr": str(getattr(peer, "local_addr", "")),
-                "is_ibgp": peer.peer_as == self.bgp_speaker.local_as,
+                "peer": str(peer.config.peer_ip),
+                "peer_as": peer.config.peer_as,
+                "state": peer.fsm.get_state_name(),
+                "local_addr": str(peer.config.local_ip),
+                "is_ibgp": peer.config.peer_as == self.bgp_speaker.local_as,
                 "uptime": getattr(peer, "uptime", 0),
                 "message_stats": getattr(peer, "message_stats", {})
             })
 
         # Gather RIB statistics
         rib_stats = {
-            "total_routes": len(self.bgp_speaker.rib) if hasattr(self.bgp_speaker, "rib") else 0,
+            "total_routes": self.bgp_speaker.agent.loc_rib.size(),
             "ipv4_routes": 0,
             "ipv6_routes": 0
         }
 
-        if hasattr(self.bgp_speaker, "rib"):
-            for route_key in self.bgp_speaker.rib.keys():
-                # route_key is (prefix, prefix_len, afi, safi)
-                afi = route_key[2] if len(route_key) > 2 else 1
-                if afi == 1:
-                    rib_stats["ipv4_routes"] += 1
-                elif afi == 2:
-                    rib_stats["ipv6_routes"] += 1
+        # Count IPv4 vs IPv6 routes
+        for route in self.bgp_speaker.agent.loc_rib.get_all_routes():
+            # Check if prefix contains ':' for IPv6
+            if ':' in route.prefix:
+                rib_stats["ipv6_routes"] += 1
+            else:
+                rib_stats["ipv4_routes"] += 1
 
         return {
             "local_as": self.bgp_speaker.local_as,
@@ -170,6 +254,7 @@ class NetworkStateManager:
             "peers": peers,
             "peer_count": len(peers),
             "established_peers": sum(1 for p in peers if p["state"] == "Established"),
+            "route_count": rib_stats["total_routes"],
             "rib_stats": rib_stats
         }
 
@@ -177,21 +262,69 @@ class NetworkStateManager:
         """Get current routing table (combined OSPF + BGP)"""
         routes = []
 
-        # BGP routes
-        if self.bgp_speaker and hasattr(self.bgp_speaker, "rib"):
-            for route_key, route_info in self.bgp_speaker.rib.items():
-                prefix, prefix_len = route_key[0], route_key[1]
-                routes.append({
-                    "network": f"{prefix}/{prefix_len}",
-                    "next_hop": str(route_info.get("next_hop", "")),
-                    "protocol": "bgp",
-                    "as_path": route_info.get("as_path", []),
-                    "local_pref": route_info.get("local_pref", 100),
-                    "med": route_info.get("med", 0)
-                })
+        # OSPF routes from SPF calculator
+        if self.ospf_interface:
+            try:
+                if hasattr(self.ospf_interface, 'spf_calc') and self.ospf_interface.spf_calc:
+                    ospf_routes = self.ospf_interface.spf_calc.routing_table
+                    for prefix, route_entry in ospf_routes.items():
+                        routes.append({
+                            "network": prefix,
+                            "next_hop": route_entry.next_hop or "direct",
+                            "protocol": "ospf",
+                            "cost": route_entry.cost,
+                            "path": route_entry.path if hasattr(route_entry, 'path') else []
+                        })
+            except Exception:
+                pass
 
-        # OSPF routes (would come from LSDB calculation)
-        # Simplified for now
+        # BGP routes from Loc-RIB
+        if self.bgp_speaker:
+            try:
+                all_routes = self.bgp_speaker.agent.loc_rib.get_all_routes()
+                for route in all_routes:
+                    # Extract AS path
+                    as_path = []
+                    if route.has_attribute(2):  # ATTR_AS_PATH
+                        as_path_attr = route.get_attribute(2)
+                        if hasattr(as_path_attr, 'as_list'):
+                            as_path = as_path_attr.as_list()
+
+                    routes.append({
+                        "network": route.prefix,
+                        "next_hop": route.next_hop or "",
+                        "protocol": "bgp",
+                        "as_path": as_path,
+                        "source": route.source
+                    })
+            except Exception:
+                pass
+
+        # IS-IS routes from SPF calculator
+        if self.isis_speaker:
+            try:
+                if hasattr(self.isis_speaker, 'spf_calculator'):
+                    isis_routes = self.isis_speaker.spf_calculator.get_combined_routing_table()
+                    for prefix, route in isis_routes.items():
+                        routes.append({
+                            "network": prefix,
+                            "next_hop": route.next_hop or "direct",
+                            "protocol": "isis",
+                            "cost": route.metric,
+                            "level": route.level,
+                            "route_type": getattr(route, 'route_type', 'internal')
+                        })
+                elif hasattr(self.isis_speaker, 'get_routes'):
+                    for route in self.isis_speaker.get_routes():
+                        routes.append({
+                            "network": route.prefix,
+                            "next_hop": route.next_hop or "direct",
+                            "protocol": "isis",
+                            "cost": route.metric,
+                            "level": route.level
+                        })
+            except Exception:
+                pass
 
         return routes
 
@@ -260,8 +393,10 @@ class NetworkStateManager:
         Returns structured data optimized for LLM understanding.
         """
         return {
+            "interfaces": self._interfaces,
             "ospf": self._current_ospf_state,
             "bgp": self._current_bgp_state,
+            "isis": self._current_isis_state,
             "routes": self._current_routing_table,
             "metrics": self._compute_metrics()
         }
@@ -276,23 +411,39 @@ class NetworkStateManager:
         lines.append("Network State Summary")
         lines.append("=" * 50)
 
+        # Interfaces summary
+        if self._interfaces:
+            lines.append(f"\nInterfaces ({len(self._interfaces)} total):")
+            for iface in self._interfaces:
+                name = iface.get('name', iface.get('id', 'unknown'))
+                iface_type = iface.get('type', 'eth')
+                addrs = iface.get('addresses', [])
+                status = iface.get('status', 'up')
+                type_names = {'eth': 'Ethernet', 'lo': 'Loopback', 'vlan': 'VLAN', 'tun': 'Tunnel'}
+                type_display = type_names.get(iface_type, iface_type)
+                addr_str = ', '.join(addrs) if addrs else 'No IP'
+                lines.append(f"  {name} ({type_display}): {addr_str} [{status}]")
+
         # OSPF summary
         if self._current_ospf_state:
             ospf = self._current_ospf_state
             lines.append(f"\nOSPF:")
             lines.append(f"  Router ID: {ospf.get('router_id', 'N/A')}")
+            lines.append(f"  Area: {ospf.get('area_id', 'N/A')}")
+            lines.append(f"  Interface: {ospf.get('interface_name', 'N/A')}")
             lines.append(f"  Neighbors: {ospf.get('full_neighbors', 0)}/{ospf.get('neighbor_count', 0)} Full")
             lsdb = ospf.get('lsdb', {})
-            lines.append(f"  LSAs: {lsdb.get('total_lsas', 0)} total")
+            lines.append(f"  LSAs: {lsdb.get('total_lsas', 0)} total ({lsdb.get('router_lsas', 0)} router)")
 
         # BGP summary
         if self._current_bgp_state:
             bgp = self._current_bgp_state
             lines.append(f"\nBGP:")
+            lines.append(f"  Router ID: {bgp.get('router_id', 'N/A')}")
             lines.append(f"  Local AS: {bgp.get('local_as', 'N/A')}")
             lines.append(f"  Peers: {bgp.get('established_peers', 0)}/{bgp.get('peer_count', 0)} Established")
             rib = bgp.get('rib_stats', {})
-            lines.append(f"  Routes: {rib.get('total_routes', 0)} total")
+            lines.append(f"  Routes: {rib.get('total_routes', 0)} total ({rib.get('ipv4_routes', 0)} IPv4, {rib.get('ipv6_routes', 0)} IPv6)")
 
         # Metrics
         metrics = self._compute_metrics()

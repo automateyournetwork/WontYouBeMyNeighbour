@@ -1,0 +1,26 @@
+{
+  "links": [
+    {
+      "id": "link-1",
+      "a1": "ospf-router",
+      "i1": "eth0",
+      "a2": "core-router",
+      "i2": "eth0",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.20.0.0/24",
+      "description": "OSPF Router <-> Core Router"
+    },
+    {
+      "id": "link-2",
+      "a1": "core-router",
+      "i1": "eth1",
+      "a2": "ebgp-router",
+      "i2": "eth0",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.20.1.0/24",
+      "description": "Core Router <-> eBGP Router"
+    }
+  ]
+}

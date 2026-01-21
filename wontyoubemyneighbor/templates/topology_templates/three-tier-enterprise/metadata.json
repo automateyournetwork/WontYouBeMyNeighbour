@@ -1,0 +1,30 @@
+{
+  "name": "Three-Tier Enterprise",
+  "id": "three-tier-enterprise",
+  "version": "1.0.0",
+  "description": "Classic enterprise network with core, distribution, and access layers using OSPF and BGP",
+  "category": "enterprise",
+  "tags": ["three-tier", "ospf", "bgp", "enterprise", "campus", "dhcp"],
+  "agent_count": 8,
+  "link_count": 9,
+  "protocols": ["ospf", "ibgp", "ebgp", "dhcp"],
+  "use_cases": [
+    "Enterprise campus network",
+    "Corporate headquarters",
+    "Medium to large office buildings",
+    "Multi-building campus"
+  ],
+  "features": {
+    "redundancy": "Dual core and distribution switches",
+    "scalability": "Add access switches as needed",
+    "services": "DHCP on access layer",
+    "wan": "eBGP for ISP connectivity"
+  },
+  "requirements": {
+    "min_agents": 6,
+    "recommended_agents": 8,
+    "mtu": 1500,
+    "igp": "OSPF Area 0",
+    "egp": "BGP AS 65100"
+  }
+}

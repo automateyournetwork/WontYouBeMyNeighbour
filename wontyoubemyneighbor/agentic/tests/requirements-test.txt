@@ -1,4 +1,4 @@
-# Testing dependencies for Ralph agentic layer
+# Testing dependencies for ASI agentic layer
 
 # Core test framework
 pytest>=7.4.0

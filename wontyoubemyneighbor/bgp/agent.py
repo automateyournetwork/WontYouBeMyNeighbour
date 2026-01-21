@@ -147,6 +147,10 @@ class BGPAgent:
         """
         Handle incoming TCP connection
 
+        Per RFC 4271 Section 6.8, when a BGP speaker receives an incoming connection
+        for a peer it's actively connecting to, it should handle the collision.
+        The connection with the higher BGP Identifier (router ID) wins.
+
         Args:
             reader: Stream reader
             writer: Stream writer
@@ -170,17 +174,62 @@ class BGPAgent:
                 await writer.wait_closed()
                 return
 
-            # Check if session is in passive mode
-            self.logger.debug(f"Session passive mode: {session.config.passive}")
-            if not session.config.passive:
-                self.logger.warning(f"Session {peer_ip} not configured for passive mode, rejecting")
-                writer.close()
-                await writer.wait_closed()
-                return
+            # RFC 4271 Section 6.8: Connection Collision Detection
+            # If we're in passive mode, always accept
+            # If we're in active mode BUT:
+            #   - Session is in Idle/Connect/Active state: Accept (we haven't established yet)
+            #   - Session is in OpenSent/OpenConfirm: Handle collision based on router ID
+            #   - Session is Established: Reject (we already have a working connection)
+            self.logger.debug(f"Session passive mode: {session.config.passive}, FSM state: {session.fsm.get_state_name()}")
 
-            # Accept connection
-            self.logger.debug(f"Calling session.accept_connection for {peer_ip}")
-            await session.accept_connection(reader, writer)
+            if not session.config.passive:
+                # Active mode - check current state for collision handling
+                current_state = session.fsm.state
+
+                if current_state == STATE_ESTABLISHED:
+                    # Already established, reject new connection
+                    self.logger.warning(f"Session {peer_ip} already established, rejecting new connection")
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+
+                elif current_state in (STATE_OPENSENT, STATE_OPENCONFIRM):
+                    # Connection collision - per RFC 4271, compare BGP identifiers (router IDs)
+                    # The connection initiated by the higher router ID is kept
+                    import struct
+                    import socket
+                    our_id = struct.unpack("!I", socket.inet_aton(self.router_id))[0]
+                    peer_id = struct.unpack("!I", socket.inet_aton(session.config.peer_router_id or peer_ip))[0]
+
+                    if our_id > peer_id:
+                        # We have higher ID - keep our outgoing connection, reject incoming
+                        self.logger.info(f"Connection collision with {peer_ip}: our ID higher, rejecting incoming")
+                        writer.close()
+                        await writer.wait_closed()
+                        return
+                    else:
+                        # Peer has higher ID - accept incoming, close our outgoing attempt
+                        self.logger.info(f"Connection collision with {peer_ip}: peer ID higher, accepting incoming, dropping outgoing")
+                        # Close existing connection attempt
+                        if session.writer:
+                            try:
+                                session.writer.close()
+                                await session.writer.wait_closed()
+                            except (ConnectionError, OSError, asyncio.CancelledError) as e:
+                                self.logger.debug(f"Error closing writer during collision: {e}")
+                        session.reader = None
+                        session.writer = None
+
+                else:
+                    # In Idle/Connect/Active state - accept the incoming connection
+                    # This handles the case where both sides are trying to connect
+                    self.logger.info(f"Accepting incoming connection from {peer_ip} (collision resolution)")
+
+            # Accept connection - pass is_collision=True if we're not in passive mode
+            # so the session knows to re-send OPEN on the new connection
+            is_collision = not session.config.passive
+            self.logger.debug(f"Calling session.accept_connection for {peer_ip} (collision={is_collision})")
+            await session.accept_connection(reader, writer, is_collision=is_collision)
             self.logger.debug(f"session.accept_connection completed for {peer_ip}")
 
         except Exception as e:
@@ -188,8 +237,8 @@ class BGPAgent:
             try:
                 writer.close()
                 await writer.wait_closed()
-            except:
-                pass
+            except (ConnectionError, OSError, asyncio.CancelledError) as close_err:
+                self.logger.debug(f"Error closing writer after connection error: {close_err}")
 
     def add_peer(self, config: BGPSessionConfig) -> BGPSession:
         """
@@ -275,10 +324,9 @@ class BGPAgent:
 
         try:
             await session.start()
-
-            # If active mode, initiate connection
-            if not session.config.passive:
-                await session.connect()
+            # Note: FSM handles TCP connection initiation via on_tcp_connect callback
+            # No need to call session.connect() explicitly - it's already triggered
+            # by the ManualStart event processing in the FSM
 
             return True
 
@@ -515,6 +563,12 @@ class BGPAgent:
                 best_route = self.loc_rib.lookup(prefix)
 
                 if best_route:
+                    # CRITICAL: Only advertise IPv4 routes in standard UPDATE messages
+                    # IPv6 routes require MP_BGP extensions which we don't fully support yet
+                    if ':' in prefix:
+                        self.logger.debug(f"Skipping IPv6 route {prefix} - MP_BGP not implemented")
+                        continue
+
                     # Check if we should advertise this route to this peer
                     if self._should_advertise_to_peer(best_route, session):
                         # Apply export policy
@@ -526,7 +580,9 @@ class BGPAgent:
                             nlri.append(prefix)
                 else:
                     # Route withdrawn
-                    withdrawn.append(prefix)
+                    # Only withdraw IPv4 routes
+                    if ':' not in prefix:
+                        withdrawn.append(prefix)
 
             # Send UPDATE if there are changes
             if nlri or withdrawn:
@@ -630,6 +686,7 @@ class BGPAgent:
         Prepare path attributes for advertisement to peer
 
         Modifies attributes as needed:
+        - Ensure ORIGIN, AS_PATH, NEXT_HOP are present (required)
         - Update NEXT_HOP to self
         - Prepend AS_PATH with local AS (for eBGP)
         - Set LOCAL_PREF (for iBGP)
@@ -641,14 +698,25 @@ class BGPAgent:
         Returns:
             Modified attributes
         """
+        # Track which required attributes we've seen
+        has_origin = False
+        has_as_path = False
+        has_next_hop = False
+
         # Create copies to avoid modifying originals
         modified = []
 
         for attr in attributes:
             # Create a copy
-            if attr.type_code == ATTR_NEXT_HOP:
+            if attr.type_code == ATTR_ORIGIN:
+                # Keep ORIGIN as-is
+                modified.append(attr)
+                has_origin = True
+
+            elif attr.type_code == ATTR_NEXT_HOP:
                 # Update NEXT_HOP to self
                 modified.append(NextHopAttribute(session.config.local_ip))
+                has_next_hop = True
 
             elif attr.type_code == ATTR_AS_PATH:
                 # Create a copy of AS_PATH attribute
@@ -660,6 +728,7 @@ class BGPAgent:
                 if session.config.peer_as != self.local_as:  # eBGP
                     as_path_copy.prepend(self.local_as)
                 modified.append(as_path_copy)
+                has_as_path = True
 
             elif attr.type_code == ATTR_LOCAL_PREF:
                 # LOCAL_PREF: Only include for iBGP, strip for eBGP
@@ -670,6 +739,28 @@ class BGPAgent:
             else:
                 # Keep other attributes as-is
                 modified.append(attr)
+
+        # Ensure all required well-known mandatory attributes are present
+        # Add them at the beginning of the list in order: ORIGIN, AS_PATH, NEXT_HOP
+        if not has_origin:
+            modified.insert(0, OriginAttribute(ORIGIN_IGP))
+
+        if not has_as_path:
+            as_path = ASPathAttribute([])
+            if session.config.peer_as != self.local_as:  # eBGP
+                as_path.prepend(self.local_as)
+            # Insert after ORIGIN if present
+            insert_pos = 1 if has_origin else 0
+            modified.insert(insert_pos, as_path)
+
+        if not has_next_hop:
+            # Insert after ORIGIN and AS_PATH if present
+            insert_pos = 0
+            if has_origin:
+                insert_pos += 1
+            if has_as_path:
+                insert_pos += 1
+            modified.insert(insert_pos, NextHopAttribute(session.config.local_ip))
 
         # Add LOCAL_PREF for iBGP if not present
         if session.config.peer_as == self.local_as:  # iBGP

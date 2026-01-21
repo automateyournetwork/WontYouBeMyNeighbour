@@ -1,7 +1,7 @@
 """
-Gossip Protocol for Ralph-to-Ralph Communication
+Gossip Protocol for ASI-to-ASI Communication
 
-Implements epidemic-style information dissemination between Ralph instances
+Implements epidemic-style information dissemination between ASI instances
 for state sharing, anomaly detection, and coordination.
 """
 
@@ -26,7 +26,7 @@ class MessageType(str, Enum):
 
 @dataclass
 class GossipMessage:
-    """Message exchanged between Ralph instances"""
+    """Message exchanged between ASI instances"""
     message_id: str
     message_type: MessageType
     sender_id: str
@@ -71,7 +71,7 @@ class GossipMessage:
 
 class GossipProtocol:
     """
-    Gossip protocol for distributed Ralph coordination.
+    Gossip protocol for distributed ASI coordination.
 
     Features:
     - Epidemic-style message propagation
@@ -82,15 +82,15 @@ class GossipProtocol:
 
     def __init__(
         self,
-        ralph_id: str,
+        asi_id: str,
         fanout: int = 3,
         gossip_interval: float = 5.0
     ):
-        self.ralph_id = ralph_id
+        self.asi_id = asi_id
         self.fanout = fanout  # Number of peers to gossip to
         self.gossip_interval = gossip_interval
 
-        # Known Ralph peers
+        # Known ASI peers
         self.peers: Dict[str, Dict[str, Any]] = {}
 
         # Message history (for duplicate detection)
@@ -110,7 +110,7 @@ class GossipProtocol:
         peer_address: str,
         peer_port: int = 8080
     ):
-        """Register a Ralph peer for gossip"""
+        """Register a ASI peer for gossip"""
         self.peers[peer_id] = {
             "address": peer_address,
             "port": peer_port,
@@ -130,13 +130,13 @@ class GossipProtocol:
     ) -> GossipMessage:
         """Create new gossip message"""
         # Generate unique message ID
-        message_data = f"{self.ralph_id}{datetime.utcnow().isoformat()}{json.dumps(payload)}"
+        message_data = f"{self.asi_id}{datetime.utcnow().isoformat()}{json.dumps(payload)}"
         message_id = hashlib.sha256(message_data.encode()).hexdigest()[:16]
 
         return GossipMessage(
             message_id=message_id,
             message_type=message_type,
-            sender_id=self.ralph_id,
+            sender_id=self.asi_id,
             timestamp=datetime.utcnow(),
             payload=payload,
             ttl=ttl
@@ -150,7 +150,7 @@ class GossipProtocol:
         """
         # Mark as seen
         self.seen_messages.add(message.message_id)
-        message.seen_by.add(self.ralph_id)
+        message.seen_by.add(self.asi_id)
 
         # Add to buffer
         self.message_buffer.append(message)
@@ -174,7 +174,7 @@ class GossipProtocol:
 
         # Mark as seen
         self.seen_messages.add(message.message_id)
-        message.seen_by.add(self.ralph_id)
+        message.seen_by.add(self.asi_id)
 
         # Handle message
         if message.message_type in self.handlers:
@@ -235,7 +235,7 @@ class GossipProtocol:
 
         self._running = True
         self._gossip_task = asyncio.create_task(self._gossip_loop())
-        print(f"[Gossip] Started for Ralph {self.ralph_id}")
+        print(f"[Gossip] Started for ASI {self.asi_id}")
 
     async def stop(self):
         """Stop gossip protocol"""
@@ -296,7 +296,7 @@ class GossipProtocol:
     def get_statistics(self) -> Dict[str, Any]:
         """Get gossip protocol statistics"""
         return {
-            "ralph_id": self.ralph_id,
+            "asi_id": self.asi_id,
             "peers": len(self.peers),
             "messages_seen": len(self.seen_messages),
             "messages_buffered": len(self.message_buffer),

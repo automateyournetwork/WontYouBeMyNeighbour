@@ -145,17 +145,35 @@ class ASPathAttribute(PathAttribute):
         # segments: List of (segment_type, [ASNs])
         self.segments = segments or []
 
-    def encode_value(self) -> bytes:
+    def encode_value(self, four_byte_as: bool = True) -> bytes:
+        """
+        Encode AS_PATH value.
+
+        Args:
+            four_byte_as: Use 4-byte AS numbers (RFC 6793). Default True since
+                          most modern implementations support it.
+        """
         data = b''
         for seg_type, as_list in self.segments:
             data += struct.pack('!BB', seg_type, len(as_list))
             for asn in as_list:
-                data += struct.pack('!H', asn if asn <= 65535 else AS_TRANS)
+                if four_byte_as:
+                    data += struct.pack('!I', asn)  # 4-byte AS
+                else:
+                    data += struct.pack('!H', asn if asn <= 65535 else AS_TRANS)
         return data
 
-    def decode_value(self, data: bytes) -> bool:
+    def decode_value(self, data: bytes, four_byte_as: bool = True) -> bool:
+        """
+        Decode AS_PATH value.
+
+        Args:
+            data: Attribute value bytes
+            four_byte_as: Expect 4-byte AS numbers (RFC 6793). Default True.
+        """
         self.segments = []
         offset = 0
+        as_size = 4 if four_byte_as else 2
 
         while offset < len(data):
             if offset + 2 > len(data):
@@ -165,14 +183,18 @@ class ASPathAttribute(PathAttribute):
             seg_len = data[offset + 1]
             offset += 2
 
-            if offset + seg_len * 2 > len(data):
+            if offset + seg_len * as_size > len(data):
                 return False
 
             as_list = []
             for i in range(seg_len):
-                asn = struct.unpack('!H', data[offset:offset+2])[0]
+                if four_byte_as:
+                    asn = struct.unpack('!I', data[offset:offset+4])[0]
+                    offset += 4
+                else:
+                    asn = struct.unpack('!H', data[offset:offset+2])[0]
+                    offset += 2
                 as_list.append(asn)
-                offset += 2
 
             self.segments.append((seg_type, as_list))
 

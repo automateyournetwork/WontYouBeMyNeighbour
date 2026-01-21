@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASI - Full Agent Topology</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #eee;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #2a2a4e;
+            margin-bottom: 30px;
+        }
+
+        .logo h1 {
+            color: #00d9ff;
+            font-size: 1.8rem;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 15px;
+        }
+
+        .nav-link {
+            background: transparent;
+            border: 1px solid #00d9ff;
+            color: #00d9ff;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+
+        .nav-link:hover, .nav-link.active {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        /* Summary Cards */
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .summary-card {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .summary-card .value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #00d9ff;
+        }
+
+        .summary-card .label {
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .summary-card.success .value { color: #4ade80; }
+        .summary-card.warning .value { color: #facc15; }
+        .summary-card.error .value { color: #ef4444; }
+
+        /* Networks List */
+        .section {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .section-header h2 {
+            color: #00d9ff;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid #00d9ff;
+            color: #00d9ff;
+        }
+
+        .btn:hover {
+            opacity: 0.8;
+        }
+
+        /* Network Cards */
+        .network-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 20px;
+        }
+
+        .network-card {
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .network-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #2a2a4e;
+        }
+
+        .network-name {
+            font-weight: bold;
+            color: #00d9ff;
+        }
+
+        .network-status {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .network-status.running {
+            background: #4ade80;
+            color: #1a1a2e;
+        }
+
+        .network-status.stopped {
+            background: #888;
+            color: #1a1a2e;
+        }
+
+        .network-status.error {
+            background: #ef4444;
+            color: white;
+        }
+
+        .network-status.deploying {
+            background: #facc15;
+            color: #1a1a2e;
+        }
+
+        .network-body {
+            padding: 15px;
+        }
+
+        .network-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .info-item {
+            font-size: 0.85rem;
+        }
+
+        .info-item .label {
+            color: #888;
+        }
+
+        .info-item .value {
+            color: #eee;
+            font-family: monospace;
+        }
+
+        /* Agent List in Network */
+        .agent-list {
+            border-top: 1px solid #2a2a4e;
+            padding-top: 15px;
+        }
+
+        .agent-list h4 {
+            margin-bottom: 10px;
+            color: #888;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+
+        .agent-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: #16213e;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+
+        .agent-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .agent-status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .agent-status-dot.running { background: #4ade80; }
+        .agent-status-dot.stopped { background: #888; }
+        .agent-status-dot.error { background: #ef4444; }
+
+        .agent-name {
+            font-weight: 500;
+        }
+
+        .agent-ip {
+            font-family: monospace;
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        .agent-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .agent-actions button {
+            padding: 5px 10px;
+            font-size: 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            border: none;
+        }
+
+        .network-actions {
+            display: flex;
+            gap: 10px;
+            padding: 15px;
+            border-top: 1px solid #2a2a4e;
+        }
+
+        /* Logs Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+        }
+
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: #16213e;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 900px;
+            max-height: 80vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            border-bottom: 1px solid #2a2a4e;
+        }
+
+        .modal-header h3 {
+            color: #00d9ff;
+        }
+
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: #888;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .modal-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .log-output {
+            background: #0d1117;
+            padding: 15px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+
+        .empty-state h3 {
+            margin-bottom: 10px;
+        }
+
+        /* Refresh indicator */
+        .refresh-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        .refresh-indicator.loading::before {
+            content: '';
+            width: 12px;
+            height: 12px;
+            border: 2px solid #2a2a4e;
+            border-top-color: #00d9ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Health Check */
+        .health-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .health-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px;
+            background: #16213e;
+            border-radius: 6px;
+        }
+
+        .health-item.healthy {
+            border-left: 3px solid #4ade80;
+        }
+
+        .health-item.unhealthy {
+            border-left: 3px solid #ef4444;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <h1>Full Agent Topology</h1>
+            </div>
+            <div class="nav-links">
+                <a href="/wizard" class="nav-link">Network Builder</a>
+                <a href="/topology3d" class="nav-link">3D Topology</a>
+                <a href="/monitor" class="nav-link active">Agent Topology</a>
+            </div>
+        </header>
+
+        <!-- Summary Cards -->
+        <div class="summary-grid">
+            <div class="summary-card success">
+                <div class="value" id="running-count">0</div>
+                <div class="label">Running Networks</div>
+            </div>
+            <div class="summary-card">
+                <div class="value" id="agent-count">0</div>
+                <div class="label">Total Agents</div>
+            </div>
+            <div class="summary-card success">
+                <div class="value" id="healthy-count">0</div>
+                <div class="label">Healthy Agents</div>
+            </div>
+            <div class="summary-card error">
+                <div class="value" id="error-count">0</div>
+                <div class="label">Errors</div>
+            </div>
+        </div>
+
+        <!-- Networks Section -->
+        <div class="section">
+            <div class="section-header">
+                <h2>Deployed Networks</h2>
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <div class="refresh-indicator" id="refresh-indicator">
+                        Last updated: <span id="last-update">--</span>
+                    </div>
+                    <button class="btn btn-secondary" onclick="refreshNetworks()">Refresh</button>
+                    <a href="/wizard" class="btn btn-primary">Deploy New Network</a>
+                </div>
+            </div>
+
+            <div id="networks-container">
+                <div class="empty-state">
+                    <h3>No Networks Deployed</h3>
+                    <p>Use the Network Builder to create and deploy a multi-agent network.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Saved Networks Section - Hidden until feature is implemented -->
+        <!--
+        <div class="section">
+            <div class="section-header">
+                <h2>Saved Networks</h2>
+            </div>
+            <div id="saved-networks-container">
+                <div class="empty-state">
+                    <p>No saved networks found.</p>
+                </div>
+            </div>
+        </div>
+        -->
+    </div>
+
+    <!-- Logs Modal -->
+    <div class="modal" id="logs-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Agent Logs: <span id="logs-agent-name"></span></h3>
+                <button class="modal-close" onclick="closeLogsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="log-output" id="log-output">Loading logs...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/monitor.js"></script>
+</body>
+</html>

@@ -1,0 +1,92 @@
+{
+  "links": [
+    {
+      "id": "spine1-leaf1",
+      "a1": "spine-1",
+      "i1": "eth1",
+      "a2": "leaf-1",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.1.0/30",
+      "description": "Spine-1 to Leaf-1"
+    },
+    {
+      "id": "spine1-leaf2",
+      "a1": "spine-1",
+      "i1": "eth2",
+      "a2": "leaf-2",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.2.0/30",
+      "description": "Spine-1 to Leaf-2"
+    },
+    {
+      "id": "spine1-leaf3",
+      "a1": "spine-1",
+      "i1": "eth3",
+      "a2": "leaf-3",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.3.0/30",
+      "description": "Spine-1 to Leaf-3"
+    },
+    {
+      "id": "spine1-leaf4",
+      "a1": "spine-1",
+      "i1": "eth4",
+      "a2": "leaf-4",
+      "i2": "eth1",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.4.0/30",
+      "description": "Spine-1 to Leaf-4"
+    },
+    {
+      "id": "spine2-leaf1",
+      "a1": "spine-2",
+      "i1": "eth1",
+      "a2": "leaf-1",
+      "i2": "eth2",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.5.0/30",
+      "description": "Spine-2 to Leaf-1"
+    },
+    {
+      "id": "spine2-leaf2",
+      "a1": "spine-2",
+      "i1": "eth2",
+      "a2": "leaf-2",
+      "i2": "eth2",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.6.0/30",
+      "description": "Spine-2 to Leaf-2"
+    },
+    {
+      "id": "spine2-leaf3",
+      "a1": "spine-2",
+      "i1": "eth3",
+      "a2": "leaf-3",
+      "i2": "eth2",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.7.0/30",
+      "description": "Spine-2 to Leaf-3"
+    },
+    {
+      "id": "spine2-leaf4",
+      "a1": "spine-2",
+      "i1": "eth4",
+      "a2": "leaf-4",
+      "i2": "eth2",
+      "t": "ethernet",
+      "c": 10,
+      "subnet": "172.16.8.0/30",
+      "description": "Spine-2 to Leaf-4"
+    }
+  ]
+}

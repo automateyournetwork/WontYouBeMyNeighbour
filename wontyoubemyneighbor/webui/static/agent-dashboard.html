@@ -1,0 +1,1515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Dashboard - Won't You Be My Neighbor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-tertiary: #0d1117;
+            --border-color: #2a2a4e;
+            --text-primary: #eee;
+            --text-secondary: #888;
+            --accent-cyan: #00d9ff;
+            --accent-green: #4ade80;
+            --accent-yellow: #facc15;
+            --accent-red: #ef4444;
+            --accent-purple: #a78bfa;
+            --accent-pink: #f472b6;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 0;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 25px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .header-left h1 {
+            color: var(--accent-cyan);
+            font-size: 1.5rem;
+        }
+
+        .agent-badge {
+            background: var(--bg-tertiary);
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.connected {
+            background: var(--accent-green);
+            box-shadow: 0 0 6px var(--accent-green);
+        }
+
+        .status-dot.disconnected { background: var(--accent-red); }
+
+        .nav-links {
+            display: flex;
+            gap: 10px;
+        }
+
+        .nav-link {
+            background: transparent;
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            padding: 8px 16px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: all 0.3s;
+        }
+
+        .nav-link:hover {
+            background: var(--accent-cyan);
+            color: var(--bg-primary);
+        }
+
+        /* Agent Info Banner */
+        .agent-info-banner {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 25px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 20px;
+        }
+
+        .info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .info-label {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .info-value {
+            color: var(--text-primary);
+            font-size: 1.1rem;
+            font-weight: 500;
+            font-family: monospace;
+        }
+
+        /* Protocol Tabs */
+        .protocol-tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+
+        .protocol-tab {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px 8px 0 0;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .protocol-tab:hover {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .protocol-tab.active {
+            background: var(--bg-secondary);
+            color: var(--accent-cyan);
+        }
+
+        .protocol-tab.interfaces.active { color: #f97316; }
+        .protocol-tab.ospf.active { color: var(--accent-cyan); }
+        .protocol-tab.bgp.active { color: var(--accent-purple); }
+        .protocol-tab.isis.active { color: var(--accent-yellow); }
+        .protocol-tab.mpls.active { color: var(--accent-green); }
+        .protocol-tab.vxlan.active { color: var(--accent-pink); }
+        .protocol-tab.dhcp.active { color: #60a5fa; }
+        .protocol-tab.dns.active { color: #34d399; }
+        .protocol-tab.testing.active { color: #22d3ee; }
+        .protocol-tab.gait.active { color: #f59e0b; }
+        .protocol-tab.markmap.active { color: #ec4899; }
+
+        .protocol-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .protocol-indicator.active { background: var(--accent-green); }
+        .protocol-indicator.inactive { background: var(--text-secondary); }
+
+        /* Protocol Content */
+        .protocol-content {
+            display: none;
+        }
+
+        .protocol-content.active {
+            display: block;
+        }
+
+        /* Metrics Grid */
+        .metrics-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .metric-card {
+            background: var(--bg-secondary);
+            border-radius: 10px;
+            padding: 18px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+        }
+
+        .metric-card.interfaces::before { background: #f97316; }
+        .metric-card.ospf::before { background: var(--accent-cyan); }
+        .metric-card.bgp::before { background: var(--accent-purple); }
+        .metric-card.isis::before { background: var(--accent-yellow); }
+        .metric-card.mpls::before { background: var(--accent-green); }
+        .metric-card.vxlan::before { background: var(--accent-pink); }
+        .metric-card.dhcp::before { background: #60a5fa; }
+        .metric-card.dns::before { background: #34d399; }
+
+        .metric-label {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            margin-bottom: 8px;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--text-primary);
+        }
+
+        .metric-unit {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            font-weight: normal;
+        }
+
+        /* Data Tables */
+        .section {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .section-header h3 {
+            color: var(--text-primary);
+            font-size: 1rem;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .data-table th,
+        .data-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .data-table th {
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .data-table td {
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+
+        .data-table tbody tr:hover {
+            background: var(--bg-tertiary);
+        }
+
+        /* Status Badges */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-badge.full,
+        .status-badge.established,
+        .status-badge.up,
+        .status-badge.active {
+            background: rgba(74, 222, 128, 0.2);
+            color: var(--accent-green);
+        }
+
+        .status-badge.init,
+        .status-badge.loading,
+        .status-badge.pending {
+            background: rgba(250, 204, 21, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        .status-badge.down,
+        .status-badge.idle,
+        .status-badge.error {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        /* Chart Container */
+        .chart-container {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px;
+            height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+        }
+
+        /* Two Column Layout */
+        .two-column {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        /* Refresh Button */
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        .btn-secondary:hover {
+            background: var(--accent-cyan);
+            color: var(--bg-primary);
+        }
+
+        /* Chat Tab Styles */
+        .protocol-tab.chat.active { color: #00d9ff; }
+        .metric-card.chat::before { background: #00d9ff; }
+
+        .chat-container {
+            display: flex;
+            flex-direction: column;
+            height: 500px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .chat-message {
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+        }
+
+        .chat-message.user {
+            align-self: flex-end;
+            background: var(--accent-cyan);
+            color: #000;
+            border-bottom-right-radius: 4px;
+        }
+
+        .chat-message.assistant {
+            align-self: flex-start;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-bottom-left-radius: 4px;
+        }
+
+        .chat-message.system {
+            align-self: center;
+            background: rgba(250, 204, 21, 0.1);
+            border: 1px solid var(--accent-yellow);
+            color: var(--accent-yellow);
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
+        .chat-input-area {
+            display: flex;
+            gap: 10px;
+            padding: 15px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-color);
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 12px 16px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.95rem;
+        }
+
+        .chat-input:focus {
+            outline: none;
+            border-color: var(--accent-cyan);
+        }
+
+        .chat-send-btn {
+            padding: 12px 24px;
+            background: var(--accent-cyan);
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .chat-send-btn:hover {
+            background: #00b8d9;
+        }
+
+        .chat-send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Testing Tab Styles */
+        .metric-card.testing::before { background: #22d3ee; }
+        .metric-card.gait::before { background: #f59e0b; }
+        .metric-card.markmap::before { background: #ec4899; }
+
+        .test-suite-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 15px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            transition: all 0.2s;
+        }
+
+        .test-suite-item:hover {
+            background: var(--bg-primary);
+        }
+
+        .test-suite-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .test-suite-checkbox input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent-cyan);
+            cursor: pointer;
+        }
+
+        .test-count {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .schedule-form {
+            padding: 15px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+        }
+
+        .form-row {
+            margin-bottom: 15px;
+        }
+
+        .form-row label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+
+        .form-row select {
+            width: 100%;
+            padding: 8px 12px;
+            margin-top: 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .form-row input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent-cyan);
+        }
+
+        /* GAIT Tab Styles */
+        .gait-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .search-input {
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            width: 200px;
+        }
+
+        .search-input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        .gait-controls select {
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+        }
+
+        .conversation-timeline {
+            max-height: 500px;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        .timeline-item {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            position: relative;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: 7px;
+            top: 24px;
+            bottom: -20px;
+            width: 2px;
+            background: var(--border-color);
+        }
+
+        .timeline-item:last-child::before {
+            display: none;
+        }
+
+        .timeline-marker {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-top: 4px;
+        }
+
+        .timeline-item.user .timeline-marker { background: var(--accent-cyan); }
+        .timeline-item.agent .timeline-marker { background: var(--accent-green); }
+        .timeline-item.system .timeline-marker { background: var(--accent-yellow); }
+        .timeline-item.action .timeline-marker { background: var(--accent-purple); }
+
+        .timeline-content {
+            flex: 1;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 12px 15px;
+        }
+
+        .timeline-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .timeline-sender {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .timeline-item.user .timeline-sender { color: var(--accent-cyan); }
+        .timeline-item.agent .timeline-sender { color: var(--accent-green); }
+        .timeline-item.system .timeline-sender { color: var(--accent-yellow); }
+        .timeline-item.action .timeline-sender { color: var(--accent-purple); }
+
+        .timeline-time {
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+        }
+
+        .timeline-message {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        /* Markmap Tab Styles */
+        .markmap-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .markmap-controls label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+
+        .markmap-controls input[type="checkbox"] {
+            accent-color: var(--accent-cyan);
+        }
+
+        .markmap-container {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 600px;
+            position: relative;
+        }
+
+        .markmap-container.fullscreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            z-index: 1000;
+            border-radius: 0;
+            margin: 0;
+        }
+
+        #markmap-svg {
+            background: var(--bg-tertiary);
+        }
+
+        /* Test result status badges */
+        .status-badge.passed {
+            background: rgba(74, 222, 128, 0.2);
+            color: var(--accent-green);
+        }
+
+        .status-badge.failed {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        .status-badge.skipped {
+            background: rgba(250, 204, 21, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        .status-badge.running {
+            background: rgba(0, 217, 255, 0.2);
+            color: var(--accent-cyan);
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Results filter dropdown */
+        #results-filter {
+            padding: 6px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+        }
+
+        /* Expandable test result rows */
+        .test-result-row {
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .test-result-row:hover {
+            background: var(--bg-primary) !important;
+        }
+
+        .test-result-row.expanded {
+            background: var(--bg-primary);
+        }
+
+        .test-detail-row td {
+            font-size: 0.9rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .metrics-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .two-column {
+                grid-template-columns: 1fr;
+            }
+
+            .gait-controls {
+                flex-wrap: wrap;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .agent-info-banner {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .header-left {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .markmap-controls {
+                flex-wrap: wrap;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-left">
+                <h1 id="agent-name">Agent Dashboard</h1>
+                <span class="agent-badge" id="agent-role">Router</span>
+                <div class="connection-status">
+                    <span class="status-dot connected" id="ws-status"></span>
+                    <span id="connection-text">Connected</span>
+                </div>
+            </div>
+            <div class="nav-links">
+                <a href="/topology3d" class="nav-link" id="agent3dViewLink">My 3D View</a>
+                <a href="/topology3d" class="nav-link">Network 3D</a>
+                <a href="/monitor" class="nav-link">Full Topology</a>
+                <a href="/" class="nav-link">Chat</a>
+            </div>
+        </header>
+
+        <!-- Agent Info Banner -->
+        <div class="agent-info-banner">
+            <div class="info-item">
+                <span class="info-label">Router ID</span>
+                <span class="info-value" id="router-id">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">IP Address</span>
+                <span class="info-value" id="ip-address">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Uptime</span>
+                <span class="info-value" id="uptime">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">LLM Provider</span>
+                <span class="info-value" id="llm-provider">--</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Active Protocols</span>
+                <span class="info-value" id="active-protocols">0</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Total Neighbors</span>
+                <span class="info-value" id="total-neighbors">0</span>
+            </div>
+        </div>
+
+        <!-- Protocol Tabs -->
+        <div class="protocol-tabs" id="protocol-tabs">
+            <!-- Tabs will be dynamically generated -->
+        </div>
+
+        <!-- Chat Content -->
+        <div class="protocol-content active" id="chat-content">
+            <div class="metrics-row">
+                <div class="metric-card chat">
+                    <div class="metric-label">Messages Sent</div>
+                    <div class="metric-value" id="chat-sent">0</div>
+                </div>
+                <div class="metric-card chat">
+                    <div class="metric-label">Responses</div>
+                    <div class="metric-value" id="chat-received">0</div>
+                </div>
+                <div class="metric-card chat">
+                    <div class="metric-label">Session</div>
+                    <div class="metric-value" id="chat-session">Active</div>
+                </div>
+                <div class="metric-card chat">
+                    <div class="metric-label">Provider</div>
+                    <div class="metric-value" id="chat-provider">--</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>Chat with ASI Agent</h3>
+                    <span style="font-size: 0.85rem; color: var(--text-secondary);">Ask about routing, neighbors, protocols</span>
+                </div>
+                <div class="chat-container">
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="chat-message system">
+                            Welcome! Ask me about your routing protocols, neighbors, or routes.<br>
+                            <span style="font-size: 0.85rem;">Try: "How many neighbors do I have?" or "Show me the BGP routes"</span>
+                        </div>
+                    </div>
+                    <div class="chat-input-area">
+                        <input type="text" class="chat-input" id="chat-input" placeholder="Ask ASI something..." autocomplete="off">
+                        <button class="chat-send-btn" id="chat-send-btn">Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Interfaces Content -->
+        <div class="protocol-content" id="interfaces-content">
+            <div class="metrics-row">
+                <div class="metric-card interfaces">
+                    <div class="metric-label">Total Interfaces</div>
+                    <div class="metric-value" id="if-total">0</div>
+                </div>
+                <div class="metric-card interfaces">
+                    <div class="metric-label">Up</div>
+                    <div class="metric-value" id="if-up">0</div>
+                </div>
+                <div class="metric-card interfaces">
+                    <div class="metric-label">Down</div>
+                    <div class="metric-value" id="if-down">0</div>
+                </div>
+                <div class="metric-card interfaces">
+                    <div class="metric-label">With IP</div>
+                    <div class="metric-value" id="if-with-ip">0</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>Interface Configuration</h3>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>IP Address(es)</th>
+                            <th>MTU</th>
+                            <th>Status</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody id="interfaces-table">
+                        <tr><td colspan="6" class="empty-state">No interfaces configured</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- OSPF Content -->
+        <div class="protocol-content" id="ospf-content">
+            <div class="metrics-row">
+                <div class="metric-card ospf">
+                    <div class="metric-label">Neighbors</div>
+                    <div class="metric-value" id="ospf-neighbors">0</div>
+                </div>
+                <div class="metric-card ospf">
+                    <div class="metric-label">Full Adjacencies</div>
+                    <div class="metric-value" id="ospf-full">0</div>
+                </div>
+                <div class="metric-card ospf">
+                    <div class="metric-label">LSDB Size</div>
+                    <div class="metric-value" id="ospf-lsdb">0 <span class="metric-unit">LSAs</span></div>
+                </div>
+                <div class="metric-card ospf">
+                    <div class="metric-label">Routes</div>
+                    <div class="metric-value" id="ospf-routes">0</div>
+                </div>
+            </div>
+
+            <div class="two-column">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>OSPF Neighbors</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Neighbor ID</th>
+                                <th>IP Address</th>
+                                <th>State</th>
+                                <th>DR/BDR</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ospf-neighbors-table">
+                            <tr><td colspan="4" class="empty-state">No neighbors</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">
+                        <h3>OSPF Routes</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Prefix</th>
+                                <th>Next Hop</th>
+                                <th>Interface</th>
+                                <th>Cost</th>
+                                <th>Type</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ospf-routes-table">
+                            <tr><td colspan="5" class="empty-state">No routes</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- BGP Content -->
+        <div class="protocol-content" id="bgp-content">
+            <div class="metrics-row">
+                <div class="metric-card bgp">
+                    <div class="metric-label">Configured Peers</div>
+                    <div class="metric-value" id="bgp-peers">0</div>
+                </div>
+                <div class="metric-card bgp">
+                    <div class="metric-label">Established</div>
+                    <div class="metric-value" id="bgp-established">0</div>
+                </div>
+                <div class="metric-card bgp">
+                    <div class="metric-label">Prefixes Received</div>
+                    <div class="metric-value" id="bgp-prefixes-in">0</div>
+                </div>
+                <div class="metric-card bgp">
+                    <div class="metric-label">Prefixes Advertised</div>
+                    <div class="metric-value" id="bgp-prefixes-out">0</div>
+                </div>
+            </div>
+
+            <div class="two-column">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>BGP Peers</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Peer IP</th>
+                                <th>Remote AS</th>
+                                <th>State</th>
+                                <th>Type</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bgp-peers-table">
+                            <tr><td colspan="4" class="empty-state">No peers</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">
+                        <h3>BGP Routes (Loc-RIB)</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Prefix</th>
+                                <th>Next Hop</th>
+                                <th>Interface</th>
+                                <th>AS Path</th>
+                                <th>Origin</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bgp-routes-table">
+                            <tr><td colspan="5" class="empty-state">No routes</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- IS-IS Content -->
+        <div class="protocol-content" id="isis-content">
+            <div class="metrics-row">
+                <div class="metric-card isis">
+                    <div class="metric-label">Adjacencies</div>
+                    <div class="metric-value" id="isis-adjacencies">0</div>
+                </div>
+                <div class="metric-card isis">
+                    <div class="metric-label">LSP Count</div>
+                    <div class="metric-value" id="isis-lsps">0</div>
+                </div>
+                <div class="metric-card isis">
+                    <div class="metric-label">Level</div>
+                    <div class="metric-value" id="isis-level">L1/L2</div>
+                </div>
+                <div class="metric-card isis">
+                    <div class="metric-label">Area</div>
+                    <div class="metric-value" id="isis-area">--</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>IS-IS Adjacencies</h3>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>System ID</th>
+                            <th>Interface</th>
+                            <th>Level</th>
+                            <th>State</th>
+                            <th>Hold Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="isis-adjacencies-table">
+                        <tr><td colspan="5" class="empty-state">No adjacencies</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- MPLS Content -->
+        <div class="protocol-content" id="mpls-content">
+            <div class="metrics-row">
+                <div class="metric-card mpls">
+                    <div class="metric-label">LFIB Entries</div>
+                    <div class="metric-value" id="mpls-lfib">0</div>
+                </div>
+                <div class="metric-card mpls">
+                    <div class="metric-label">Labels Allocated</div>
+                    <div class="metric-value" id="mpls-labels">0</div>
+                </div>
+                <div class="metric-card mpls">
+                    <div class="metric-label">LDP Neighbors</div>
+                    <div class="metric-value" id="mpls-ldp-neighbors">0</div>
+                </div>
+                <div class="metric-card mpls">
+                    <div class="metric-label">Packets Switched</div>
+                    <div class="metric-value" id="mpls-packets">0</div>
+                </div>
+            </div>
+
+            <div class="two-column">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Label Forwarding Table (LFIB)</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>In Label</th>
+                                <th>Out Label</th>
+                                <th>Next Hop</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mpls-lfib-table">
+                            <tr><td colspan="4" class="empty-state">No entries</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">
+                        <h3>LDP Sessions</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Peer</th>
+                                <th>State</th>
+                                <th>Labels Sent</th>
+                                <th>Labels Rcvd</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mpls-ldp-table">
+                            <tr><td colspan="4" class="empty-state">No sessions</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- VXLAN/EVPN Content -->
+        <div class="protocol-content" id="vxlan-content">
+            <div class="metrics-row">
+                <div class="metric-card vxlan">
+                    <div class="metric-label">VNIs</div>
+                    <div class="metric-value" id="vxlan-vnis">0</div>
+                </div>
+                <div class="metric-card vxlan">
+                    <div class="metric-label">VTEPs</div>
+                    <div class="metric-value" id="vxlan-vteps">0</div>
+                </div>
+                <div class="metric-card vxlan">
+                    <div class="metric-label">MAC Entries</div>
+                    <div class="metric-value" id="vxlan-macs">0</div>
+                </div>
+                <div class="metric-card vxlan">
+                    <div class="metric-label">EVPN Routes</div>
+                    <div class="metric-value" id="vxlan-routes">0</div>
+                </div>
+            </div>
+
+            <div class="two-column">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>VNI Table</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>VNI</th>
+                                <th>Type</th>
+                                <th>VLAN</th>
+                                <th>VTEPs</th>
+                            </tr>
+                        </thead>
+                        <tbody id="vxlan-vni-table">
+                            <tr><td colspan="4" class="empty-state">No VNIs</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Remote VTEPs</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>VTEP IP</th>
+                                <th>VNIs</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="vxlan-vtep-table">
+                            <tr><td colspan="3" class="empty-state">No VTEPs</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- DHCP Content -->
+        <div class="protocol-content" id="dhcp-content">
+            <div class="metrics-row">
+                <div class="metric-card dhcp">
+                    <div class="metric-label">Active Pools</div>
+                    <div class="metric-value" id="dhcp-pools">0</div>
+                </div>
+                <div class="metric-card dhcp">
+                    <div class="metric-label">Active Leases</div>
+                    <div class="metric-value" id="dhcp-leases">0</div>
+                </div>
+                <div class="metric-card dhcp">
+                    <div class="metric-label">Available IPs</div>
+                    <div class="metric-value" id="dhcp-available">0</div>
+                </div>
+                <div class="metric-card dhcp">
+                    <div class="metric-label">DHCP Requests</div>
+                    <div class="metric-value" id="dhcp-requests">0</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>DHCP Leases</h3>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>IP Address</th>
+                            <th>MAC Address</th>
+                            <th>Hostname</th>
+                            <th>Expires</th>
+                            <th>State</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dhcp-leases-table">
+                        <tr><td colspan="5" class="empty-state">No leases</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- DNS Content -->
+        <div class="protocol-content" id="dns-content">
+            <div class="metrics-row">
+                <div class="metric-card dns">
+                    <div class="metric-label">Zones</div>
+                    <div class="metric-value" id="dns-zones">0</div>
+                </div>
+                <div class="metric-card dns">
+                    <div class="metric-label">Records</div>
+                    <div class="metric-value" id="dns-records">0</div>
+                </div>
+                <div class="metric-card dns">
+                    <div class="metric-label">Queries/min</div>
+                    <div class="metric-value" id="dns-queries">0</div>
+                </div>
+                <div class="metric-card dns">
+                    <div class="metric-label">Cache Hits</div>
+                    <div class="metric-value" id="dns-cache-hits">0<span class="metric-unit">%</span></div>
+                </div>
+            </div>
+
+            <div class="two-column">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>DNS Zones</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Zone</th>
+                                <th>Type</th>
+                                <th>Records</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dns-zones-table">
+                            <tr><td colspan="4" class="empty-state">No zones</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Recent Queries</h3>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Query</th>
+                                <th>Type</th>
+                                <th>Result</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dns-queries-table">
+                            <tr><td colspan="4" class="empty-state">No queries</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Testing Content (pyATS) -->
+        <div class="protocol-content" id="testing-content">
+            <div class="metrics-row">
+                <div class="metric-card testing">
+                    <div class="metric-label">Test Suites</div>
+                    <div class="metric-value" id="testing-suites">0</div>
+                </div>
+                <div class="metric-card testing">
+                    <div class="metric-label">Last Run</div>
+                    <div class="metric-value" id="testing-last-run">Never</div>
+                </div>
+                <div class="metric-card testing">
+                    <div class="metric-label">Pass Rate</div>
+                    <div class="metric-value" id="testing-pass-rate">--<span class="metric-unit">%</span></div>
+                </div>
+                <div class="metric-card testing">
+                    <div class="metric-label">Next Scheduled</div>
+                    <div class="metric-value" id="testing-next-run">--</div>
+                </div>
+            </div>
+
+            <div class="two-column">
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Available Test Suites</h3>
+                        <button class="btn btn-secondary" id="run-all-tests-btn">Run All Tests</button>
+                    </div>
+                    <div id="test-suites-list">
+                        <div class="test-suite-item">
+                            <label class="test-suite-checkbox">
+                                <input type="checkbox" checked data-suite="common_connectivity">
+                                <span class="checkmark"></span>
+                                Connectivity Tests
+                            </label>
+                            <span class="test-count">4 tests</span>
+                        </div>
+                        <div class="test-suite-item">
+                            <label class="test-suite-checkbox">
+                                <input type="checkbox" checked data-suite="common_interface">
+                                <span class="checkmark"></span>
+                                Interface Tests
+                            </label>
+                            <span class="test-count">4 tests</span>
+                        </div>
+                        <div class="test-suite-item">
+                            <label class="test-suite-checkbox">
+                                <input type="checkbox" checked data-suite="common_resource">
+                                <span class="checkmark"></span>
+                                Resource Tests
+                            </label>
+                            <span class="test-count">5 tests</span>
+                        </div>
+                        <div class="test-suite-item" id="protocol-test-suites">
+                            <!-- Protocol-specific test suites added dynamically -->
+                        </div>
+                    </div>
+
+                    <div class="section" style="margin-top: 20px;">
+                        <div class="section-header">
+                            <h3>Test Schedule</h3>
+                        </div>
+                        <div class="schedule-form">
+                            <div class="form-row">
+                                <label>Run tests every:</label>
+                                <select id="schedule-interval">
+                                    <option value="0">Manual only</option>
+                                    <option value="15">15 minutes</option>
+                                    <option value="30">30 minutes</option>
+                                    <option value="60" selected>1 hour</option>
+                                    <option value="360">6 hours</option>
+                                    <option value="1440">24 hours</option>
+                                </select>
+                            </div>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="schedule-on-change" checked>
+                                    Run on configuration change
+                                </label>
+                            </div>
+                            <button class="btn btn-secondary" id="save-schedule-btn">Save Schedule</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section">
+                    <div class="section-header">
+                        <h3>Test Results</h3>
+                        <select id="results-filter">
+                            <option value="all">All Results</option>
+                            <option value="failed">Failed Only</option>
+                            <option value="passed">Passed Only</option>
+                        </select>
+                    </div>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Test</th>
+                                <th>Suite</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="test-results-table">
+                            <tr><td colspan="5" class="empty-state">No test results yet. Run tests to see results.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- GAIT Content (Conversation History) -->
+        <div class="protocol-content" id="gait-content">
+            <div class="metrics-row">
+                <div class="metric-card gait">
+                    <div class="metric-label">Total Turns</div>
+                    <div class="metric-value" id="gait-turns">0</div>
+                </div>
+                <div class="metric-card gait">
+                    <div class="metric-label">User Messages</div>
+                    <div class="metric-value" id="gait-user-msgs">0</div>
+                </div>
+                <div class="metric-card gait">
+                    <div class="metric-label">Agent Responses</div>
+                    <div class="metric-value" id="gait-agent-msgs">0</div>
+                </div>
+                <div class="metric-card gait">
+                    <div class="metric-label">Actions Taken</div>
+                    <div class="metric-value" id="gait-actions">0</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>Conversation History</h3>
+                    <div class="gait-controls">
+                        <input type="text" id="gait-search" placeholder="Search conversations..." class="search-input">
+                        <select id="gait-filter">
+                            <option value="all">All Messages</option>
+                            <option value="user">User Only</option>
+                            <option value="agent">Agent Only</option>
+                            <option value="system">System Only</option>
+                            <option value="action">Actions Only</option>
+                        </select>
+                        <button class="btn btn-secondary" id="export-gait-btn">Export Logs</button>
+                    </div>
+                </div>
+                <div class="conversation-timeline" id="gait-timeline">
+                    <div class="timeline-item user">
+                        <div class="timeline-marker"></div>
+                        <div class="timeline-content">
+                            <div class="timeline-header">
+                                <span class="timeline-sender">User</span>
+                                <span class="timeline-time">--</span>
+                            </div>
+                            <div class="timeline-message">No conversation history available. GAIT tracking will record all interactions.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Markmap Content (Mind Map Visualization) -->
+        <div class="protocol-content" id="markmap-content">
+            <div class="section">
+                <div class="section-header">
+                    <h3>Agent State Mind Map</h3>
+                    <div class="markmap-controls">
+                        <label>
+                            <input type="checkbox" id="markmap-auto-refresh" checked>
+                            Auto-refresh (1s)
+                        </label>
+                        <button class="btn btn-secondary" id="markmap-refresh-btn">Refresh Now</button>
+                        <button class="btn btn-secondary" id="markmap-export-btn">Export SVG</button>
+                        <button class="btn btn-secondary" id="markmap-fullscreen-btn">Fullscreen</button>
+                    </div>
+                </div>
+                <div class="markmap-container" id="markmap-container">
+                    <svg id="markmap-svg" style="width: 100%; height: 600px;"></svg>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Markmap library for mind map rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.15.4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.15.4"></script>
+
+    <script src="/static/agent-dashboard.js"></script>
+</body>
+</html>

@@ -40,6 +40,7 @@ Usage - OSPFv2, OSPFv3, and BGP together:
 import asyncio
 import argparse
 import logging
+import os
 import signal
 import sys
 import subprocess
@@ -69,6 +70,377 @@ from bgp import BGPSpeaker
 
 # OSPFv3 imports
 from ospfv3.speaker import OSPFv3Speaker, OSPFv3Config
+
+
+class WontYouBeMyNeighbor:
+    """
+    Main application class that holds all protocol instances.
+    Used by the Web UI to access protocol state.
+    """
+
+    def __init__(self):
+        self.ospf_interface: Optional["OSPFAgent"] = None
+        self.ospfv3_speaker: Optional[OSPFv3Speaker] = None
+        self.bgp_speaker: Optional[BGPSpeaker] = None
+        self.agentic_bridge = None
+        self.router_id: Optional[str] = None
+        self.area_id: Optional[str] = None
+        self.running = False
+        self.interfaces: List[Dict] = []  # Interface configurations
+        self.config: Optional[Dict] = None  # Full agent config
+
+    def set_ospf(self, ospf_agent: "OSPFAgent"):
+        """Set OSPF agent reference"""
+        self.ospf_interface = ospf_agent
+        self.router_id = ospf_agent.router_id
+        self.area_id = ospf_agent.area_id
+
+    def set_ospfv3(self, ospfv3_speaker: OSPFv3Speaker):
+        """Set OSPFv3 speaker reference"""
+        self.ospfv3_speaker = ospfv3_speaker
+
+    def set_bgp(self, bgp_speaker: BGPSpeaker):
+        """Set BGP speaker reference"""
+        self.bgp_speaker = bgp_speaker
+        if not self.router_id:
+            self.router_id = bgp_speaker.router_id
+
+    def set_agentic_bridge(self, bridge):
+        """Set agentic bridge reference"""
+        self.agentic_bridge = bridge
+
+    def set_config(self, config: Dict):
+        """Set full agent config and extract interfaces"""
+        self.config = config
+        # Extract interfaces from config (support both 'ifs' and 'interfaces' keys)
+        raw_ifs = config.get('ifs') or config.get('interfaces', [])
+        self.interfaces = []
+        for iface in raw_ifs:
+            self.interfaces.append({
+                'id': iface.get('id') or iface.get('n'),
+                'name': iface.get('n') or iface.get('name'),
+                'type': iface.get('t') or iface.get('type', 'eth'),
+                'addresses': iface.get('a') or iface.get('addresses', []),
+                'status': iface.get('s') or iface.get('status', 'up'),
+                'mtu': iface.get('mtu', 1500),
+                'description': iface.get('description', '')
+            })
+
+    def load_config_from_env(self):
+        """Load agent config from environment variable"""
+        import os
+        import json
+        config_json = os.environ.get('ASI_AGENT_CONFIG')
+        if config_json:
+            try:
+                config = json.loads(config_json)
+                self.set_config(config)
+                logging.getLogger("WontYouBeMyNeighbor").info(
+                    f"Loaded config from environment: {len(self.interfaces)} interfaces"
+                )
+            except json.JSONDecodeError as e:
+                logging.getLogger("WontYouBeMyNeighbor").warning(
+                    f"Failed to parse ASI_AGENT_CONFIG: {e}"
+                )
+
+
+class RouteRedistributor:
+    """
+    Universal route redistribution between any combination of routing protocols.
+    Automatically handles: OSPF ↔ BGP ↔ IS-IS ↔ Static routes
+    Runs on any router with multiple protocols enabled.
+    """
+
+    def __init__(self, router_id: str, local_ip: str,
+                 ospf_agent: "OSPFAgent" = None,
+                 bgp_speaker: BGPSpeaker = None,
+                 isis_speaker = None,
+                 static_routes: List[dict] = None):
+        self.router_id = router_id
+        self.local_ip = local_ip
+        self.ospf_agent = ospf_agent
+        self.bgp_speaker = bgp_speaker
+        self.isis_speaker = isis_speaker
+        self.static_routes = static_routes or []
+        self.logger = logging.getLogger("Redistribution")
+        self.running = False
+
+        # Track route origins to prevent loops
+        # Format: {prefix: "source_protocol"}
+        self.route_origins: Dict[str, str] = {}
+
+        # Track what's been redistributed to each protocol
+        self.redistributed_to: Dict[str, set] = {
+            "ospf": set(),
+            "bgp": set(),
+            "isis": set()
+        }
+
+        # Determine active protocols
+        self.active_protocols = []
+        if ospf_agent:
+            self.active_protocols.append("ospf")
+        if bgp_speaker:
+            self.active_protocols.append("bgp")
+        if isis_speaker:
+            self.active_protocols.append("isis")
+
+    async def start(self) -> None:
+        """Start universal route redistribution loop"""
+        self.running = True
+
+        if len(self.active_protocols) < 2:
+            self.logger.info("Only one protocol active - redistribution not needed")
+            return
+
+        self.logger.info("="*60)
+        self.logger.info("  Universal Route Redistribution Enabled")
+        self.logger.info(f"  Active protocols: {', '.join(p.upper() for p in self.active_protocols)}")
+        self.logger.info("  Bidirectional redistribution between all protocols")
+        self.logger.info("="*60)
+
+        while self.running:
+            try:
+                # Collect routes from all protocols
+                all_routes = await self._collect_all_routes()
+
+                # Redistribute to each protocol
+                for target_protocol in self.active_protocols:
+                    await self._redistribute_to_protocol(target_protocol, all_routes)
+
+                await asyncio.sleep(10)  # Check every 10 seconds
+            except Exception as e:
+                self.logger.error(f"Redistribution error: {e}")
+                await asyncio.sleep(5)
+
+    async def stop(self) -> None:
+        """Stop redistribution"""
+        self.running = False
+
+    async def _collect_all_routes(self) -> List[dict]:
+        """
+        Collect routes from all active protocols.
+
+        Returns:
+            List of route dicts with keys: prefix, next_hop, metric, source, origin_protocol
+        """
+        all_routes = []
+
+        # Collect OSPF routes
+        if self.ospf_agent:
+            try:
+                routing_table = self.ospf_agent.spf_calc.routing_table
+                for prefix, route_info in routing_table.items():
+                    # Skip routes to self
+                    if route_info.next_hop == self.router_id:
+                        continue
+
+                    # Skip routes that we redistributed FROM another protocol
+                    # This prevents loops like: BGP → OSPF → BGP
+                    if prefix in self.redistributed_to.get("ospf", set()):
+                        continue
+
+                    all_routes.append({
+                        "prefix": prefix,
+                        "next_hop": route_info.next_hop,
+                        "metric": route_info.cost,
+                        "source": "ospf",
+                        "origin_protocol": "ospf"
+                    })
+                    self.route_origins[prefix] = "ospf"
+            except Exception as e:
+                self.logger.debug(f"Error collecting OSPF routes: {e}")
+
+        # Collect BGP routes
+        if self.bgp_speaker:
+            try:
+                bgp_routes = self.bgp_speaker.agent.loc_rib.get_all_routes()
+                for route in bgp_routes:
+                    # Skip locally originated routes (including redistributed routes)
+                    if route.peer_id == "local":
+                        continue
+
+                    # Skip routes that we redistributed FROM another protocol
+                    # This prevents loops like: OSPF → BGP → OSPF
+                    if route.prefix in self.redistributed_to.get("bgp", set()):
+                        continue
+
+                    # Extract next-hop from attributes
+                    next_hop = self.local_ip
+                    if 3 in route.path_attributes:
+                        nh_attr = route.path_attributes[3]
+                        if hasattr(nh_attr, 'next_hop'):
+                            next_hop = nh_attr.next_hop
+                    all_routes.append({
+                        "prefix": route.prefix,
+                        "next_hop": next_hop,
+                        "metric": 20,  # Default external metric
+                        "source": "bgp",
+                        "origin_protocol": "bgp"
+                    })
+                    self.route_origins[route.prefix] = "bgp"
+            except Exception as e:
+                self.logger.debug(f"Error collecting BGP routes: {e}")
+
+        # Collect IS-IS routes
+        if self.isis_speaker:
+            try:
+                # IS-IS routes from SPF calculation using get_routes() method
+                if hasattr(self.isis_speaker, 'get_routes'):
+                    isis_routes = self.isis_speaker.get_routes()
+                    for route in isis_routes:
+                        # Skip external routes (already redistributed into IS-IS)
+                        if hasattr(route, 'route_type') and route.route_type == "external":
+                            continue
+                        all_routes.append({
+                            "prefix": route.prefix,
+                            "next_hop": route.next_hop,
+                            "metric": route.metric,
+                            "source": "isis",
+                            "origin_protocol": "isis"
+                        })
+                        self.route_origins[route.prefix] = "isis"
+            except Exception as e:
+                self.logger.debug(f"Error collecting IS-IS routes: {e}")
+
+        # Add static routes
+        for static in self.static_routes:
+            prefix = static.get("prefix")
+            if prefix:
+                all_routes.append({
+                    "prefix": prefix,
+                    "next_hop": static.get("next_hop", self.local_ip),
+                    "metric": static.get("metric", 1),
+                    "source": "static",
+                    "origin_protocol": "static"
+                })
+                self.route_origins[prefix] = "static"
+
+        return all_routes
+
+    async def _redistribute_to_protocol(self, target: str, routes: List[dict]):
+        """
+        Redistribute routes to a target protocol.
+
+        Args:
+            target: Target protocol name (ospf, bgp, isis)
+            routes: List of route dictionaries
+        """
+        for route in routes:
+            prefix = route["prefix"]
+            source = route["source"]
+
+            # Don't redistribute back to source protocol (avoid loops)
+            if source == target:
+                continue
+
+            # Skip if already redistributed to this target
+            if prefix in self.redistributed_to[target]:
+                continue
+
+            # Skip if this route was originally from the target (loop prevention)
+            original_source = self.route_origins.get(prefix)
+            if original_source == target:
+                continue
+
+            try:
+                success = False
+
+                if target == "ospf":
+                    success = await self._inject_into_ospf(route)
+                elif target == "bgp":
+                    success = await self._inject_into_bgp(route)
+                elif target == "isis":
+                    success = await self._inject_into_isis(route)
+
+                if success:
+                    self.redistributed_to[target].add(prefix)
+                    self.logger.info(f"✓ Redistributed {source.upper()}→{target.upper()}: {prefix}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to redistribute {prefix} to {target}: {e}")
+
+    async def _inject_into_ospf(self, route: dict) -> bool:
+        """Inject route into OSPF as External LSA"""
+        if not self.ospf_agent:
+            return False
+
+        prefix = route["prefix"]
+
+        # Parse prefix to get network and mask
+        if '/' in prefix:
+            network, prefix_len = prefix.split('/')
+            prefix_len = int(prefix_len)
+        else:
+            network = prefix
+            prefix_len = 32
+
+        # Convert prefix length to dotted decimal mask
+        mask_int = (0xffffffff << (32 - prefix_len)) & 0xffffffff
+        mask = f"{(mask_int >> 24) & 0xff}.{(mask_int >> 16) & 0xff}.{(mask_int >> 8) & 0xff}.{mask_int & 0xff}"
+
+        # Metric based on source: static=50, isis=100, bgp=150
+        source_metrics = {"static": 50, "isis": 100, "bgp": 150}
+        metric = source_metrics.get(route["source"], 150)
+
+        # Install External LSA
+        success = self.ospf_agent.lsdb.install_external_lsa(
+            router_id=self.router_id,
+            prefix=network,
+            mask=mask,
+            metric=metric,
+            forwarding_address=self.local_ip,
+            external_type=2
+        )
+
+        if success:
+            # Flood to neighbors
+            await self.ospf_agent._flood_our_lsas_to_all_neighbors()
+
+        return success
+
+    async def _inject_into_bgp(self, route: dict) -> bool:
+        """Inject route into BGP"""
+        if not self.bgp_speaker:
+            return False
+
+        from bgp.constants import ORIGIN_INCOMPLETE
+
+        return self.bgp_speaker.agent.originate_route(
+            route["prefix"],
+            next_hop=self.local_ip,
+            local_pref=100,
+            origin=ORIGIN_INCOMPLETE
+        )
+
+    async def _inject_into_isis(self, route: dict) -> bool:
+        """Inject route into IS-IS as external route"""
+        if not self.isis_speaker:
+            return False
+
+        try:
+            # IS-IS external route injection
+            if hasattr(self.isis_speaker, 'redistribute_route'):
+                return self.isis_speaker.redistribute_route(
+                    route["prefix"],
+                    metric=route.get("metric", 64),
+                    metric_type="external"
+                )
+        except Exception as e:
+            self.logger.debug(f"IS-IS redistribution not available: {e}")
+
+        return False
+
+    def get_statistics(self) -> dict:
+        """Get redistribution statistics"""
+        return {
+            "active_protocols": self.active_protocols,
+            "route_origins": len(self.route_origins),
+            "redistributed": {
+                proto: len(prefixes)
+                for proto, prefixes in self.redistributed_to.items()
+            }
+        }
 
 
 class OSPFAgent:
@@ -437,12 +809,34 @@ class OSPFAgent:
             # Install routes into kernel if route manager is available
             if self.kernel_route_manager and stats['routes'] > 0:
                 for prefix, route_info in self.spf_calc.routing_table.items():
-                    next_hop = route_info.next_hop
+                    # next_hop from SPF is the router ID, not the interface IP
+                    # We need to resolve it to the actual interface IP via neighbor table
+                    next_hop_router_id = route_info.next_hop
                     cost = route_info.cost
-                    if next_hop and next_hop != self.source_ip:
-                        self.kernel_route_manager.install_route(
-                            prefix, next_hop, metric=cost, protocol="ospf"
+
+                    if not next_hop_router_id or next_hop_router_id == self.router_id:
+                        continue  # Skip routes to self
+
+                    # Resolve router ID to interface IP using neighbor table
+                    actual_gateway = None
+                    if next_hop_router_id in self.neighbors:
+                        neighbor = self.neighbors[next_hop_router_id]
+                        actual_gateway = neighbor.ip_address
+                        self.logger.debug(f"Resolved next-hop {next_hop_router_id} -> {actual_gateway}")
+                    else:
+                        # Fallback: if next_hop looks like an interface IP already (same subnet), use it
+                        # This handles edge cases where the path goes through the router itself
+                        self.logger.warning(f"Cannot resolve next-hop router ID {next_hop_router_id} "
+                                          f"to interface IP - neighbor not found")
+                        continue
+
+                    if actual_gateway and actual_gateway != self.source_ip:
+                        success = self.kernel_route_manager.install_route(
+                            prefix, actual_gateway, metric=cost, protocol="ospf"
                         )
+                        if not success:
+                            self.logger.warning(f"Failed to install route {prefix}: "
+                                              f"Error: Nexthop has invalid gateway.")
 
         except Exception as e:
             self.logger.error(f"SPF calculation error: {e}")
@@ -619,7 +1013,7 @@ class OSPFAgent:
         current_state = neighbor.get_state()
 
         # Process DBD
-        success, lsa_headers_needed, exchange_complete = self.adjacency_mgr.process_dbd(data, neighbor)
+        success, lsa_headers_needed, neighbor_dbd_complete = self.adjacency_mgr.process_dbd(data, neighbor)
 
         if not success:
             self.logger.warning(f"Failed to process DBD from {neighbor_id}")
@@ -631,11 +1025,14 @@ class OSPFAgent:
             self.logger.info(f"Added {len(lsa_headers_needed)} LSAs to request list for {neighbor_id}")
             self.logger.info(f"ls_request_list now has {len(neighbor.ls_request_list)} LSAs")
 
-        # CRITICAL FIX: Call exchange_done() AFTER populating ls_request_list
-        # This ensures the correct state transition (Exchange -> Loading if LSAs needed, or -> Full if not)
-        if exchange_complete:
-            self.logger.info(f"Calling exchange_done() for {neighbor_id}, ls_request_list size={len(neighbor.ls_request_list)}")
-            neighbor.exchange_done()
+        # Track neighbor's DBD completion (M=0 received)
+        if neighbor_dbd_complete:
+            neighbor.mark_neighbor_dbd_complete()
+            self.logger.info(f"Received final DBD from {neighbor_id} (M=0)")
+            # Check if exchange is complete (both sides finished)
+            if neighbor.is_exchange_complete():
+                self.logger.info(f"Exchange complete with {neighbor_id}, transitioning state")
+                neighbor.exchange_done()
 
         # Handle state transitions
         new_state = neighbor.get_state()
@@ -644,8 +1041,18 @@ class OSPFAgent:
                            f"{STATE_NAMES[current_state]} → {STATE_NAMES[new_state]}")
 
             if new_state == STATE_EXCHANGE:
-                # Start sending our DBD packets
-                await self._send_dbd(neighbor)
+                # Transitioning from ExStart to Exchange
+                # If we're slave, we need to send a slave acknowledgment DBD first
+                if current_state == STATE_EXSTART and not neighbor.is_master:
+                    # Send slave acknowledgment DBD (empty, with M=1)
+                    self.logger.info(f"Sending slave ack DBD to {neighbor_id}")
+                    slave_ack = self.adjacency_mgr.build_slave_ack_dbd_packet(
+                        neighbor, self.area_id
+                    )
+                    self.socket.send(slave_ack, dest=neighbor.ip_address)
+                else:
+                    # Start sending our DBD packets (with LSA headers)
+                    await self._send_dbd(neighbor)
 
             elif new_state == STATE_LOADING:
                 # Start requesting LSAs
@@ -659,12 +1066,27 @@ class OSPFAgent:
 
         # Continue exchanging DBD packets if still in Exchange state
         elif new_state == STATE_EXCHANGE:
-            # Check if we still have more LSA headers to send
-            if hasattr(neighbor, 'db_summary_list') and len(neighbor.db_summary_list) > 0:
-                # We have more LSAs to send, continue exchange
-                self.logger.debug(f"Continuing DBD exchange with {neighbor_id}, "
-                                f"{len(neighbor.db_summary_list)} headers remaining")
-                await self._send_dbd(neighbor)
+            # In Exchange state, we must respond to each received DBD
+            # This is the request/response nature of OSPF DBD exchange
+            await self._send_dbd(neighbor)
+
+            # CRITICAL: _send_dbd() may call exchange_done() which transitions to Loading
+            # We need to check if state changed and send LSR if needed
+            post_dbd_state = neighbor.get_state()
+            if post_dbd_state == STATE_LOADING:
+                self.logger.info(f"Transitioned to Loading after sending final DBD")
+                await self._send_lsr(neighbor)
+            elif post_dbd_state == STATE_FULL:
+                self.logger.info(f"✓ Adjacency FULL with {neighbor_id} (direct from Exchange)")
+                self._generate_router_lsa()
+                await self._flood_our_lsas_to_all_neighbors()
+                await self._run_spf()
+
+        # Handle duplicate DBD in Loading/Full (retransmission from master)
+        elif new_state in (STATE_LOADING, STATE_FULL) and success:
+            # We're slave and received a duplicate DBD - respond to acknowledge
+            self.logger.info(f"Responding to duplicate DBD from {neighbor_id}")
+            await self._send_dbd(neighbor)
 
     async def _process_lsr(self, data: bytes, neighbor_id: str):
         """
@@ -701,6 +1123,7 @@ class OSPFAgent:
             return
 
         neighbor = self.neighbors[neighbor_id]
+        state_before_lsu = neighbor.get_state()
 
         # Process LSU - returns (success, ack_packet, updated_lsas)
         success, ack_packet, updated_lsas = self.flooding_mgr.process_ls_update(data, neighbor)
@@ -711,10 +1134,26 @@ class OSPFAgent:
                 self.socket.send(ack_packet, dest=neighbor.ip_address)
                 self.logger.debug(f"Sent LSAck to {neighbor_id}")
 
-            # Flood new LSAs to other neighbors (RFC 2328 Section 13.3)
-            if updated_lsas:
-                self.logger.info(f"Flooding {len(updated_lsas)} LSAs to other neighbors")
-                for lsa in updated_lsas:
+            # Separate self-originated LSAs from others (RFC 2328 Section 13.4)
+            self_originated_lsas = []
+            external_lsas = []
+            for lsa in updated_lsas:
+                if lsa.header.advertising_router == self.router_id:
+                    self_originated_lsas.append(lsa)
+                else:
+                    external_lsas.append(lsa)
+
+            # Handle self-originated LSAs specially - re-originate with higher seq
+            if self_originated_lsas:
+                self.logger.info(f"Received {len(self_originated_lsas)} self-originated LSAs - re-originating")
+                # Our own LSA came back with potentially higher seq, regenerate
+                self._generate_router_lsa()
+                await self._flood_our_lsas_to_all_neighbors()
+
+            # Flood external LSAs to other neighbors (RFC 2328 Section 13.3)
+            if external_lsas:
+                self.logger.info(f"Flooding {len(external_lsas)} external LSAs to other neighbors")
+                for lsa in external_lsas:
                     # Get all neighbors as list
                     neighbor_list = list(self.neighbors.values())
 
@@ -728,12 +1167,15 @@ class OSPFAgent:
                         self.socket.send(lsu_packet, dest=target_neighbor.ip_address)
                         self.logger.debug(f"Flooded LSA to {target_neighbor.router_id}")
 
-                # Run SPF after topology changes
+            # Run SPF if any LSAs were updated
+            if updated_lsas:
                 await self._run_spf()
 
-            # Check if loading is complete
-            if neighbor.get_state() == STATE_FULL:
-                self.logger.info(f"✓ Adjacency FULL with {neighbor_id}")
+            # Only regenerate Router LSA if state TRANSITIONED to Full
+            # (not on every LSU when already Full - that causes flooding loop)
+            state_after_lsu = neighbor.get_state()
+            if state_after_lsu == STATE_FULL and state_before_lsu != STATE_FULL:
+                self.logger.info(f"✓ Adjacency TRANSITIONED to FULL with {neighbor_id}")
                 self._generate_router_lsa()
                 await self._flood_our_lsas_to_all_neighbors()
                 await self._run_spf()
@@ -803,6 +1245,15 @@ class OSPFAgent:
         self.logger.debug(f"Sent DBD to {neighbor.router_id} "
                         f"(headers: {len(lsa_headers)}, more: {has_more})")
 
+        # Track our DBD completion
+        if not has_more:
+            neighbor.mark_our_dbd_complete()
+            self.logger.info(f"Sent final DBD to {neighbor.router_id} (M=0)")
+            # Check if exchange is complete (both sides finished)
+            if neighbor.is_exchange_complete():
+                self.logger.info(f"Exchange complete with {neighbor.router_id}, transitioning state")
+                neighbor.exchange_done()
+
     async def _send_lsr(self, neighbor: OSPFNeighbor):
         """
         Send Link State Request to neighbor
@@ -810,6 +1261,12 @@ class OSPFAgent:
         Args:
             neighbor: Target neighbor
         """
+        # If no LSAs to request, transition directly to Full
+        if not neighbor.ls_request_list:
+            self.logger.info(f"No LSAs to request from {neighbor.router_id}, transitioning to Full")
+            neighbor.loading_done()
+            return
+
         # Build LSR packet
         lsr_packet = self.flooding_mgr.build_ls_request(neighbor, self.area_id)
 
@@ -852,6 +1309,76 @@ def setup_logging(log_level: str = "INFO"):
     )
 
 
+async def run_server_only(args: argparse.Namespace):
+    """
+    Run only the WebUI server for wizard/monitor functionality.
+    No routing protocols are started.
+
+    Args:
+        args: Parsed command-line arguments
+    """
+    import webbrowser
+    import threading
+
+    logger = logging.getLogger("ServerOnly")
+
+    # Determine display host (use localhost if binding to 0.0.0.0)
+    display_host = "localhost" if args.webui_host == "0.0.0.0" else args.webui_host
+    wizard_url = f"http://{display_host}:{args.webui_port}/wizard"
+
+    logger.info("=" * 60)
+    logger.info("  Won't You Be My Neighbor - Network Builder")
+    logger.info("=" * 60)
+    logger.info(f"  Builder: {wizard_url}")
+    logger.info(f"  Monitor: http://{display_host}:{args.webui_port}/monitor")
+    logger.info(f"  3D Topology: http://{display_host}:{args.webui_port}/topology3d")
+    logger.info("")
+    logger.info("  After building, agents will run on ports 8801, 8802, 8803...")
+    logger.info("=" * 60)
+
+    # Create minimal app instance (no routing)
+    asi_app = WontYouBeMyNeighbor()
+    asi_app.router_id = "0.0.0.0"  # Placeholder
+    asi_app.running = True
+    asi_app.load_config_from_env()  # Load interfaces from orchestrator config
+
+    try:
+        from webui.server import create_webui_server
+        import uvicorn
+
+        webui_app = create_webui_server(asi_app, None)
+
+        webui_config = uvicorn.Config(
+            webui_app,
+            host=args.webui_host,
+            port=args.webui_port,
+            log_level="info"
+        )
+        webui_server = uvicorn.Server(webui_config)
+
+        # Auto-launch browser after short delay (unless disabled)
+        if not getattr(args, 'no_browser', False):
+            def open_browser():
+                import time
+                time.sleep(1.5)  # Wait for server to start
+                webbrowser.open(wizard_url)
+                logger.info(f"Opened browser to {wizard_url}")
+
+            browser_thread = threading.Thread(target=open_browser, daemon=True)
+            browser_thread.start()
+
+        # Run until interrupted
+        await webui_server.serve()
+
+    except ImportError as e:
+        logger.error(f"Web UI dependencies not available: {e}")
+        logger.error("Install with: pip install uvicorn fastapi")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+        sys.exit(1)
+
+
 async def run_unified_agent(args: argparse.Namespace):
     """
     Run OSPF, BGP, or both based on command-line arguments
@@ -860,6 +1387,11 @@ async def run_unified_agent(args: argparse.Namespace):
         args: Parsed command-line arguments
     """
     logger = logging.getLogger("UnifiedAgent")
+
+    # Create main application instance
+    asi_app = WontYouBeMyNeighbor()
+    asi_app.router_id = args.router_id
+    asi_app.load_config_from_env()  # Load interfaces from orchestrator config
 
     ospf_agent = None
     ospfv3_speaker = None
@@ -888,6 +1420,7 @@ async def run_unified_agent(args: argparse.Namespace):
 
     agent_type = "+".join(protocols) + " Agent"
 
+    # Standard mode
     logger.info(f"Starting Won't You Be My Neighbor - {agent_type} - Router ID: {args.router_id}")
     if run_ospf:
         logger.info(f"  OSPFv2: Enabled (Area {args.area}, Interface {args.interface})")
@@ -930,6 +1463,8 @@ async def run_unified_agent(args: argparse.Namespace):
                 unicast_peer=args.unicast_peer,
                 kernel_route_manager=kernel_route_manager
             )
+            asi_app.set_ospf(ospf_agent)
+            asi_app.area_id = args.area
             tasks.append(asyncio.create_task(ospf_agent.start()))
 
         # Initialize OSPFv3 if requested
@@ -966,8 +1501,8 @@ async def run_unified_agent(args: argparse.Namespace):
                             if addr.startswith('fe80:'):
                                 link_local = addr
                                 break
-                except:
-                    pass
+                except (ValueError, KeyError, OSError) as e:
+                    logger.debug(f"Failed to get interface addresses for {args.ospfv3_interface}: {e}")
 
                 if not link_local:
                     logger.error(f"Could not find link-local address for {args.ospfv3_interface}. "
@@ -993,6 +1528,7 @@ async def run_unified_agent(args: argparse.Namespace):
             )
 
             # Start OSPFv3 speaker
+            asi_app.set_ospfv3(ospfv3_speaker)
             tasks.append(asyncio.create_task(ospfv3_speaker.start()))
 
         # Get local IP from interface if available (for BGP next-hop)
@@ -1080,6 +1616,7 @@ async def run_unified_agent(args: argparse.Namespace):
                     logger.warning(f"  ⚠ No ROAs loaded from {args.bgp_rpki_roa_file}")
 
             # Start BGP speaker
+            asi_app.set_bgp(bgp_speaker)
             await bgp_speaker.start()
 
             # Originate local networks if specified
@@ -1094,61 +1631,172 @@ async def run_unified_agent(args: argparse.Namespace):
             # Add BGP monitoring task
             tasks.append(asyncio.create_task(monitor_bgp(bgp_speaker, args.bgp_stats_interval)))
 
-        # Initialize Agentic LLM Interface if requested
+        # Start Route Redistribution if multiple protocols are running
+        redistributor = None
+        protocol_count = sum([
+            1 if ospf_agent else 0,
+            1 if bgp_speaker else 0,
+            # Add IS-IS speaker here when implemented in main agent
+        ])
+
+        if protocol_count >= 2:
+            logger.info(f"Multiple protocols enabled ({protocol_count}) - starting route redistribution...")
+            redistributor = RouteRedistributor(
+                router_id=args.router_id,
+                local_ip=local_bgp_ip or args.router_id,
+                ospf_agent=ospf_agent,
+                bgp_speaker=bgp_speaker,
+                isis_speaker=None,  # Will be set when IS-IS is integrated into main agent
+                static_routes=[]    # Can be populated from config
+            )
+            tasks.append(asyncio.create_task(redistributor.start()))
+
+            protocols = []
+            if ospf_agent:
+                protocols.append("OSPF")
+            if bgp_speaker:
+                protocols.append("BGP")
+            logger.info(f"✓ Route redistribution enabled ({' ↔ '.join(protocols)})")
+
+        # Initialize Agentic Bridge (for Web UI or API)
+        # Import agentic modules
+        from agentic.integration.bridge import AgenticBridge
+        from agentic.integration.ospf_connector import OSPFConnector
+        from agentic.integration.bgp_connector import BGPConnector
+
+        # Get API keys from args or environment
+        import os
+        openai_key = args.openai_key or os.environ.get('OPENAI_API_KEY')
+        claude_key = args.claude_key or os.environ.get('ANTHROPIC_API_KEY')
+        gemini_key = args.gemini_key or os.environ.get('GOOGLE_API_KEY')
+
+        logger.info("Initializing Agentic Interface...")
+
+        # Check if at least one LLM API key is provided
+        if not openai_key and not claude_key and not gemini_key:
+            logger.warning("No LLM API keys provided. ASI will work but won't have AI responses. "
+                         "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GOOGLE_API_KEY environment variables "
+                         "or use --openai-key, --claude-key, or --gemini-key flags.")
+
+        # Determine ASI ID
+        asi_id = args.asi_id if args.asi_id else f"asi-{args.router_id.replace('.', '-')}"
+
+        # Create agentic bridge
+        bridge = AgenticBridge(
+            asi_id=asi_id,
+            openai_key=openai_key,
+            claude_key=claude_key,
+            gemini_key=gemini_key,
+            autonomous_mode=args.autonomous_mode
+        )
+
+        # Pass full agent config to bridge for LLM visibility
+        if asi_app.config:
+            bridge.set_agent_config(asi_app.config)
+            logger.info(f"✓ Passed agent config to agentic bridge ({len(asi_app.interfaces)} interfaces)")
+
+        # Connect OSPF if available
+        if ospf_agent:
+            connector = OSPFConnector(ospf_agent)
+            bridge.set_ospf_connector(connector)
+            logger.info(f"✓ Connected OSPF agent to agentic interface")
+
+        # Connect OSPFv3 if available
+        if ospfv3_speaker:
+            # Note: OSPFv3 connector would need to be implemented
+            logger.info(f"  OSPFv3 connector not yet implemented for agentic interface")
+
+        # Connect BGP if available
+        if bgp_speaker:
+            connector = BGPConnector(bgp_speaker)
+            bridge.set_bgp_connector(connector)
+            logger.info(f"✓ Connected BGP speaker to agentic interface")
+
+        # Initialize bridge
+        await bridge.initialize()
+        await bridge.start()
+
+        # Store bridge reference
+        agentic_bridge = bridge
+        asi_app.set_agentic_bridge(bridge)
+
+        # Initialize IPv6 Neighbor Discovery for ASI Overlay (Layer 2: Agent Mesh)
+        nd_protocol = None
+        ipv6_overlay = os.environ.get('ASI_OVERLAY_IPV6')
+        nd_enabled = os.environ.get('ASI_OVERLAY_ND_ENABLED', 'true').lower() == 'true'
+
+        if ipv6_overlay and nd_enabled:
+            try:
+                from agentic.discovery.neighbor_discovery import (
+                    start_neighbor_discovery,
+                    stop_neighbor_discovery,
+                    get_neighbor_discovery
+                )
+
+                logger.info(f"Initializing IPv6 Neighbor Discovery...")
+                logger.info(f"  Overlay IPv6: {ipv6_overlay}")
+
+                # Configure IPv6 overlay address on a dummy interface for actual connectivity
+                try:
+                    import subprocess
+                    ipv6_addr = ipv6_overlay.split('/')[0]
+                    prefix_len = ipv6_overlay.split('/')[1] if '/' in ipv6_overlay else '64'
+
+                    # Create dummy interface for ASI overlay
+                    subprocess.run(['ip', 'link', 'add', 'asi0', 'type', 'dummy'],
+                                   capture_output=True, check=False)
+                    subprocess.run(['ip', 'link', 'set', 'asi0', 'up'],
+                                   capture_output=True, check=False)
+                    subprocess.run(['ip', '-6', 'addr', 'add', f'{ipv6_addr}/{prefix_len}', 'dev', 'asi0'],
+                                   capture_output=True, check=False)
+
+                    # Add route to the ASI overlay network via eth0 (Docker network)
+                    # This enables IPv6 connectivity to other agents in the same Docker network
+                    overlay_prefix = ':'.join(ipv6_addr.split(':')[:4]) + '::/64'
+                    subprocess.run(['ip', '-6', 'route', 'add', overlay_prefix, 'dev', 'eth0'],
+                                   capture_output=True, check=False)
+
+                    logger.info(f"  ✓ Configured asi0 interface with {ipv6_addr}/{prefix_len}")
+                    logger.info(f"  ✓ Added route for {overlay_prefix} via eth0")
+                except Exception as e:
+                    logger.warning(f"  Could not configure IPv6 overlay interface: {e}")
+
+                agent_id = os.environ.get('ASI_AGENT_ID', asi_id)
+                agent_name = os.environ.get('ASI_AGENT_NAME', f"agent-{args.router_id}")
+
+                nd_protocol = await start_neighbor_discovery(
+                    local_ipv6=ipv6_overlay,
+                    agent_id=agent_id,
+                    agent_name=agent_name,
+                    router_id=args.router_id
+                )
+
+                # Add listener for neighbor discovery events
+                def nd_event_handler(event: str, neighbor):
+                    if event == "neighbor_discovered":
+                        logger.info(f"ND: Discovered neighbor {neighbor.agent_name or neighbor.ipv6_address}")
+                    elif event == "neighbor_removed":
+                        logger.info(f"ND: Lost neighbor {neighbor.agent_name or neighbor.ipv6_address}")
+
+                nd_protocol.add_listener(nd_event_handler)
+
+                logger.info(f"✓ IPv6 Neighbor Discovery started on ASI overlay")
+            except ImportError as e:
+                logger.warning(f"Neighbor Discovery module not available: {e}")
+            except Exception as e:
+                logger.warning(f"Could not start Neighbor Discovery: {e}")
+        elif ipv6_overlay and not nd_enabled:
+            logger.info(f"IPv6 Overlay configured ({ipv6_overlay}) but ND disabled")
+
+        # Start REST API server if requested (optional, separate from Web UI)
         if args.agentic_api:
-            logger.info("Initializing Agentic LLM Interface...")
-
-            # Check if at least one LLM API key is provided
-            if not args.openai_key and not args.claude_key and not args.gemini_key:
-                logger.warning("Agentic interface enabled but no LLM API keys provided. "
-                             "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GOOGLE_API_KEY environment variables "
-                             "or use --openai-key, --claude-key, or --gemini-key flags.")
-
-            # Import agentic modules
-            from agentic.integration.bridge import AgenticBridge
-            from agentic.integration.ospf_connector import OSPFConnector
-            from agentic.integration.bgp_connector import BGPConnector
             from agentic.api.server import create_api_server
-
             try:
                 import uvicorn
             except ImportError:
                 logger.error("uvicorn not installed. Install with: pip install uvicorn")
-                logger.error("Agentic interface requires uvicorn to run the API server")
+                logger.error("API server requires uvicorn")
                 raise
-
-            # Determine Ralph ID
-            ralph_id = args.ralph_id if args.ralph_id else f"ralph-{args.router_id.replace('.', '-')}"
-
-            # Create agentic bridge
-            bridge = AgenticBridge(
-                ralph_id=ralph_id,
-                openai_key=args.openai_key,
-                claude_key=args.claude_key,
-                gemini_key=args.gemini_key,
-                autonomous_mode=args.autonomous_mode
-            )
-
-            # Connect OSPF if available
-            if ospf_agent:
-                connector = OSPFConnector(ospf_agent)
-                bridge.set_ospf_connector(connector)
-                logger.info(f"✓ Connected OSPF agent to agentic interface")
-
-            # Connect OSPFv3 if available
-            if ospfv3_speaker:
-                # Note: OSPFv3 connector would need to be implemented
-                logger.info(f"  OSPFv3 connector not yet implemented for agentic interface")
-
-            # Connect BGP if available
-            if bgp_speaker:
-                connector = BGPConnector(bgp_speaker)
-                bridge.set_bgp_connector(connector)
-                logger.info(f"✓ Connected BGP speaker to agentic interface")
-
-            # Initialize bridge
-            await bridge.initialize()
-            await bridge.start()
 
             # Create API server
             api, server_config = create_api_server(
@@ -1159,18 +1807,45 @@ async def run_unified_agent(args: argparse.Namespace):
 
             # Store for cleanup
             agentic_api_server = api
-            agentic_bridge = bridge
 
             # Start API server as background task
             config = uvicorn.Config(**server_config)
             server = uvicorn.Server(config)
             tasks.append(asyncio.create_task(server.serve()))
 
-            logger.info(f"✓ Agentic LLM Interface API started at http://{args.agentic_api_host}:{args.agentic_api_port}")
+            logger.info(f"✓ REST API started at http://{args.agentic_api_host}:{args.agentic_api_port}")
             logger.info(f"  Documentation: http://{args.agentic_api_host}:{args.agentic_api_port}/docs")
-            logger.info(f"  Ralph ID: {ralph_id}")
-            if args.autonomous_mode:
-                logger.warning(f"  ⚠ AUTONOMOUS MODE ENABLED - Actions may execute without approval")
+
+        logger.info(f"  ASI ID: {asi_id}")
+        if args.autonomous_mode:
+            logger.warning(f"  ⚠ AUTONOMOUS MODE ENABLED - Actions may execute without approval")
+
+        # Start Web UI if enabled
+        webui_server = None
+        if args.webui:
+            try:
+                from webui.server import create_webui_server
+                import uvicorn
+
+                # Create Web UI server with access to asi_app and bridge
+                webui_app = create_webui_server(asi_app, bridge)
+
+                # Start Web UI server as background task
+                webui_config = uvicorn.Config(
+                    webui_app,
+                    host=args.webui_host,
+                    port=args.webui_port,
+                    log_level="warning"
+                )
+                webui_server = uvicorn.Server(webui_config)
+                tasks.append(asyncio.create_task(webui_server.serve()))
+
+                logger.info(f"✓ Web Dashboard started at http://{args.webui_host}:{args.webui_port}")
+
+            except ImportError as e:
+                logger.warning(f"Web UI not available ({e}). Install with: pip install uvicorn")
+            except Exception as e:
+                logger.warning(f"Could not start Web UI: {e}")
 
         # Setup signal handlers for graceful shutdown
         loop = asyncio.get_event_loop()
@@ -1195,6 +1870,10 @@ async def run_unified_agent(args: argparse.Namespace):
         raise
     finally:
         # Cleanup
+        if redistributor:
+            logger.info("Stopping route redistribution...")
+            await redistributor.stop()
+
         if ospfv3_speaker:
             logger.info("Stopping OSPFv3 speaker...")
             await ospfv3_speaker.stop()
@@ -1210,6 +1889,15 @@ async def run_unified_agent(args: argparse.Namespace):
         if agentic_bridge:
             logger.info("Stopping Agentic bridge...")
             await agentic_bridge.stop()
+
+        # Stop Neighbor Discovery if running
+        if nd_protocol:
+            logger.info("Stopping Neighbor Discovery...")
+            try:
+                from agentic.discovery.neighbor_discovery import stop_neighbor_discovery
+                await stop_neighbor_discovery()
+            except Exception as e:
+                logger.warning(f"Error stopping ND: {e}")
 
         logger.info("Shutdown complete")
 
@@ -1338,8 +2026,12 @@ Notes:
         """
     )
 
+    # Server-only mode (just WebUI wizard/monitor, no routing)
+    parser.add_argument("--server-only", action="store_true",
+                       help="Run only the WebUI server (wizard/monitor) without routing protocols")
+
     # Common arguments
-    parser.add_argument("--router-id", required=True,
+    parser.add_argument("--router-id", required=False, default=None,
                        help="Router ID in IPv4 format (e.g., 10.255.255.99)")
     parser.add_argument("--log-level", default="INFO",
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
@@ -1436,6 +2128,77 @@ Notes:
     bgp_group.add_argument("--bgp-enable-flowspec", action="store_true",
                        help="Enable BGP FlowSpec for traffic filtering (RFC 5575)")
 
+    # IS-IS Protocol arguments
+    isis_group = parser.add_argument_group('IS-IS Options')
+    isis_group.add_argument("--isis-system-id", default=None,
+                       help="IS-IS System ID in format AABB.CCDD.EEFF (e.g., 0000.0000.0001)")
+    isis_group.add_argument("--isis-area", dest="isis_areas", action="append",
+                       help="IS-IS Area address (e.g., 49.0001) - can be specified multiple times")
+    isis_group.add_argument("--isis-level", type=int, choices=[1, 2, 3], default=3,
+                       help="IS-IS Level: 1 (L1), 2 (L2), or 3 (L1/L2) (default: 3)")
+    isis_group.add_argument("--isis-interface", dest="isis_interfaces", action="append",
+                       help="Enable IS-IS on interface (can be specified multiple times)")
+    isis_group.add_argument("--isis-metric", type=int, default=10,
+                       help="IS-IS Default metric (default: 10)")
+    isis_group.add_argument("--isis-hello-interval", type=int, default=10,
+                       help="IS-IS Hello interval in seconds (default: 10)")
+    isis_group.add_argument("--isis-network", dest="isis_networks", action="append",
+                       help="IS-IS Network to advertise (can be specified multiple times)")
+
+    # MPLS/LDP Protocol arguments
+    mpls_group = parser.add_argument_group('MPLS/LDP Options')
+    mpls_group.add_argument("--mpls-router-id", default=None,
+                       help="MPLS Router ID (default: uses main router-id)")
+    mpls_group.add_argument("--ldp-interface", dest="ldp_interfaces", action="append",
+                       help="Enable LDP on interface (can be specified multiple times)")
+    mpls_group.add_argument("--ldp-neighbor", dest="ldp_neighbors", action="append",
+                       help="LDP neighbor IP (can be specified multiple times)")
+    mpls_group.add_argument("--mpls-label-range-start", type=int, default=16,
+                       help="MPLS label range start (default: 16)")
+    mpls_group.add_argument("--mpls-label-range-end", type=int, default=1048575,
+                       help="MPLS label range end (default: 1048575)")
+
+    # VXLAN/EVPN Protocol arguments
+    vxlan_group = parser.add_argument_group('VXLAN/EVPN Options')
+    vxlan_group.add_argument("--vtep-ip", default=None,
+                       help="VXLAN VTEP source IP address")
+    vxlan_group.add_argument("--vxlan-vni", dest="vxlan_vnis", type=int, action="append",
+                       help="VXLAN VNI to configure (can be specified multiple times)")
+    vxlan_group.add_argument("--vxlan-remote-vtep", dest="vxlan_remote_vteps", action="append",
+                       help="Remote VTEP IP address (can be specified multiple times)")
+    vxlan_group.add_argument("--vxlan-port", type=int, default=4789,
+                       help="VXLAN UDP port (default: 4789)")
+    vxlan_group.add_argument("--evpn-rd", default=None,
+                       help="EVPN Route Distinguisher (e.g., 1:1)")
+    vxlan_group.add_argument("--evpn-rt", dest="evpn_rts", action="append",
+                       help="EVPN Route Target (can be specified multiple times)")
+
+    # DHCP Server arguments
+    dhcp_group = parser.add_argument_group('DHCP Server Options')
+    dhcp_group.add_argument("--dhcp-server", action="store_true",
+                       help="Enable DHCP server")
+    dhcp_group.add_argument("--dhcp-pool", dest="dhcp_pools", action="append",
+                       help="DHCP pool in format: name,start_ip,end_ip,subnet (e.g., pool1,10.0.0.100,10.0.0.200,10.0.0.0/24)")
+    dhcp_group.add_argument("--dhcp-gateway", default=None,
+                       help="DHCP default gateway option")
+    dhcp_group.add_argument("--dhcp-dns", dest="dhcp_dns_servers", action="append",
+                       help="DHCP DNS server option (can be specified multiple times)")
+    dhcp_group.add_argument("--dhcp-lease-time", type=int, default=86400,
+                       help="DHCP lease time in seconds (default: 86400 = 1 day)")
+
+    # DNS Server arguments
+    dns_group = parser.add_argument_group('DNS Server Options')
+    dns_group.add_argument("--dns-server", action="store_true",
+                       help="Enable DNS server")
+    dns_group.add_argument("--dns-zone", dest="dns_zones", action="append",
+                       help="DNS zone to serve (e.g., example.com)")
+    dns_group.add_argument("--dns-record", dest="dns_records", action="append",
+                       help="DNS record in format: name,type,value (e.g., www,A,10.0.0.1)")
+    dns_group.add_argument("--dns-forwarder", dest="dns_forwarders", action="append",
+                       help="DNS forwarder address (can be specified multiple times)")
+    dns_group.add_argument("--dns-port", type=int, default=53,
+                       help="DNS server port (default: 53)")
+
     # Agentic LLM Interface arguments
     agentic_group = parser.add_argument_group('Agentic LLM Interface Options')
     agentic_group.add_argument("--agentic-api", action="store_true",
@@ -1452,15 +2215,60 @@ Notes:
                        help="Google Gemini API key for agentic interface")
     agentic_group.add_argument("--autonomous-mode", action="store_true",
                        help="Enable autonomous mode for agentic interface (dangerous actions without approval)")
-    agentic_group.add_argument("--ralph-id", default=None,
-                       help="Ralph instance ID for agentic interface (default: based on router-id)")
+    agentic_group.add_argument("--asi-id", default=None,
+                       help="ASI instance ID for agentic interface (default: based on router-id)")
+
+    # Web UI arguments
+    webui_group = parser.add_argument_group('Web UI Options')
+    webui_group.add_argument("--webui", action="store_true", default=True,
+                       help="Enable Web Dashboard UI (default: enabled)")
+    webui_group.add_argument("--webui-host", default="0.0.0.0",
+                       help="Web UI host to bind to (default: 0.0.0.0)")
+    webui_group.add_argument("--webui-port", type=int, default=8000,
+                       help="Web UI port for builder (default: 8000)")
+    webui_group.add_argument("--no-webui", action="store_true",
+                       help="Disable Web UI")
+    webui_group.add_argument("--no-browser", action="store_true",
+                       help="Don't auto-launch browser on startup")
 
     args = parser.parse_args()
+
+    # Handle Web UI flag logic
+    if args.no_webui:
+        args.webui = False
 
     # Setup logging
     setup_logging(args.log_level)
 
-    # Validate configuration
+    # Determine if we should run in builder mode (default) or routing mode
+    # Builder mode: no router-id specified, just launch the wizard
+    # Routing mode: router-id and protocols specified (for containers)
+    has_routing_config = (
+        args.router_id is not None or
+        args.interface is not None or
+        args.bgp_local_as is not None or
+        args.ospfv3_interface is not None
+    )
+
+    # Server-only/builder mode - default if no routing config provided
+    if args.server_only or not has_routing_config:
+        args.webui = True
+        try:
+            asyncio.run(run_server_only(args))
+        except KeyboardInterrupt:
+            print("\nShutting down...")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Fatal error: {e}")
+            sys.exit(1)
+        return
+
+    # Validate configuration for routing mode (container/agent mode)
+    if not args.router_id:
+        print("Error: --router-id is required for routing mode")
+        parser.print_help()
+        sys.exit(1)
+
     if not args.interface and not args.bgp_local_as and not args.ospfv3_interface:
         print("Error: Must specify either OSPFv2 (--interface), OSPFv3 (--ospfv3-interface), or BGP (--bgp-local-as) configuration")
         parser.print_help()

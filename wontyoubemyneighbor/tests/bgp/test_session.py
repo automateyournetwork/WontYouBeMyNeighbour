@@ -102,11 +102,14 @@ class TestBGPSession(unittest.TestCase):
         """Test capability configuration"""
         self.session._configure_capabilities()
 
-        # Should have 4-byte AS, route refresh, and multiprotocol
+        # Should have 4-byte AS and route refresh in local_capabilities dict
         local_caps = self.session.capabilities.local_capabilities
         self.assertIn(CAP_FOUR_OCTET_AS, local_caps)
         self.assertIn(CAP_ROUTE_REFRESH, local_caps)
-        self.assertIn(CAP_MULTIPROTOCOL, local_caps)
+
+        # Multiprotocol capabilities are stored separately as (AFI, SAFI) tuples
+        mp_caps = self.session.capabilities.multiprotocol_capabilities
+        self.assertIn((AFI_IPV4, SAFI_UNICAST), mp_caps)
 
     def test_is_established(self):
         """Test is_established check"""
@@ -130,11 +133,12 @@ class TestBGPSession(unittest.TestCase):
 
     def test_build_route_from_update(self):
         """Test building BGPRoute from UPDATE message"""
-        attributes = [
-            OriginAttribute(ORIGIN_IGP),
-            ASPathAttribute([(AS_SEQUENCE, [65002, 65003])]),
-            NextHopAttribute("192.0.2.2")
-        ]
+        # _build_route_from_update expects a dict of {type_code: attribute_object}
+        attributes = {
+            ATTR_ORIGIN: OriginAttribute(ORIGIN_IGP),
+            ATTR_AS_PATH: ASPathAttribute([(AS_SEQUENCE, [65002, 65003])]),
+            ATTR_NEXT_HOP: NextHopAttribute("192.0.2.2")
+        }
 
         route = self.session._build_route_from_update("203.0.113.0/24", attributes)
 
@@ -142,9 +146,9 @@ class TestBGPSession(unittest.TestCase):
         self.assertEqual(route.prefix, "203.0.113.0/24")
         self.assertEqual(route.prefix_len, 24)
         self.assertEqual(route.peer_id, self.session.peer_id)
-        self.assertTrue(route.has_attribute(ATTR_ORIGIN))
-        self.assertTrue(route.has_attribute(ATTR_AS_PATH))
-        self.assertTrue(route.has_attribute(ATTR_NEXT_HOP))
+        self.assertIn(ATTR_ORIGIN, route.path_attributes)
+        self.assertIn(ATTR_AS_PATH, route.path_attributes)
+        self.assertIn(ATTR_NEXT_HOP, route.path_attributes)
 
 
 class TestBGPAgent(unittest.TestCase):

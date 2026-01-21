@@ -1,0 +1,11 @@
+{
+  "links": [
+    {"id": "hub-link", "a1": "hub-1", "i1": "eth1", "a2": "hub-2", "i2": "eth1", "t": "ethernet", "c": 1, "subnet": "172.16.1.0/30", "description": "Hub Interconnect"},
+    {"id": "hub1-spoke1", "a1": "hub-1", "i1": "tun1", "a2": "spoke-1", "i2": "tun1", "t": "gre", "c": 10, "subnet": "192.168.1.0/30", "description": "Hub-1 to Spoke-1 (Primary)"},
+    {"id": "hub1-spoke2", "a1": "hub-1", "i1": "tun2", "a2": "spoke-2", "i2": "tun1", "t": "gre", "c": 10, "subnet": "192.168.2.0/30", "description": "Hub-1 to Spoke-2 (Primary)"},
+    {"id": "hub1-spoke3", "a1": "hub-1", "i1": "tun3", "a2": "spoke-3", "i2": "tun1", "t": "gre", "c": 10, "subnet": "192.168.3.0/30", "description": "Hub-1 to Spoke-3 (Primary)"},
+    {"id": "hub2-spoke1", "a1": "hub-2", "i1": "tun1", "a2": "spoke-1", "i2": "tun2", "t": "gre", "c": 20, "subnet": "192.168.11.0/30", "description": "Hub-2 to Spoke-1 (Backup)"},
+    {"id": "hub2-spoke2", "a1": "hub-2", "i1": "tun2", "a2": "spoke-2", "i2": "tun2", "t": "gre", "c": 20, "subnet": "192.168.12.0/30", "description": "Hub-2 to Spoke-2 (Backup)"},
+    {"id": "hub2-spoke3", "a1": "hub-2", "i1": "tun3", "a2": "spoke-3", "i2": "tun2", "t": "gre", "c": 20, "subnet": "192.168.13.0/30", "description": "Hub-2 to Spoke-3 (Backup)"}
+  ]
+}

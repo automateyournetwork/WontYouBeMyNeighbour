@@ -1,0 +1,14 @@
+{
+  "name": "Large Datacenter Fabric (Multi-Pod)",
+  "id": "large-datacenter-fabric",
+  "version": "1.0.0",
+  "description": "Hyperscale datacenter with super-spine layer connecting multiple pods, VXLAN/EVPN overlay",
+  "category": "hyperscale",
+  "tags": ["super-spine", "multi-pod", "vxlan", "evpn", "hyperscale", "datacenter"],
+  "agent_count": 10,
+  "link_count": 16,
+  "protocols": ["ebgp", "vxlan", "evpn"],
+  "use_cases": ["Hyperscale cloud", "Large enterprise datacenter", "Multi-tenant cloud", "Container platforms"],
+  "features": {"scale": "Multi-pod architecture for massive scale", "redundancy": "Full mesh at each layer", "isolation": "VXLAN VNIs per tenant"},
+  "requirements": {"min_agents": 8, "recommended_agents": 10, "mtu": 9000, "pods": 2}
+}

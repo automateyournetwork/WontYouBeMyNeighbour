@@ -28,12 +28,10 @@ class OSPFConnector:
         neighbors = []
         for neighbor in self.interface.neighbors.values():
             neighbors.append({
-                "neighbor_id": neighbor.neighbor_id,
-                "state": neighbor.state,
-                "address": neighbor.address,
-                "priority": neighbor.priority,
-                "dr": neighbor.dr,
-                "bdr": neighbor.bdr
+                "neighbor_id": neighbor.router_id,
+                "state": neighbor.get_state_name(),
+                "address": neighbor.ip_address,
+                "priority": neighbor.priority
             })
         return neighbors
 
@@ -76,7 +74,7 @@ class OSPFConnector:
     def get_interface_info(self):
         """Get OSPF interface information"""
         return {
-            "interface_name": self.interface.interface_name,
+            "interface_name": getattr(self.interface, "interface", ""),
             "router_id": self.interface.router_id,
             "area_id": getattr(self.interface, "area_id", "0.0.0.0"),
             "state": getattr(self.interface, "state", "Unknown"),

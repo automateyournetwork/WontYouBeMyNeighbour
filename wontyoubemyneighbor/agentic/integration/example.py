@@ -18,7 +18,7 @@ async def example_basic_queries():
 
     # Create agentic bridge
     bridge = AgenticBridge(
-        ralph_id="ralph-demo",
+        asi_id="asi-demo",
         autonomous_mode=False  # Require approval for actions
     )
 
@@ -37,7 +37,7 @@ async def example_basic_queries():
     print("\nExample queries:")
     for query in queries:
         print(f"\nUser: {query}")
-        print("Ralph: [Would process via LLM and return structured response]")
+        print("ASI: [Would process via LLM and return structured response]")
 
 
 async def example_with_ospf():
@@ -132,7 +132,7 @@ async def example_full_integration():
             self.rib = {}
 
     # Create agentic bridge
-    bridge = AgenticBridge(ralph_id="ralph-full-demo")
+    bridge = AgenticBridge(asi_id="asi-full-demo")
 
     # Create connectors
     ospf_conn = OSPFConnector(MockOSPFInterface())
@@ -147,7 +147,7 @@ async def example_full_integration():
     # Get statistics
     stats = bridge.get_statistics()
     print("\nBridge Statistics:")
-    print(f"  Ralph ID: {stats['ralph_id']}")
+    print(f"  ASI ID: {stats['asi_id']}")
     print(f"  LLM Turns: {stats['llm']['turns']}/{stats['llm']['max_turns']}")
     print(f"  State Snapshots: {stats['state']['snapshots']}")
     print(f"  Completed Actions: {stats['actions']['completed']}")
@@ -160,12 +160,12 @@ async def example_autonomous_decision():
     print("=" * 60)
 
     bridge = AgenticBridge(
-        ralph_id="ralph-auto",
+        asi_id="asi-auto",
         autonomous_mode=True  # Allow autonomous actions
     )
 
     print("\n✓ Autonomous mode enabled")
-    print("\nRalph can now make safe decisions autonomously:")
+    print("\nASI can now make safe decisions autonomously:")
     print("  ✓ Small metric adjustments")
     print("  ✓ Anomaly detection and alerting")
     print("  ✓ Route analytics and recommendations")
@@ -175,30 +175,30 @@ async def example_autonomous_decision():
     print("  ⚠ Graceful shutdown")
 
 
-async def example_multi_ralph():
-    """Example: Multiple Ralph instances with coordination"""
+async def example_multi_asi():
+    """Example: Multiple ASI instances with coordination"""
     print("\n" + "=" * 60)
-    print("Multi-Ralph Coordination Example")
+    print("Multi-ASI Coordination Example")
     print("=" * 60)
 
-    # Create three Ralph instances
-    ralph1 = AgenticBridge(ralph_id="ralph-1")
-    ralph2 = AgenticBridge(ralph_id="ralph-2")
-    ralph3 = AgenticBridge(ralph_id="ralph-3")
+    # Create three ASI instances
+    asi1 = AgenticBridge(asi_id="asi-1")
+    asi2 = AgenticBridge(asi_id="asi-2")
+    asi3 = AgenticBridge(asi_id="asi-3")
 
     # Register as gossip peers
-    ralph1.gossip.register_peer("ralph-2", "192.168.1.2")
-    ralph1.gossip.register_peer("ralph-3", "192.168.1.3")
+    asi1.gossip.register_peer("asi-2", "192.168.1.2")
+    asi1.gossip.register_peer("asi-3", "192.168.1.3")
 
-    ralph2.gossip.register_peer("ralph-1", "192.168.1.1")
-    ralph2.gossip.register_peer("ralph-3", "192.168.1.3")
+    asi2.gossip.register_peer("asi-1", "192.168.1.1")
+    asi2.gossip.register_peer("asi-3", "192.168.1.3")
 
-    ralph3.gossip.register_peer("ralph-1", "192.168.1.1")
-    ralph3.gossip.register_peer("ralph-2", "192.168.1.2")
+    asi3.gossip.register_peer("asi-1", "192.168.1.1")
+    asi3.gossip.register_peer("asi-2", "192.168.1.2")
 
-    print("\n✓ Three Ralph instances configured")
+    print("\n✓ Three ASI instances configured")
     print("✓ Gossip protocol mesh established")
-    print("\nRalphs can now:")
+    print("\nASIs can now:")
     print("  • Share network state via gossip")
     print("  • Coordinate decisions via consensus")
     print("  • Alert each other of anomalies")
@@ -212,7 +212,7 @@ async def main():
     await example_with_bgp()
     await example_full_integration()
     await example_autonomous_decision()
-    await example_multi_ralph()
+    await example_multi_asi()
 
     print("\n" + "=" * 60)
     print("Integration Examples Complete!")
@@ -221,7 +221,7 @@ async def main():
     print("  1. Configure LLM API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY)")
     print("  2. Connect to real OSPF/BGP instances")
     print("  3. Start the agentic bridge")
-    print("  4. Query Ralph via natural language!")
+    print("  4. Query ASI via natural language!")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ Implements Anthropic Claude API integration for wontyoubemyneighbor agentic laye
 
 from typing import List, Dict, Any, Optional
 import os
+import asyncio
 
 try:
     from anthropic import AsyncAnthropic
@@ -38,14 +39,20 @@ class ClaudeProvider(BaseLLMProvider):
 
         try:
             self.client = AsyncAnthropic(api_key=api_key)
-            # Test with simple completion
-            response = await self.client.messages.create(
-                model=self.model,
-                max_tokens=5,
-                messages=[{"role": "user", "content": "test"}]
+            # Test with simple completion (with 10 second timeout)
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=self.model,
+                    max_tokens=5,
+                    messages=[{"role": "user", "content": "test"}]
+                ),
+                timeout=10.0
             )
             self.available = True
             return True
+        except asyncio.TimeoutError:
+            print(f"[Claude] Initialization timed out (API key may be invalid)")
+            return False
         except Exception as e:
             print(f"[Claude] Initialization failed: {e}")
             return False
@@ -80,9 +87,14 @@ class ClaudeProvider(BaseLLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens
             )
+            # Safely access response content
+            if not response.content:
+                raise RuntimeError("Claude returned empty response")
             return response.content[0].text
-        except Exception as e:
+        except anthropic.APIError as e:
             raise RuntimeError(f"Claude API error: {e}")
+        except (IndexError, AttributeError) as e:
+            raise RuntimeError(f"Invalid Claude response format: {e}")
 
     def get_provider_name(self) -> str:
         """Get provider name for logging"""

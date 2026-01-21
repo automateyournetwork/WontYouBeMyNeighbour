@@ -7,6 +7,7 @@ Uses the new google.genai package (non-deprecated).
 
 from typing import List, Dict, Any, Optional
 import os
+import asyncio
 
 try:
     from google import genai
@@ -40,13 +41,21 @@ class GeminiProvider(BaseLLMProvider):
 
         try:
             self.client = genai.Client(api_key=api_key)
-            # Test with simple generation
-            response = self.client.models.generate_content(
-                model=self.model,
-                contents="test"
+            # Test with simple generation (with 10 second timeout)
+            # Gemini API is synchronous, so use to_thread
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.client.models.generate_content,
+                    model=self.model,
+                    contents="test"
+                ),
+                timeout=10.0
             )
             self.available = True
             return True
+        except asyncio.TimeoutError:
+            print(f"[Gemini] Initialization timed out (API key may be invalid)")
+            return False
         except Exception as e:
             print(f"[Gemini] Initialization failed: {e}")
             return False
@@ -89,7 +98,12 @@ class GeminiProvider(BaseLLMProvider):
                 contents=full_prompt,
                 config=generate_content_config
             )
+            # Safely access response text
+            if not hasattr(response, 'text') or response.text is None:
+                raise RuntimeError("Gemini returned empty or invalid response")
             return response.text
+        except AttributeError as e:
+            raise RuntimeError(f"Invalid Gemini response format: {e}")
         except Exception as e:
             raise RuntimeError(f"Gemini API error: {e}")
 

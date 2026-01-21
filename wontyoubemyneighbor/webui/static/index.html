@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASI Dashboard - Won't You Be My Neighbor</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1 id="agent-name">ASI Dashboard</h1>
+                <span class="subtitle">Won't You Be My Neighbor</span>
+                <span class="container-name" id="container-name" style="font-size: 0.9rem; color: var(--accent-cyan); margin-left: 15px;"></span>
+            </div>
+            <div class="header-right">
+                <button class="wizard-btn" onclick="toggleLogs()" style="background: var(--accent-green);">Logs</button>
+                <span class="router-id" id="router-id">--</span>
+                <span class="connection-status" id="connection-status">Connecting...</span>
+            </div>
+        </header>
+
+        <!-- Quick Navigation Bar -->
+        <nav class="quick-nav" style="display: flex; gap: 10px; padding: 12px 20px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-bottom: 2px solid var(--accent-cyan); flex-wrap: wrap; justify-content: center;">
+            <a href="/agent-dashboard" class="nav-link" id="nav-agent-dashboard" style="display: flex; align-items: center; gap: 8px; padding: 10px 18px; background: linear-gradient(135deg, #22d3ee 0%, #0891b2 100%); color: #000; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.3s; box-shadow: 0 2px 8px rgba(34, 211, 238, 0.3);">
+                <span style="font-size: 1.2rem;">📊</span>
+                <span>Agent Dashboard</span>
+                <span style="font-size: 0.7rem; background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 4px;">Testing • GAIT • Markmap</span>
+            </a>
+            <a href="/topology3d" class="nav-link" style="display: flex; align-items: center; gap: 8px; padding: 10px 18px; background: linear-gradient(135deg, #a855f7 0%, #7c3aed 100%); color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.3s; box-shadow: 0 2px 8px rgba(168, 85, 247, 0.3);">
+                <span style="font-size: 1.2rem;">🌐</span>
+                <span>3D Topology</span>
+                <span style="font-size: 0.7rem; background: rgba(255,255,255,0.2); padding: 2px 6px; border-radius: 4px;">Three.js</span>
+            </a>
+            <a href="/monitor" class="nav-link" style="display: flex; align-items: center; gap: 8px; padding: 10px 18px; background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%); color: #000; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.3s; box-shadow: 0 2px 8px rgba(74, 222, 128, 0.3);">
+                <span style="font-size: 1.2rem;">🗺️</span>
+                <span>Full Agent Topology</span>
+                <span style="font-size: 0.7rem; background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 4px;">All Agents</span>
+            </a>
+            <a href="/wizard" class="nav-link" style="display: flex; align-items: center; gap: 8px; padding: 10px 18px; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: #000; text-decoration: none; border-radius: 8px; font-weight: 600; transition: all 0.3s; box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);">
+                <span style="font-size: 1.2rem;">🔧</span>
+                <span>Network Builder</span>
+                <span style="font-size: 0.7rem; background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 4px;">Wizard</span>
+            </a>
+        </nav>
+
+        <!-- Main content -->
+        <main class="main-content">
+            <!-- Left panel: Chat -->
+            <section class="panel chat-panel">
+                <div class="panel-header">
+                    <h2>Chat with ASI</h2>
+                    <span class="provider-badge" id="provider-badge">--</span>
+                </div>
+                <div class="chat-messages" id="chat-messages">
+                    <div class="message system-message">
+                        <p>Welcome! Ask me about your routing protocols, neighbors, or routes.</p>
+                        <p class="hint">Try: "How many neighbors do I have?" or "Show me the BGP routes"</p>
+                    </div>
+                </div>
+                <div class="chat-input-container">
+                    <input type="text" id="chat-input" placeholder="Ask ASI something..." autocomplete="off">
+                    <button id="send-btn" class="send-btn">Send</button>
+                </div>
+            </section>
+
+            <!-- Right panel: Status & Logs -->
+            <section class="panel status-panel">
+                <!-- Tabs -->
+                <div class="tabs">
+                    <button class="tab active" data-tab="status">Status</button>
+                    <button class="tab" data-tab="routes">Routes</button>
+                    <button class="tab" data-tab="logs">Logs</button>
+                </div>
+
+                <!-- Status Tab -->
+                <div class="tab-content active" id="tab-status">
+                    <!-- Dynamic Protocol Cards -->
+                    <div class="status-grid" id="protocol-cards">
+                        <div class="status-card" id="loading-card">
+                            <div class="card-body">
+                                <p class="muted">Loading agent configuration...</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Interfaces Section -->
+                    <div class="status-grid" style="margin-top: 15px;">
+                        <div class="status-card wide" id="interfaces-card">
+                            <div class="card-header">
+                                <h3>Interfaces</h3>
+                            </div>
+                            <div class="card-body" id="interfaces-body">
+                                <p class="muted">No interfaces</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Neighbors/Peers Section -->
+                    <div class="status-grid" style="margin-top: 15px;">
+                        <div class="status-card wide" id="neighbors-card">
+                            <div class="card-header">
+                                <h3>Neighbors & Peers</h3>
+                            </div>
+                            <div class="card-body" id="neighbors-body">
+                                <p class="muted">No neighbors</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- MCP Section -->
+                    <div class="status-grid" style="margin-top: 15px;" id="mcp-section">
+                        <div class="status-card wide" id="mcp-card">
+                            <div class="card-header">
+                                <h3>MCP Servers</h3>
+                            </div>
+                            <div class="card-body" id="mcp-body">
+                                <p class="muted">No MCPs configured</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Routes Tab -->
+                <div class="tab-content" id="tab-routes">
+                    <div class="routes-container" id="routes-container">
+                        <p class="muted">Loading routes...</p>
+                    </div>
+                </div>
+
+                <!-- Logs Tab -->
+                <div class="tab-content" id="tab-logs">
+                    <div class="logs-toolbar" style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--card-bg); border-bottom: 1px solid var(--border-color); margin-bottom: 0;">
+                        <span id="logs-status" style="font-size: 0.85rem; color: var(--text-muted);">Live</span>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="logs-pause-btn" onclick="toggleLogsPause()" style="padding: 6px 12px; background: var(--accent-yellow); color: #000; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">⏸ Pause</button>
+                            <button onclick="clearLogs()" style="padding: 6px 12px; background: var(--accent-red); color: #fff; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">🗑 Clear</button>
+                        </div>
+                    </div>
+                    <div class="logs-container" id="logs-container">
+                        <div class="log-entry info">
+                            <span class="log-time">--:--:--</span>
+                            <span class="log-level">INFO</span>
+                            <span class="log-message">Waiting for logs...</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

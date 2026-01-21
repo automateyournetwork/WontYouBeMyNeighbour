@@ -1,0 +1,128 @@
+[
+  {
+    "id": "pe-1",
+    "n": "PE-1 (Provider Edge)",
+    "r": "10.0.0.1",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.0.1/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.1.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-1", "peer_if": "eth1", "subnet": "172.16.1.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.2.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-2", "peer_if": "eth1", "subnet": "172.16.2.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["192.168.100.1/30"], "s": "up", "description": "CE-1 facing"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.0.1", "a": "0.0.0.0", "loopback_ip": "10.0.0.1", "nets": ["172.16.1.0/30", "172.16.2.0/30"]},
+      {"p": "mpls", "ldp_enabled": true, "label_range": "16-1048575", "interfaces": ["eth1", "eth2"]},
+      {"p": "ibgp", "r": "10.0.0.1", "asn": 65000, "loopback_ip": "10.0.0.1", "peers": [
+        {"ip": "10.0.0.2", "asn": 65000, "description": "PE-2"},
+        {"ip": "10.0.0.3", "asn": 65000, "description": "PE-3"},
+        {"ip": "10.0.0.4", "asn": 65000, "description": "PE-4"}
+      ], "address_families": ["vpnv4"], "nets": []},
+      {"p": "ebgp", "r": "10.0.0.1", "asn": 65000, "loopback_ip": "10.0.0.1", "peers": [
+        {"ip": "192.168.100.2", "asn": 65001, "description": "Customer-A", "vrf": "VRF-A"}
+      ], "nets": []}
+    ]
+  },
+  {
+    "id": "pe-2",
+    "n": "PE-2 (Provider Edge)",
+    "r": "10.0.0.2",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.0.2/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.3.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-1", "peer_if": "eth2", "subnet": "172.16.3.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.4.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-2", "peer_if": "eth2", "subnet": "172.16.4.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["192.168.101.1/30"], "s": "up", "description": "CE-2 facing"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.0.2", "a": "0.0.0.0", "loopback_ip": "10.0.0.2", "nets": ["172.16.3.0/30", "172.16.4.0/30"]},
+      {"p": "mpls", "ldp_enabled": true, "label_range": "16-1048575", "interfaces": ["eth1", "eth2"]},
+      {"p": "ibgp", "r": "10.0.0.2", "asn": 65000, "loopback_ip": "10.0.0.2", "peers": [
+        {"ip": "10.0.0.1", "asn": 65000, "description": "PE-1"},
+        {"ip": "10.0.0.3", "asn": 65000, "description": "PE-3"},
+        {"ip": "10.0.0.4", "asn": 65000, "description": "PE-4"}
+      ], "address_families": ["vpnv4"], "nets": []},
+      {"p": "ebgp", "r": "10.0.0.2", "asn": 65000, "loopback_ip": "10.0.0.2", "peers": [
+        {"ip": "192.168.101.2", "asn": 65001, "description": "Customer-A", "vrf": "VRF-A"}
+      ], "nets": []}
+    ]
+  },
+  {
+    "id": "pe-3",
+    "n": "PE-3 (Provider Edge)",
+    "r": "10.0.0.3",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.0.3/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.5.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-1", "peer_if": "eth3", "subnet": "172.16.5.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.6.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-2", "peer_if": "eth3", "subnet": "172.16.6.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["192.168.102.1/30"], "s": "up", "description": "CE-3 facing"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.0.3", "a": "0.0.0.0", "loopback_ip": "10.0.0.3", "nets": ["172.16.5.0/30", "172.16.6.0/30"]},
+      {"p": "mpls", "ldp_enabled": true, "label_range": "16-1048575", "interfaces": ["eth1", "eth2"]},
+      {"p": "ibgp", "r": "10.0.0.3", "asn": 65000, "loopback_ip": "10.0.0.3", "peers": [
+        {"ip": "10.0.0.1", "asn": 65000, "description": "PE-1"},
+        {"ip": "10.0.0.2", "asn": 65000, "description": "PE-2"},
+        {"ip": "10.0.0.4", "asn": 65000, "description": "PE-4"}
+      ], "address_families": ["vpnv4"], "nets": []},
+      {"p": "ebgp", "r": "10.0.0.3", "asn": 65000, "loopback_ip": "10.0.0.3", "peers": [
+        {"ip": "192.168.102.2", "asn": 65002, "description": "Customer-B", "vrf": "VRF-B"}
+      ], "nets": []}
+    ]
+  },
+  {
+    "id": "pe-4",
+    "n": "PE-4 (Provider Edge)",
+    "r": "10.0.0.4",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.0.4/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.7.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-1", "peer_if": "eth4", "subnet": "172.16.7.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.8.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-2", "peer_if": "eth4", "subnet": "172.16.8.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["192.168.103.1/30"], "s": "up", "description": "CE-4 facing"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.0.4", "a": "0.0.0.0", "loopback_ip": "10.0.0.4", "nets": ["172.16.7.0/30", "172.16.8.0/30"]},
+      {"p": "mpls", "ldp_enabled": true, "label_range": "16-1048575", "interfaces": ["eth1", "eth2"]},
+      {"p": "ibgp", "r": "10.0.0.4", "asn": 65000, "loopback_ip": "10.0.0.4", "peers": [
+        {"ip": "10.0.0.1", "asn": 65000, "description": "PE-1"},
+        {"ip": "10.0.0.2", "asn": 65000, "description": "PE-2"},
+        {"ip": "10.0.0.3", "asn": 65000, "description": "PE-3"}
+      ], "address_families": ["vpnv4"], "nets": []},
+      {"p": "ebgp", "r": "10.0.0.4", "asn": 65000, "loopback_ip": "10.0.0.4", "peers": [
+        {"ip": "192.168.103.2", "asn": 65002, "description": "Customer-B", "vrf": "VRF-B"}
+      ], "nets": []}
+    ]
+  },
+  {
+    "id": "p-1",
+    "n": "P-1 (Provider Core)",
+    "r": "10.0.1.1",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.1.1/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.1.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "pe-1", "peer_if": "eth1", "subnet": "172.16.1.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.3.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "pe-2", "peer_if": "eth1", "subnet": "172.16.3.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["172.16.5.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "pe-3", "peer_if": "eth1", "subnet": "172.16.5.0/30"}},
+      {"id": "eth4", "n": "eth4", "t": "eth", "a": ["172.16.7.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "pe-4", "peer_if": "eth1", "subnet": "172.16.7.0/30"}},
+      {"id": "eth5", "n": "eth5", "t": "eth", "a": ["172.16.9.1/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-2", "peer_if": "eth5", "subnet": "172.16.9.0/30"}}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.1.1", "a": "0.0.0.0", "loopback_ip": "10.0.1.1", "nets": ["172.16.1.0/30", "172.16.3.0/30", "172.16.5.0/30", "172.16.7.0/30", "172.16.9.0/30"]},
+      {"p": "mpls", "ldp_enabled": true, "label_range": "16-1048575", "interfaces": ["eth1", "eth2", "eth3", "eth4", "eth5"]}
+    ]
+  },
+  {
+    "id": "p-2",
+    "n": "P-2 (Provider Core)",
+    "r": "10.0.1.2",
+    "ifs": [
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.0.1.2/32"], "s": "up"},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.16.2.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "pe-1", "peer_if": "eth2", "subnet": "172.16.2.0/30"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["172.16.4.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "pe-2", "peer_if": "eth2", "subnet": "172.16.4.0/30"}},
+      {"id": "eth3", "n": "eth3", "t": "eth", "a": ["172.16.6.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "pe-3", "peer_if": "eth2", "subnet": "172.16.6.0/30"}},
+      {"id": "eth4", "n": "eth4", "t": "eth", "a": ["172.16.8.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "pe-4", "peer_if": "eth2", "subnet": "172.16.8.0/30"}},
+      {"id": "eth5", "n": "eth5", "t": "eth", "a": ["172.16.9.2/30"], "s": "up", "mtu": 9000, "l1": {"peer_agent": "p-1", "peer_if": "eth5", "subnet": "172.16.9.0/30"}}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.0.1.2", "a": "0.0.0.0", "loopback_ip": "10.0.1.2", "nets": ["172.16.2.0/30", "172.16.4.0/30", "172.16.6.0/30", "172.16.8.0/30", "172.16.9.0/30"]},
+      {"p": "mpls", "ldp_enabled": true, "label_range": "16-1048575", "interfaces": ["eth1", "eth2", "eth3", "eth4", "eth5"]}
+    ]
+  }
+]

@@ -1,0 +1,42 @@
+[
+  {
+    "id": "ospf-router",
+    "n": "OSPF Router",
+    "r": "10.255.255.1",
+    "ifs": [
+      {"id": "eth0", "n": "eth0", "t": "eth", "a": ["172.20.0.10/24"], "s": "up", "mtu": 1500, "l1": {"peer_agent": "core-router", "peer_if": "eth0", "subnet": "172.20.0.0/24"}},
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.255.255.1/32"], "s": "up"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.255.255.1", "a": "0.0.0.0", "loopback_ip": "10.255.255.1", "nets": ["172.20.0.0/24"]}
+    ]
+  },
+  {
+    "id": "core-router",
+    "n": "Core Router (OSPF + iBGP)",
+    "r": "10.255.255.99",
+    "ifs": [
+      {"id": "eth0", "n": "eth0", "t": "eth", "a": ["172.20.0.99/24"], "s": "up", "mtu": 1500, "l1": {"peer_agent": "ospf-router", "peer_if": "eth0", "subnet": "172.20.0.0/24"}},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.20.1.99/24"], "s": "up", "mtu": 1500, "l1": {"peer_agent": "ebgp-router", "peer_if": "eth0", "subnet": "172.20.1.0/24"}},
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.255.255.99/32"], "s": "up"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.255.255.99", "a": "0.0.0.0", "loopback_ip": "10.255.255.99", "nets": ["172.20.0.0/24", "172.20.1.0/24"]},
+      {"p": "ibgp", "r": "10.255.255.99", "asn": 65001, "loopback_ip": "10.255.255.99", "peers": [{"ip": "172.20.1.2", "asn": 65001}], "nets": []}
+    ]
+  },
+  {
+    "id": "ebgp-router",
+    "n": "eBGP Router",
+    "r": "10.255.255.2",
+    "ifs": [
+      {"id": "eth0", "n": "eth0", "t": "eth", "a": ["172.20.1.2/24"], "s": "up", "mtu": 1500, "l1": {"peer_agent": "core-router", "peer_if": "eth1", "subnet": "172.20.1.0/24"}},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.20.0.3/24"], "s": "up", "mtu": 1500, "description": "eBGP peering to ISP"},
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.255.255.2/32"], "s": "up"}
+    ],
+    "protos": [
+      {"p": "ibgp", "r": "10.255.255.2", "asn": 65001, "loopback_ip": "10.255.255.2", "peers": [{"ip": "172.20.1.99", "asn": 65001}], "nets": []},
+      {"p": "ebgp", "r": "10.255.255.2", "asn": 65001, "loopback_ip": "10.255.255.2", "peers": [{"ip": "172.20.0.2", "asn": 65002, "description": "ISP"}], "nets": ["10.0.0.0/8", "172.20.0.0/16"]}
+    ]
+  }
+]

@@ -14,39 +14,39 @@ class TestGossipProtocol:
     """Test GossipProtocol"""
 
     def test_initialization(self):
-        gossip = GossipProtocol(ralph_id="ralph-1", fanout=2)
-        assert gossip.ralph_id == "ralph-1"
+        gossip = GossipProtocol(asi_id="asi-1", fanout=2)
+        assert gossip.asi_id == "asi-1"
         assert gossip.fanout == 2
         assert len(gossip.peers) == 0
 
     def test_register_peer(self):
-        gossip = GossipProtocol(ralph_id="ralph-1")
-        gossip.register_peer("ralph-2", "192.168.1.2", 8080)
+        gossip = GossipProtocol(asi_id="asi-1")
+        gossip.register_peer("asi-2", "192.168.1.2", 8080)
 
-        assert "ralph-2" in gossip.peers
-        assert gossip.peers["ralph-2"]["address"] == "192.168.1.2"
+        assert "asi-2" in gossip.peers
+        assert gossip.peers["asi-2"]["address"] == "192.168.1.2"
 
     def test_create_message(self):
-        gossip = GossipProtocol(ralph_id="ralph-1")
+        gossip = GossipProtocol(asi_id="asi-1")
 
         msg = gossip.create_message(
             MessageType.STATE_UPDATE,
             payload={"status": "healthy"}
         )
 
-        assert msg.sender_id == "ralph-1"
+        assert msg.sender_id == "asi-1"
         assert msg.message_type == MessageType.STATE_UPDATE
         assert msg.ttl == 3
-        assert "ralph-1" in msg.seen_by
+        assert "asi-1" in msg.seen_by
 
     @pytest.mark.asyncio
     async def test_receive_new_message(self):
-        gossip = GossipProtocol(ralph_id="ralph-2")
+        gossip = GossipProtocol(asi_id="asi-2")
 
         msg = GossipMessage(
             message_id="test123",
             message_type=MessageType.HEALTH_CHECK,
-            sender_id="ralph-1",
+            sender_id="asi-1",
             timestamp=datetime.utcnow(),
             payload={"status": "alive"},
             ttl=2
@@ -58,12 +58,12 @@ class TestGossipProtocol:
 
     @pytest.mark.asyncio
     async def test_receive_duplicate_message(self):
-        gossip = GossipProtocol(ralph_id="ralph-2")
+        gossip = GossipProtocol(asi_id="asi-2")
 
         msg = GossipMessage(
             message_id="test123",
             message_type=MessageType.HEALTH_CHECK,
-            sender_id="ralph-1",
+            sender_id="asi-1",
             timestamp=datetime.utcnow(),
             payload={"status": "alive"},
             ttl=2
@@ -79,12 +79,12 @@ class TestGossipProtocol:
 
     @pytest.mark.asyncio
     async def test_ttl_expiration(self):
-        gossip = GossipProtocol(ralph_id="ralph-2")
+        gossip = GossipProtocol(asi_id="asi-2")
 
         msg = GossipMessage(
             message_id="test123",
             message_type=MessageType.HEALTH_CHECK,
-            sender_id="ralph-1",
+            sender_id="asi-1",
             timestamp=datetime.utcnow(),
             payload={"status": "alive"},
             ttl=0  # Expired
@@ -94,11 +94,11 @@ class TestGossipProtocol:
         assert not is_new
 
     def test_get_statistics(self):
-        gossip = GossipProtocol(ralph_id="ralph-1")
-        gossip.register_peer("ralph-2", "192.168.1.2")
+        gossip = GossipProtocol(asi_id="asi-1")
+        gossip.register_peer("asi-2", "192.168.1.2")
 
         stats = gossip.get_statistics()
-        assert stats["ralph_id"] == "ralph-1"
+        assert stats["asi_id"] == "asi-1"
         assert stats["peers"] == 1
         assert "messages_seen" in stats
 
@@ -107,12 +107,12 @@ class TestConsensusEngine:
     """Test ConsensusEngine"""
 
     def test_initialization(self):
-        consensus = ConsensusEngine(ralph_id="ralph-1")
-        assert consensus.ralph_id == "ralph-1"
+        consensus = ConsensusEngine(asi_id="asi-1")
+        assert consensus.asi_id == "asi-1"
         assert len(consensus.proposals) == 0
 
     def test_create_proposal(self):
-        consensus = ConsensusEngine(ralph_id="ralph-1")
+        consensus = ConsensusEngine(asi_id="asi-1")
 
         proposal = consensus.create_proposal(
             consensus_type=ConsensusType.METRIC_ADJUSTMENT,
@@ -121,13 +121,13 @@ class TestConsensusEngine:
             required_votes=2
         )
 
-        assert proposal.proposer_id == "ralph-1"
+        assert proposal.proposer_id == "asi-1"
         assert proposal.consensus_type == ConsensusType.METRIC_ADJUSTMENT
         assert proposal.required_votes == 2
         assert proposal.status == "pending"
 
     def test_vote_on_proposal(self):
-        consensus = ConsensusEngine(ralph_id="ralph-1")
+        consensus = ConsensusEngine(asi_id="asi-1")
 
         proposal = consensus.create_proposal(
             consensus_type=ConsensusType.METRIC_ADJUSTMENT,
@@ -139,10 +139,10 @@ class TestConsensusEngine:
         # Vote
         success = consensus.vote(proposal.proposal_id, VoteType.APPROVE)
         assert success
-        assert "ralph-1" in proposal.votes
+        assert "asi-1" in proposal.votes
 
     def test_proposal_approval(self):
-        consensus = ConsensusEngine(ralph_id="ralph-1")
+        consensus = ConsensusEngine(asi_id="asi-1")
 
         proposal = consensus.create_proposal(
             consensus_type=ConsensusType.METRIC_ADJUSTMENT,
@@ -151,18 +151,18 @@ class TestConsensusEngine:
             required_votes=2
         )
 
-        # Vote from ralph-1
+        # Vote from asi-1
         consensus.vote(proposal.proposal_id, VoteType.APPROVE)
 
-        # Vote from ralph-2
-        consensus.receive_vote(proposal.proposal_id, "ralph-2", "approve")
+        # Vote from asi-2
+        consensus.receive_vote(proposal.proposal_id, "asi-2", "approve")
 
         # Check if approved
         assert proposal.is_approved()
         assert proposal.status == "approved"
 
     def test_proposal_rejection(self):
-        consensus = ConsensusEngine(ralph_id="ralph-1")
+        consensus = ConsensusEngine(asi_id="asi-1")
 
         proposal = consensus.create_proposal(
             consensus_type=ConsensusType.GRACEFUL_SHUTDOWN,
@@ -178,7 +178,7 @@ class TestConsensusEngine:
         assert proposal.status == "rejected"
 
     def test_proposal_expiration(self):
-        consensus = ConsensusEngine(ralph_id="ralph-1", proposal_timeout=1)
+        consensus = ConsensusEngine(asi_id="asi-1", proposal_timeout=1)
 
         proposal = consensus.create_proposal(
             consensus_type=ConsensusType.METRIC_ADJUSTMENT,
@@ -193,7 +193,7 @@ class TestConsensusEngine:
         assert proposal.is_expired()
 
     def test_get_statistics(self):
-        consensus = ConsensusEngine(ralph_id="ralph-1")
+        consensus = ConsensusEngine(asi_id="asi-1")
 
         # Create proposals
         for i in range(3):
@@ -205,7 +205,7 @@ class TestConsensusEngine:
             )
 
         stats = consensus.get_statistics()
-        assert stats["ralph_id"] == "ralph-1"
+        assert stats["asi_id"] == "asi-1"
         assert stats["active_proposals"] == 3
 
 

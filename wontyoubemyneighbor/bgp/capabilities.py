@@ -39,6 +39,9 @@ class CapabilityManager:
         # Local capabilities (what we support)
         self.local_capabilities: Dict[int, bytes] = {}
 
+        # Multiprotocol capabilities (can have multiple AFI/SAFI pairs)
+        self.multiprotocol_capabilities: List[Tuple[int, int]] = []
+
         # Peer capabilities (what peer supports)
         self.peer_capabilities: Dict[int, bytes] = {}
 
@@ -63,9 +66,9 @@ class CapabilityManager:
             afi: Address Family Identifier
             safi: Subsequent Address Family Identifier
         """
-        # AFI (2 bytes), Reserved (1 byte), SAFI (1 byte)
-        value = struct.pack('!HBB', afi, 0, safi)
-        self.add_local_capability(CAP_MULTIPROTOCOL, value)
+        # Store AFI/SAFI pairs separately since we can have multiple
+        if (afi, safi) not in self.multiprotocol_capabilities:
+            self.multiprotocol_capabilities.append((afi, safi))
 
     def enable_route_refresh(self) -> None:
         """Enable route refresh capability"""
@@ -119,7 +122,17 @@ class CapabilityManager:
         Returns:
             List of (code, value) tuples
         """
-        return list(self.local_capabilities.items())
+        result = []
+
+        # Add multiprotocol capabilities (can have multiple)
+        for afi, safi in self.multiprotocol_capabilities:
+            value = struct.pack('!HBB', afi, 0, safi)
+            result.append((CAP_MULTIPROTOCOL, value))
+
+        # Add other capabilities
+        result.extend(self.local_capabilities.items())
+
+        return result
 
     def set_peer_capabilities(self, capabilities: Dict[int, bytes]) -> None:
         """

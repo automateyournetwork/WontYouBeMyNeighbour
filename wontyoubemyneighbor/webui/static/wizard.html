@@ -1,0 +1,1220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASI - Network Builder Wizard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #eee;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #2a2a4e;
+            margin-bottom: 30px;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .logo h1 {
+            color: #00d9ff;
+            font-size: 1.8rem;
+        }
+
+        .back-btn {
+            background: transparent;
+            border: 1px solid #00d9ff;
+            color: #00d9ff;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+
+        .back-btn:hover {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        /* Progress Steps */
+        .progress-container {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 40px;
+            position: relative;
+        }
+
+        .progress-container::before {
+            content: '';
+            position: absolute;
+            top: 20px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #2a2a4e;
+            z-index: 0;
+        }
+
+        .step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            position: relative;
+            z-index: 1;
+        }
+
+        .step-number {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #2a2a4e;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            margin-bottom: 8px;
+            transition: all 0.3s;
+        }
+
+        .step.active .step-number {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        .step.completed .step-number {
+            background: #4ade80;
+            color: #1a1a2e;
+        }
+
+        .step-label {
+            font-size: 0.75rem;
+            color: #888;
+            text-align: center;
+            max-width: 80px;
+        }
+
+        .step.active .step-label,
+        .step.completed .step-label {
+            color: #eee;
+        }
+
+        /* Wizard Content */
+        .wizard-content {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+        }
+
+        .wizard-content h2 {
+            color: #00d9ff;
+            margin-bottom: 8px;
+        }
+
+        .wizard-content .subtitle {
+            color: #888;
+            margin-bottom: 24px;
+        }
+
+        /* Form Elements */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #ccc;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+            border-radius: 6px;
+            color: #eee;
+            font-size: 1rem;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #00d9ff;
+        }
+
+        .form-group .hint {
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        /* MCP Grid */
+        .mcp-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .mcp-card {
+            background: #1a1a2e;
+            border: 2px solid #2a2a4e;
+            border-radius: 8px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .mcp-card:hover {
+            border-color: #00d9ff;
+        }
+
+        .mcp-card.selected {
+            border-color: #4ade80;
+            background: #1a2e1a;
+        }
+
+        .mcp-card.mandatory {
+            border-color: #4ade80;
+            background: linear-gradient(135deg, #1a2e1a 0%, #16213e 100%);
+            cursor: default;
+            position: relative;
+        }
+
+        .mcp-card.mandatory::after {
+            content: 'LOCKED';
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #4ade80;
+            color: #1a1a2e;
+            font-size: 0.6rem;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .mcp-card.mandatory:hover {
+            border-color: #4ade80;
+        }
+
+        .mcp-card.custom {
+            border-color: #9333ea;
+            background: #1a1a2e;
+        }
+
+        .mcp-card.custom.selected {
+            border-color: #9333ea;
+            background: #2a1a3e;
+        }
+
+        .mcp-card h4 {
+            color: #00d9ff;
+            margin-bottom: 5px;
+        }
+
+        .mcp-card.mandatory h4 {
+            color: #4ade80;
+        }
+
+        .mcp-card.custom h4 {
+            color: #9333ea;
+        }
+
+        .mcp-card p {
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        /* Agent List */
+        .agent-list {
+            margin-bottom: 20px;
+        }
+
+        .agent-item {
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .agent-info h4 {
+            color: #00d9ff;
+        }
+
+        .agent-info span {
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .agent-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        .btn-primary:hover {
+            background: #00b8d9;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid #00d9ff;
+            color: #00d9ff;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(0, 217, 255, 0.1);
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .btn-success {
+            background: #4ade80;
+            color: #1a1a2e;
+        }
+
+        .btn-success:hover {
+            background: #22c55e;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Navigation */
+        .wizard-nav {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* Docker Status */
+        .docker-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 15px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .status-dot.available {
+            background: #4ade80;
+        }
+
+        .status-dot.unavailable {
+            background: #ef4444;
+        }
+
+        /* Preview Panel */
+        .preview-panel {
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .preview-panel h3 {
+            color: #00d9ff;
+            margin-bottom: 15px;
+        }
+
+        .preview-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: #16213e;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+        }
+
+        .stat-card .value {
+            font-size: 2rem;
+            color: #00d9ff;
+            font-weight: bold;
+        }
+
+        .stat-card .label {
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        /* Alerts */
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .alert-info {
+            background: rgba(0, 217, 255, 0.1);
+            border: 1px solid #00d9ff;
+            color: #00d9ff;
+        }
+
+        .alert-error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid #ef4444;
+            color: #ef4444;
+        }
+
+        .alert-success {
+            background: rgba(74, 222, 128, 0.1);
+            border: 1px solid #4ade80;
+            color: #4ade80;
+        }
+
+        /* Hide inactive steps */
+        .wizard-step {
+            display: none;
+        }
+
+        .wizard-step.active {
+            display: block;
+        }
+
+        /* Link Configuration */
+        .link-builder {
+            background: #1a1a2e;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .link-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px;
+            background: #16213e;
+            border-radius: 6px;
+            margin-bottom: 10px;
+        }
+
+        .link-item select {
+            padding: 8px;
+            background: #1a1a2e;
+            border: 1px solid #2a2a4e;
+            border-radius: 4px;
+            color: #eee;
+        }
+
+        /* Loading State */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 40px;
+        }
+
+        .spinner {
+            width: 30px;
+            height: 30px;
+            border: 3px solid #2a2a4e;
+            border-top-color: #00d9ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #2a2a4e;
+            padding-bottom: 10px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            border-radius: 4px 4px 0 0;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        .tab:hover:not(.active) {
+            background: rgba(0, 217, 255, 0.1);
+            color: #00d9ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <h1>ASI Network Builder</h1>
+            </div>
+        </header>
+
+        <!-- Progress Steps -->
+        <div class="progress-container">
+            <div class="step active" data-step="1">
+                <div class="step-number">1</div>
+                <span class="step-label">Docker Network</span>
+            </div>
+            <div class="step" data-step="2">
+                <div class="step-number">2</div>
+                <span class="step-label">MCP Servers</span>
+            </div>
+            <div class="step" data-step="3">
+                <div class="step-number">3</div>
+                <span class="step-label">Agents</span>
+            </div>
+            <div class="step" data-step="4">
+                <div class="step-number">4</div>
+                <span class="step-label">Topology</span>
+            </div>
+            <div class="step" data-step="5">
+                <div class="step-number">5</div>
+                <span class="step-label">LLM Provider</span>
+            </div>
+        </div>
+
+        <!-- Step 1: Docker Network -->
+        <div class="wizard-step active" id="step-1">
+            <div class="wizard-content">
+                <h2>Step 1: Network Foundation</h2>
+                <p class="subtitle">Configure the network layers for your multi-agent deployment</p>
+
+                <div class="docker-status" id="docker-status">
+                    <div class="spinner"></div>
+                    <span>Checking Docker availability...</span>
+                </div>
+
+                <!-- 3-Layer Network Architecture Info -->
+                <div class="alert alert-info" style="margin-bottom: 25px;">
+                    <strong>3-Layer Network Architecture:</strong>
+                    <div style="margin-top: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; text-align: center;">
+                        <div style="background: rgba(147, 51, 234, 0.2); padding: 10px; border-radius: 6px; border: 1px solid #9333ea;">
+                            <div style="font-size: 1.5rem;">🐳</div>
+                            <div style="color: #9333ea; font-weight: bold;">Docker Layer</div>
+                            <div style="font-size: 0.8rem; color: #888;">Container networking</div>
+                        </div>
+                        <div style="background: rgba(74, 222, 128, 0.2); padding: 10px; border-radius: 6px; border: 1px solid #4ade80;">
+                            <div style="font-size: 1.5rem;">🔗</div>
+                            <div style="color: #4ade80; font-weight: bold;">ASI Overlay</div>
+                            <div style="font-size: 0.8rem; color: #888;">IPv6 agent mesh (automatic)</div>
+                        </div>
+                        <div style="background: rgba(0, 217, 255, 0.2); padding: 10px; border-radius: 6px; border: 1px solid #00d9ff;">
+                            <div style="font-size: 1.5rem;">🌐</div>
+                            <div style="color: #00d9ff; font-weight: bold;">Underlay</div>
+                            <div style="font-size: 0.8rem; color: #888;">Your routing topology</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ASI Overlay Network (Automatic - Always IPv6) -->
+                <div style="background: rgba(74, 222, 128, 0.1); border: 1px solid #4ade80; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+                    <h3 style="color: #4ade80; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #4ade80; color: #1a1a2e; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">AUTOMATIC</span>
+                        ASI Agent Overlay Network (IPv6)
+                    </h3>
+                    <p style="color: #888; margin-bottom: 15px;">
+                        Every agent gets an IPv6 loopback address for visibility and management. This overlay network uses Neighbor Discovery (ND) for automatic agent-to-agent communication.
+                    </p>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Overlay Subnet</label>
+                            <input type="text" value="fd00:a510::/48" disabled style="background: #1a2e1a; border-color: #4ade80;">
+                            <div class="hint">ULA (Unique Local Address) range for agent mesh</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Agent Address Format</label>
+                            <input type="text" value="fd00:a510:0:NET::AGENT/64" disabled style="background: #1a2e1a; border-color: #4ade80;">
+                            <div class="hint">Each agent gets a unique IPv6 address</div>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 15px; margin-top: 10px;">
+                        <label style="display: flex; align-items: center; gap: 8px; color: #4ade80;">
+                            <input type="checkbox" id="enable-nd" checked>
+                            Enable Neighbor Discovery (ND)
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; color: #4ade80;">
+                            <input type="checkbox" id="enable-overlay-routes" checked>
+                            Install kernel routes
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Underlay Protocol Stack -->
+                <div style="background: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
+                    <h3 style="color: #00d9ff; margin-bottom: 10px;">Underlay Protocol Stack</h3>
+                    <p style="color: #888; margin-bottom: 15px;">
+                        Choose the IP version for your user-defined routing topology (OSPF, BGP, IS-IS, etc.)
+                    </p>
+                    <div class="form-group">
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;">
+                            <label class="protocol-option" style="display: flex; flex-direction: column; align-items: center; padding: 20px; background: #16213e; border: 2px solid #2a2a4e; border-radius: 8px; cursor: pointer; transition: all 0.3s;" onclick="selectUnderlayProtocol('ipv6')">
+                                <input type="radio" name="underlay-protocol" value="ipv6" checked style="display: none;">
+                                <span style="font-size: 2rem; margin-bottom: 10px;">6️⃣</span>
+                                <span style="color: #00d9ff; font-weight: bold;">IPv6</span>
+                                <span style="font-size: 0.75rem; color: #888; text-align: center;">Recommended - Modern</span>
+                            </label>
+                            <label class="protocol-option" style="display: flex; flex-direction: column; align-items: center; padding: 20px; background: #16213e; border: 2px solid #2a2a4e; border-radius: 8px; cursor: pointer; transition: all 0.3s;" onclick="selectUnderlayProtocol('ipv4')">
+                                <input type="radio" name="underlay-protocol" value="ipv4" style="display: none;">
+                                <span style="font-size: 2rem; margin-bottom: 10px;">4️⃣</span>
+                                <span style="color: #00d9ff; font-weight: bold;">IPv4</span>
+                                <span style="font-size: 0.75rem; color: #888; text-align: center;">Legacy - Compatible</span>
+                            </label>
+                            <label class="protocol-option" style="display: flex; flex-direction: column; align-items: center; padding: 20px; background: #16213e; border: 2px solid #2a2a4e; border-radius: 8px; cursor: pointer; transition: all 0.3s;" onclick="selectUnderlayProtocol('dual')">
+                                <input type="radio" name="underlay-protocol" value="dual" style="display: none;">
+                                <span style="font-size: 2rem; margin-bottom: 10px;">🔄</span>
+                                <span style="color: #00d9ff; font-weight: bold;">Dual-Stack</span>
+                                <span style="font-size: 0.75rem; color: #888; text-align: center;">Both IPv4 + IPv6</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <hr style="margin: 25px 0; border-color: #2a2a4e;">
+
+                <!-- Docker Network Configuration -->
+                <h3 style="color: #9333ea; margin-bottom: 15px;">Docker Network Configuration</h3>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="network-name">Network Name</label>
+                        <input type="text" id="network-name" placeholder="e.g., springfield" value="springfield">
+                        <div class="hint">Unique name for the Docker network</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="docker-ip-version">IP Version</label>
+                        <select id="docker-ip-version" onchange="updateDockerNetworkFields()">
+                            <option value="ipv6" selected>IPv6 (Default)</option>
+                            <option value="ipv4">IPv4 (Legacy)</option>
+                        </select>
+                        <div class="hint">IP version for container networking</div>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="subnet" id="subnet-label">Subnet</label>
+                        <input type="text" id="subnet" placeholder="e.g., fd00:docker:1::/64" value="fd00:docker:1::/64">
+                        <div class="hint" id="subnet-hint">Subnet for Docker containers</div>
+                    </div>
+                    <div class="form-group">
+                        <label for="gateway" id="gateway-label">Gateway</label>
+                        <input type="text" id="gateway" placeholder="e.g., fd00:docker:1::1" value="fd00:docker:1::1">
+                        <div class="hint" id="gateway-hint">Default gateway for containers</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="driver">Network Driver</label>
+                    <select id="driver">
+                        <option value="bridge">Bridge (Default)</option>
+                        <option value="host">Host</option>
+                        <option value="overlay">Overlay</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="wizard-nav">
+                <div></div>
+                <button class="btn btn-primary" onclick="nextStep(1)">Next: MCP Servers</button>
+            </div>
+        </div>
+
+        <!-- Step 2: MCP Servers -->
+        <div class="wizard-step" id="step-2">
+            <div class="wizard-content">
+                <h2>Step 2: MCP Server Configuration</h2>
+                <p class="subtitle">Configure Model Context Protocol servers for your agents</p>
+
+                <!-- Mandatory MCPs Section -->
+                <div style="margin-bottom: 30px;">
+                    <h3 style="color: #4ade80; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #4ade80; color: #1a1a2e; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">REQUIRED</span>
+                        Mandatory MCPs (Always Included)
+                    </h3>
+                    <p style="color: #888; font-size: 0.9rem; margin-bottom: 15px;">
+                        These 4 MCPs are automatically included with every agent and cannot be disabled.
+                    </p>
+                    <div class="mcp-grid" id="mandatory-mcp-grid">
+                        <!-- Mandatory MCPs loaded here -->
+                    </div>
+                </div>
+
+                <!-- Optional MCPs Section -->
+                <div style="margin-bottom: 30px;">
+                    <h3 style="color: #00d9ff; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #00d9ff; color: #1a1a2e; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">OPTIONAL</span>
+                        Optional MCPs (Click to Enable)
+                    </h3>
+                    <p style="color: #888; font-size: 0.9rem; margin-bottom: 15px;">
+                        Enable additional integrations. Some require configuration before use.
+                    </p>
+                    <div class="mcp-grid" id="optional-mcp-grid">
+                        <!-- Optional MCPs loaded here -->
+                    </div>
+                </div>
+
+                <!-- Custom MCP Import Section -->
+                <div style="background: #1a1a2e; padding: 20px; border-radius: 8px; border: 1px dashed #9333ea;">
+                    <h3 style="color: #9333ea; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+                        <span style="background: #9333ea; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">CUSTOM</span>
+                        Import Custom MCP
+                    </h3>
+                    <p style="color: #888; font-size: 0.9rem; margin-bottom: 15px;">
+                        Add your own MCP server by providing a JSON configuration.
+                    </p>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
+                            <input type="file" id="custom-mcp-file" accept=".json" onchange="loadCustomMcpFile(this)" style="display: none;">
+                            <button class="btn btn-secondary" onclick="document.getElementById('custom-mcp-file').click()">Choose JSON File</button>
+                            <span id="custom-mcp-file-name" style="color: #888;"></span>
+                        </div>
+                        <label style="color: #888; font-size: 0.9rem;">Or Paste JSON Configuration</label>
+                        <textarea id="custom-mcp-json" rows="4" style="font-family: monospace; font-size: 0.85rem;" placeholder='{
+  "id": "my-custom-mcp",
+  "t": "custom",
+  "n": "My Custom MCP",
+  "d": "Description of what this MCP does",
+  "e": true,
+  "c": { "endpoint": "http://localhost:9000" }
+}'></textarea>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn btn-success" onclick="importCustomMcp()">Add Custom MCP</button>
+                        <span id="custom-mcp-status"></span>
+                    </div>
+
+                    <!-- Custom MCPs list -->
+                    <div id="custom-mcp-list" style="margin-top: 15px;"></div>
+                </div>
+            </div>
+
+            <div class="wizard-nav">
+                <button class="btn btn-secondary" onclick="prevStep(2)">Back</button>
+                <button class="btn btn-primary" onclick="nextStep(2)">Next: Build Agents</button>
+            </div>
+        </div>
+
+        <!-- Step 3: Agent Builder -->
+        <div class="wizard-step" id="step-3">
+            <div class="wizard-content">
+                <h2>Step 3: Agent Builder</h2>
+                <p class="subtitle">Configure the routing agents for your network</p>
+
+                <div class="tabs">
+                    <button class="tab active" onclick="showAgentTab('new')">New Agent</button>
+                    <button class="tab" onclick="showAgentTab('template')">From Template</button>
+                    <button class="tab" onclick="showAgentTab('nl')">Natural Language</button>
+                    <button class="tab" onclick="showAgentTab('bulk')" style="background: #4ade80; color: #1a1a2e;">Bulk Import</button>
+                </div>
+
+                <div id="agent-tab-new">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="agent-id">Agent ID</label>
+                            <input type="text" id="agent-id" placeholder="e.g., router1">
+                        </div>
+                        <div class="form-group">
+                            <label for="agent-name">Agent Name</label>
+                            <input type="text" id="agent-name" placeholder="e.g., Core Router 1">
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="router-id">Router ID</label>
+                        <input type="text" id="router-id" placeholder="e.g., 1.1.1.1">
+                    </div>
+
+                    <!-- Multi-Interface Builder -->
+                    <div class="interface-builder" style="margin-bottom: 20px;">
+                        <h4 style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                            Interfaces
+                            <button type="button" class="btn btn-secondary" onclick="showAddInterfaceForm()" style="padding: 5px 15px;">+ Add Interface</button>
+                        </h4>
+
+                        <!-- Configured interfaces list -->
+                        <div id="configured-interfaces">
+                            <div class="alert alert-info">Default interfaces (eth0, lo0) will be created automatically. Add more if needed.</div>
+                        </div>
+
+                        <!-- Add interface form (hidden by default) -->
+                        <div id="add-interface-form" style="display: none; background: #1a1a2e; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="if-name">Interface Name</label>
+                                    <input type="text" id="if-name" placeholder="eth1" readonly>
+                                    <div class="hint">Auto-generated based on type</div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="if-type">Interface Type</label>
+                                    <select id="if-type" onchange="updateInterfaceName()">
+                                        <option value="eth">Ethernet</option>
+                                        <option value="lo">Loopback</option>
+                                        <option value="vlan">VLAN</option>
+                                        <option value="tun">Tunnel</option>
+                                        <option value="sub">Sub-Interface</option>
+                                    </select>
+                                </div>
+                                <!-- Sub-interface parent (hidden unless sub-interface selected) -->
+                                <div class="form-group" id="sub-interface-parent-group" style="display: none;">
+                                    <label for="sub-parent">Parent Interface</label>
+                                    <select id="sub-parent" onchange="updateSubInterfaceName()">
+                                        <option value="eth0">eth0</option>
+                                    </select>
+                                    <div class="hint">Parent interface for sub-interface (e.g., eth0.100)</div>
+                                </div>
+                                <div class="form-group" id="sub-interface-vlan-group" style="display: none;">
+                                    <label for="sub-vlan">VLAN ID</label>
+                                    <input type="number" id="sub-vlan" value="100" min="1" max="4094" onchange="updateSubInterfaceName()">
+                                    <div class="hint">VLAN tag for sub-interface (1-4094)</div>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label for="if-address">IP Address (CIDR)</label>
+                                    <input type="text" id="if-address" placeholder="e.g., 172.20.1.1/24">
+                                </div>
+                                <div class="form-group">
+                                    <label for="if-mtu">MTU</label>
+                                    <input type="number" id="if-mtu" value="1500">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label for="if-description">Description (Optional)</label>
+                                <input type="text" id="if-description" placeholder="e.g., Link to Router2">
+                            </div>
+                            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                                <button type="button" class="btn btn-success" onclick="addInterfaceToAgent()">Add Interface</button>
+                                <button type="button" class="btn btn-secondary" onclick="hideAddInterfaceForm()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Multi-Protocol Builder -->
+                    <div class="protocol-builder">
+                        <h4 style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">
+                            Protocols
+                            <button type="button" class="btn btn-secondary" onclick="showAddProtocolForm()" style="padding: 5px 15px;">+ Add Protocol</button>
+                        </h4>
+
+                        <!-- Configured protocols list -->
+                        <div id="configured-protocols">
+                            <div class="alert alert-info">No protocols configured. Add at least one protocol.</div>
+                        </div>
+
+                        <!-- Add protocol form (hidden by default) -->
+                        <div id="add-protocol-form" style="display: none; background: #1a1a2e; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                            <div class="form-group">
+                                <label for="protocol">Protocol Type</label>
+                                <select id="protocol" onchange="updateProtocolConfig()">
+                                    <optgroup label="Link State Protocols">
+                                        <option value="ospf">OSPF</option>
+                                        <option value="ospfv3">OSPFv3 (IPv6)</option>
+                                        <option value="isis">IS-IS</option>
+                                    </optgroup>
+                                    <optgroup label="BGP Protocols">
+                                        <option value="ibgp">iBGP</option>
+                                        <option value="ebgp">eBGP</option>
+                                    </optgroup>
+                                    <optgroup label="MPLS/Overlay">
+                                        <option value="mpls">MPLS/LDP</option>
+                                        <option value="vxlan">VXLAN</option>
+                                        <option value="evpn">EVPN</option>
+                                    </optgroup>
+                                    <optgroup label="Network Services">
+                                        <option value="dhcp">DHCP Server</option>
+                                        <option value="dns">DNS Server</option>
+                                        <option value="ntp">NTP Server/Client</option>
+                                        <option value="ptp">PTP (Precision Time)</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+
+                            <!-- Protocol-specific config -->
+                            <div id="protocol-config">
+                                <div class="form-group">
+                                    <label for="ospf-area">OSPF Area</label>
+                                    <input type="text" id="ospf-area" placeholder="0.0.0.0" value="0.0.0.0">
+                                    <div class="hint">Use 0.0.0.0 for backbone area</div>
+                                </div>
+                            </div>
+
+                            <div style="display: flex; gap: 10px; margin-top: 10px;">
+                                <button type="button" class="btn btn-success" onclick="addProtocolToAgent()">Add Protocol</button>
+                                <button type="button" class="btn btn-secondary" onclick="hideAddProtocolForm()">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button class="btn btn-success" onclick="addAgent()" style="margin-top: 20px;">Add Agent</button>
+                </div>
+
+                <div id="agent-tab-template" style="display: none;">
+                    <div class="form-group">
+                        <label>Select Template</label>
+                        <select id="template-select">
+                            <option value="">-- Select a template --</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="template-new-id">New Agent ID</label>
+                            <input type="text" id="template-new-id" placeholder="e.g., router1">
+                        </div>
+                        <div class="form-group">
+                            <label for="template-new-name">New Agent Name</label>
+                            <input type="text" id="template-new-name" placeholder="e.g., My Router">
+                        </div>
+                    </div>
+                    <button class="btn btn-success" onclick="addAgentFromTemplate()">Add from Template</button>
+                </div>
+
+                <div id="agent-tab-nl" style="display: none;">
+                    <div class="alert alert-info">
+                        Describe your agent in plain English. The LLM will convert your description to a router configuration.
+                    </div>
+                    <div class="form-group">
+                        <label for="nl-description">Agent Description</label>
+                        <textarea id="nl-description" rows="6" placeholder="Example: I need an OSPF router with router ID 10.0.0.1, running in area 0. It should have interface eth0 connected to the 172.20.0.0/24 network.
+
+Or: Create a BGP router in AS 65001 that peers with neighbor 192.168.1.2 in AS 65002. Advertise the 10.0.0.0/8 network."></textarea>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="nl-agent-id">Agent ID</label>
+                            <input type="text" id="nl-agent-id" placeholder="e.g., router1">
+                            <div class="hint">Required: Unique identifier for the agent</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="nl-agent-name">Agent Name (Optional)</label>
+                            <input type="text" id="nl-agent-name" placeholder="e.g., Core Router">
+                            <div class="hint">Display name, will be auto-generated if empty</div>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="convertNLToAgent()" id="nl-convert-btn">Convert to Agent</button>
+                    <div id="nl-status" style="margin-top: 15px;"></div>
+
+                    <!-- Preview of converted config -->
+                    <div id="nl-preview" style="display: none; margin-top: 20px;">
+                        <h4 style="margin-bottom: 10px;">Converted Configuration</h4>
+                        <div class="preview-panel" style="background: #1a1a2e;">
+                            <pre id="nl-preview-content" style="color: #4ade80; font-size: 0.85rem; white-space: pre-wrap;"></pre>
+                        </div>
+                        <div style="margin-top: 15px;">
+                            <button class="btn btn-success" onclick="addNLAgent()">Add This Agent</button>
+                            <button class="btn btn-secondary" onclick="clearNLPreview()">Clear</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bulk Import Tab -->
+                <div id="agent-tab-bulk" style="display: none;">
+                    <div class="alert alert-success">
+                        <strong>Bulk Import:</strong> Import agent templates from a JSON file or paste directly.
+                    </div>
+                    <div class="form-group">
+                        <label>Import from File</label>
+                        <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                            <input type="file" id="bulk-agents-file" accept=".json" onchange="loadAgentFile(this)" style="display: none;">
+                            <button class="btn btn-secondary" onclick="document.getElementById('bulk-agents-file').click()">Choose JSON File</button>
+                            <span id="bulk-file-name" style="color: #888;"></span>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="bulk-agents-json">Or Paste JSON</label>
+                        <textarea id="bulk-agents-json" rows="10" style="font-family: monospace; font-size: 0.85rem;" placeholder='Paste from Agent Input/templates/all_agents.json'></textarea>
+                        <div class="hint">JSON array of agents, or multiple objects (auto-wrapped)</div>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn btn-success" onclick="bulkImportAgents()">Import Agents</button>
+                        <span id="bulk-import-status"></span>
+                    </div>
+
+                    <div id="bulk-import-preview" style="display: none; margin-top: 20px;">
+                        <h4 style="margin-bottom: 10px;">Agents to Import (<span id="bulk-count">0</span>)</h4>
+                        <div id="bulk-preview-list" style="max-height: 200px; overflow-y: auto;"></div>
+                        <div style="margin-top: 15px;">
+                            <button class="btn btn-success" onclick="confirmBulkImport()">Confirm & Add All</button>
+                            <button class="btn btn-secondary" onclick="cancelBulkImport()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <hr style="margin: 30px 0; border-color: #2a2a4e;">
+
+                <h3 style="margin-bottom: 15px;">Configured Agents (<span id="agent-count">0</span>)</h3>
+                <div class="agent-list" id="agent-list">
+                    <div class="alert alert-info">No agents configured yet. Add at least one agent to continue.</div>
+                </div>
+            </div>
+
+            <div class="wizard-nav">
+                <button class="btn btn-secondary" onclick="prevStep(3)">Back</button>
+                <button class="btn btn-primary" onclick="nextStep(3)" id="step3-next" disabled>Next: Topology</button>
+            </div>
+        </div>
+
+        <!-- Step 4: Topology & Links -->
+        <div class="wizard-step" id="step-4">
+            <div class="wizard-content">
+                <h2>Step 4: Topology & Links</h2>
+                <p class="subtitle">Define connections between your agents</p>
+
+                <!-- Topology Import Section -->
+                <div class="import-topology-section" style="background: #1a1a2e; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px dashed #4ade80;">
+                    <h4 style="color: #4ade80; margin-bottom: 10px;">Import Topology Links</h4>
+                    <p style="color: #888; font-size: 0.9rem; margin-bottom: 15px;">
+                        Import topology from a JSON file or paste directly.
+                    </p>
+                    <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 15px;">
+                        <input type="file" id="topology-file" accept=".json" onchange="loadTopologyFile(this)" style="display: none;">
+                        <button class="btn btn-secondary" onclick="document.getElementById('topology-file').click()">Choose JSON File</button>
+                        <span id="topology-file-name" style="color: #888;"></span>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label style="color: #888; font-size: 0.9rem;">Or Paste JSON</label>
+                        <textarea id="import-topology-json" rows="4" placeholder='Paste from Agent Input/templates/first_topology.json' style="font-family: monospace; font-size: 0.85rem;"></textarea>
+                    </div>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <button class="btn btn-success" onclick="importTopologyLinks()">Import Links</button>
+                        <span id="topology-import-status"></span>
+                    </div>
+                </div>
+
+                <div style="text-align: center; color: #888; margin-bottom: 20px;">— OR configure manually —</div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="auto-generate" onchange="toggleAutoGenerate()">
+                        Auto-generate linear topology
+                    </label>
+                </div>
+
+                <div id="manual-links">
+                    <h3 style="margin-bottom: 15px;">Links (<span id="link-count">0</span>)</h3>
+                    <div id="link-list">
+                        <div class="alert alert-info">No links configured. Add links or enable auto-generation.</div>
+                    </div>
+
+                    <div class="link-builder">
+                        <h4 style="margin-bottom: 15px;">Add New Link</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="link-agent1">Agent 1</label>
+                                <select id="link-agent1" onchange="updateInterfaceSelect('link-agent1', 'link-if1')"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="link-if1">Interface</label>
+                                <select id="link-if1">
+                                    <option value="eth0">eth0 (default)</option>
+                                </select>
+                                <div class="hint">Select from agent's configured interfaces</div>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="link-agent2">Agent 2</label>
+                                <select id="link-agent2" onchange="updateInterfaceSelect('link-agent2', 'link-if2')"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="link-if2">Interface</label>
+                                <select id="link-if2">
+                                    <option value="eth0">eth0 (default)</option>
+                                </select>
+                                <div class="hint">Select from agent's configured interfaces</div>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="link-cost">Cost</label>
+                                <input type="number" id="link-cost" value="10">
+                            </div>
+                            <div class="form-group">
+                                <label>&nbsp;</label>
+                                <button class="btn btn-success" onclick="addLink()">Add Link</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wizard-nav">
+                <button class="btn btn-secondary" onclick="prevStep(4)">Back</button>
+                <button class="btn btn-primary" onclick="nextStep(4)">Next: LLM Provider</button>
+            </div>
+        </div>
+
+        <!-- Step 5: LLM Provider -->
+        <div class="wizard-step" id="step-5">
+            <div class="wizard-content">
+                <h2>Step 5: LLM Provider Configuration</h2>
+                <p class="subtitle">Configure the AI provider for your ASI agents</p>
+
+                <div class="form-group">
+                    <label for="llm-provider">LLM Provider</label>
+                    <select id="llm-provider" onchange="updateApiKeyPlaceholder()">
+                        <option value="claude">Claude (Anthropic)</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="gemini">Gemini (Google)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="api-key">API Key</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="password" id="api-key" placeholder="sk-ant-..." autocomplete="off" style="flex: 1;">
+                        <button type="button" class="btn btn-secondary" onclick="toggleApiKeyVisibility()" style="padding: 8px 12px;" title="Show/Hide">
+                            <span id="api-key-toggle-icon">Show</span>
+                        </button>
+                    </div>
+                    <div class="hint">Your API key is stored only in memory and passed securely to containers. Paste with Ctrl+V / Cmd+V.</div>
+                </div>
+
+                <button class="btn btn-secondary" onclick="validateApiKey()" style="margin-bottom: 20px;">Validate Key</button>
+                <div id="api-key-status"></div>
+
+                <hr style="margin: 30px 0; border-color: #2a2a4e;">
+
+                <!-- Preview -->
+                <div class="preview-panel">
+                    <h3>Network Preview</h3>
+                    <div class="preview-stats">
+                        <div class="stat-card">
+                            <div class="value" id="preview-agents">0</div>
+                            <div class="label">Agents</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value" id="preview-links">0</div>
+                            <div class="label">Links</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value" id="preview-mcps">0</div>
+                            <div class="label">MCPs</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="value" id="preview-containers">0</div>
+                            <div class="label">Containers</div>
+                        </div>
+                    </div>
+                    <div id="preview-details"></div>
+                </div>
+            </div>
+
+            <div class="wizard-nav">
+                <button class="btn btn-secondary" onclick="prevStep(5)">Back</button>
+                <div>
+                    <button class="btn btn-secondary" onclick="saveNetwork()" style="margin-right: 10px;">Save Network</button>
+                    <button class="btn btn-success" onclick="launchNetwork()">Launch Network</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MCP Configuration Modal -->
+    <div class="modal" id="mcp-config-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center;">
+        <div class="modal-content" style="background: #16213e; border-radius: 12px; width: 90%; max-width: 500px; max-height: 80vh; overflow: hidden;">
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #2a2a4e;">
+                <h3 id="mcp-modal-title" style="color: #00d9ff;">Configure MCP</h3>
+                <button onclick="closeMcpModal()" style="background: transparent; border: none; color: #888; font-size: 1.5rem; cursor: pointer;">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 20px; overflow-y: auto;">
+                <p id="mcp-modal-description" style="color: #888; margin-bottom: 20px;"></p>
+
+                <div id="mcp-config-fields">
+                    <!-- Dynamic fields inserted here -->
+                </div>
+
+                <div id="mcp-docs-link" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a2a4e;">
+                    <a id="mcp-docs-url" href="#" target="_blank" style="color: #00d9ff; font-size: 0.9rem;">View Documentation</a>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 15px 20px; border-top: 1px solid #2a2a4e; display: flex; justify-content: flex-end; gap: 10px;">
+                <button class="btn btn-secondary" onclick="closeMcpModal()">Cancel</button>
+                <button class="btn btn-success" onclick="saveMcpConfig()">Save & Enable</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/wizard.js"></script>
+</body>
+</html>

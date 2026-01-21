@@ -31,17 +31,31 @@ class BestPathSelector:
     Selects best path from multiple candidate routes per RFC 4271 Section 9.1.2
     """
 
-    def __init__(self, local_as: int, router_id: str):
+    def __init__(self, local_as: int, router_id: str, igp_cost_lookup=None):
         """
         Initialize best path selector
 
         Args:
             local_as: Local AS number
             router_id: Local router ID
+            igp_cost_lookup: Optional callback function to get IGP cost to a next-hop
+                            Signature: igp_cost_lookup(next_hop_ip: str) -> Optional[int]
+                            Returns None if next-hop is not reachable via IGP
         """
         self.local_as = local_as
         self.router_id = router_id
+        self.igp_cost_lookup = igp_cost_lookup
         self.logger = logging.getLogger("BestPathSelector")
+
+    def set_igp_cost_lookup(self, lookup_func):
+        """
+        Set the IGP cost lookup function for step 6 of best path selection.
+
+        Args:
+            lookup_func: Callback function with signature (next_hop_ip: str) -> Optional[int]
+        """
+        self.igp_cost_lookup = lookup_func
+        self.logger.info("IGP cost lookup enabled for best path selection")
 
     def select_best(self, routes: List[BGPRoute]) -> Optional[BGPRoute]:
         """
@@ -111,8 +125,9 @@ class BestPathSelector:
             return result
 
         # 6. Lowest IGP metric to NEXT_HOP (RFC 4271 Section 9.1.2.2e)
-        # Not implemented - requires IGP integration
-        # For now, skip this step
+        result = self._compare_igp_metric(route_a, route_b)
+        if result != 0:
+            return result
 
         # 7. Oldest route (RFC 4271 Section 9.1.2.2f)
         result = self._compare_age(route_a, route_b)
@@ -255,6 +270,52 @@ class BestPathSelector:
         else:
             return 0
 
+    def _compare_igp_metric(self, route_a: BGPRoute, route_b: BGPRoute) -> int:
+        """
+        Compare IGP metric to NEXT_HOP (lower is better)
+
+        RFC 4271 Section 9.1.2.2e: Prefer the route with the lowest
+        IGP metric to the BGP NEXT_HOP.
+
+        This step requires integration with an IGP (OSPF, IS-IS) to
+        determine the cost to reach the next-hop.
+        """
+        # If no IGP lookup is configured, skip this step
+        if not self.igp_cost_lookup:
+            return 0
+
+        # Get next-hop from routes
+        next_hop_a = route_a.next_hop
+        next_hop_b = route_b.next_hop
+
+        if not next_hop_a or not next_hop_b:
+            return 0
+
+        # Look up IGP cost to each next-hop
+        try:
+            cost_a = self.igp_cost_lookup(next_hop_a)
+            cost_b = self.igp_cost_lookup(next_hop_b)
+
+            # If either next-hop is unreachable via IGP, skip comparison
+            if cost_a is None and cost_b is None:
+                return 0
+            if cost_a is None:
+                return 1  # route_b is better (reachable)
+            if cost_b is None:
+                return -1  # route_a is better (reachable)
+
+            # Compare costs
+            if cost_a < cost_b:
+                return -1  # route_a is better (lower cost)
+            elif cost_a > cost_b:
+                return 1  # route_b is better (lower cost)
+            else:
+                return 0
+
+        except Exception as e:
+            self.logger.debug(f"Error comparing IGP metrics: {e}")
+            return 0
+
     def _compare_age(self, route_a: BGPRoute, route_b: BGPRoute) -> int:
         """
         Compare route age (older is better for stability)
@@ -283,8 +344,9 @@ class BestPathSelector:
                 return 1
             else:
                 return 0
-        except:
-            # Fallback to string comparison
+        except (ValueError, TypeError) as e:
+            # Fallback to string comparison for invalid IPs
+            logging.getLogger("BGP.PathSelection").debug(f"Router ID comparison fallback: {e}")
             if route_a.peer_id < route_b.peer_id:
                 return -1
             elif route_a.peer_id > route_b.peer_id:
@@ -308,8 +370,9 @@ class BestPathSelector:
                 return 1
             else:
                 return 0
-        except:
-            # Fallback to string comparison
+        except (ValueError, TypeError) as e:
+            # Fallback to string comparison for invalid IPs
+            logging.getLogger("BGP.PathSelection").debug(f"Peer IP comparison fallback: {e}")
             if route_a.peer_ip < route_b.peer_ip:
                 return -1
             elif route_a.peer_ip > route_b.peer_ip:

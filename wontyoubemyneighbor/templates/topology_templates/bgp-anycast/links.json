@@ -1,0 +1,9 @@
+{
+  "links": [
+    {"id": "site1-transit", "a1": "anycast-site1", "i1": "eth1", "a2": "transit-a", "i2": "eth1", "t": "ethernet", "c": 10, "subnet": "203.0.113.0/30", "description": "Site-1 to Transit-A (Simulated)"},
+    {"id": "site2-transit", "a1": "anycast-site2", "i1": "eth1", "a2": "transit-b", "i2": "eth1", "t": "ethernet", "c": 10, "subnet": "203.0.113.4/30", "description": "Site-2 to Transit-B (Simulated)"},
+    {"id": "site3-transit", "a1": "anycast-site3", "i1": "eth1", "a2": "transit-c", "i2": "eth1", "t": "ethernet", "c": 10, "subnet": "203.0.113.8/30", "description": "Site-3 to Transit-C (Simulated)"},
+    {"id": "site4-transit", "a1": "anycast-site4", "i1": "eth1", "a2": "transit-d", "i2": "eth1", "t": "ethernet", "c": 10, "subnet": "203.0.113.12/30", "description": "Site-4 to Transit-D (Simulated)"}
+  ],
+  "notes": "Transit providers are simulated - in production each site connects to real ISPs. All sites advertise the same 192.0.2.1/32 anycast prefix."
+}

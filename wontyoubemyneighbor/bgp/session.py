@@ -247,24 +247,58 @@ class BGPSession:
             return False
 
     async def accept_connection(self, reader: asyncio.StreamReader,
-                               writer: asyncio.StreamWriter) -> None:
+                               writer: asyncio.StreamWriter,
+                               is_collision: bool = False) -> None:
         """
-        Accept incoming TCP connection (passive mode)
+        Accept incoming TCP connection (passive mode or collision resolution)
+
+        This method handles both passive mode connections and connection collision
+        scenarios where an incoming connection replaces an outgoing attempt.
 
         Args:
             reader: Stream reader
             writer: Stream writer
+            is_collision: True if this is a collision resolution (need to re-send OPEN)
         """
         self.logger.info(f"Accepted connection from {self.config.peer_ip}")
 
+        # Track if we were in an advanced state (collision case)
+        was_in_open_state = self.fsm.state in (STATE_OPENSENT, STATE_OPENCONFIRM)
+
+        # Clean up any existing connection (collision resolution case)
+        if self.message_reader_task and not self.message_reader_task.done():
+            self.logger.debug("Canceling existing message reader task (collision resolution)")
+            self.message_reader_task.cancel()
+            try:
+                await self.message_reader_task
+            except asyncio.CancelledError:
+                pass
+
+        if self.writer:
+            self.logger.debug("Closing existing writer (collision resolution)")
+            try:
+                self.writer.close()
+                await self.writer.wait_closed()
+            except (ConnectionError, OSError, asyncio.CancelledError) as e:
+                self.logger.debug(f"Error closing writer during collision resolution: {e}")
+
+        # Accept the new connection
         self.reader = reader
         self.writer = writer
 
         # Start message reader
         self.message_reader_task = asyncio.create_task(self._message_reader())
 
-        # Notify FSM
-        await self.fsm.process_event(BGPEvent.TcpConnectionConfirmed)
+        # Handle collision case: we need to re-send OPEN on the new connection
+        # because the peer never received our OPEN (it was on the old connection)
+        if is_collision and was_in_open_state:
+            self.logger.info(f"Collision resolution: re-sending OPEN on new connection")
+            # Reset FSM to Connect state so TcpConnectionConfirmed triggers OPEN send
+            self.fsm.state = STATE_CONNECT
+            await self.fsm.process_event(BGPEvent.TcpConnectionConfirmed)
+        else:
+            # Normal passive accept
+            await self.fsm.process_event(BGPEvent.TcpConnectionConfirmed)
 
     async def _close_connection(self) -> None:
         """Close TCP connection"""

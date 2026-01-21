@@ -48,6 +48,10 @@ class OSPFNeighbor:
         self.last_received_dbd_packet = None
         self.is_master = False
 
+        # DBD exchange completion tracking (RFC 2328 requires BOTH sides to finish)
+        self.neighbor_dbd_complete = False  # True when neighbor sends M=0
+        self.our_dbd_complete = False       # True when we send M=0
+
         # LSA lists (RFC 2328 Section 10)
         self.ls_request_list: List = []          # LSAs we need to request
         self.ls_retransmission_list: List = []   # LSAs awaiting ack
@@ -214,6 +218,32 @@ class OSPFNeighbor:
             else:
                 # Have LSAs to request, go to Loading
                 self.fsm.trigger(EVENT_EXCHANGE_DONE)
+
+    def mark_neighbor_dbd_complete(self):
+        """Mark that neighbor has sent their final DBD (M=0)"""
+        self.neighbor_dbd_complete = True
+        logger.debug(f"Neighbor {self.router_id} DBD complete (M=0 received)")
+
+    def mark_our_dbd_complete(self):
+        """Mark that we have sent our final DBD (M=0)"""
+        self.our_dbd_complete = True
+        logger.debug(f"Our DBD complete for {self.router_id} (M=0 sent)")
+
+    def is_exchange_complete(self) -> bool:
+        """
+        Check if DBD exchange is complete (both sides have finished)
+
+        Returns:
+            True if both we and neighbor have sent M=0
+        """
+        return self.neighbor_dbd_complete and self.our_dbd_complete
+
+    def reset_exchange_state(self):
+        """Reset exchange completion tracking (for state machine resets)"""
+        self.neighbor_dbd_complete = False
+        self.our_dbd_complete = False
+        self.db_summary_list = []
+        self.ls_request_list = []
 
     def loading_done(self):
         """

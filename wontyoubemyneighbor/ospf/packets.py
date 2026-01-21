@@ -400,6 +400,28 @@ class ASExternalLSA(Packet):
 
 
 # ============================================================================
+# NSSA External LSA (Type 7) - RFC 3101
+# ============================================================================
+
+class NSSAExternalLSA(Packet):
+    """
+    NSSA External LSA - RFC 3101
+    Used in Not-So-Stubby Areas to carry external routes.
+    Same format as AS External LSA but only flooded within the NSSA.
+    Converted to Type 5 at the NSSA ABR.
+    """
+    name = "NSSA External LSA"
+    fields_desc = [
+        IPField("network_mask", "255.255.255.0"),
+        BitField("e_bit", 0, 1),  # External metric type (E1=0, E2=1)
+        BitField("reserved", 0, 7),
+        X3BytesField("metric", 1),
+        IPField("forwarding_address", "0.0.0.0"),
+        IntField("external_route_tag", 0)
+    ]
+
+
+# ============================================================================
 # Bind Layers
 # ============================================================================
 
@@ -416,6 +438,7 @@ bind_layers(LSAHeader, NetworkLSA, ls_type=2)
 bind_layers(LSAHeader, SummaryLSA, ls_type=3)
 bind_layers(LSAHeader, SummaryLSA, ls_type=4)
 bind_layers(LSAHeader, ASExternalLSA, ls_type=5)
+bind_layers(LSAHeader, NSSAExternalLSA, ls_type=7)
 
 
 # ============================================================================

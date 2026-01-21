@@ -13,7 +13,7 @@ from ospf.packets import (
 from ospf.neighbor import OSPFNeighbor
 from ospf.lsdb import LinkStateDatabase
 from ospf.constants import (
-    DATABASE_DESCRIPTION, STATE_EXSTART, STATE_EXCHANGE,
+    DATABASE_DESCRIPTION, STATE_EXSTART, STATE_EXCHANGE, STATE_LOADING, STATE_FULL,
     EVENT_NEGOTIATION_DONE, EVENT_EXCHANGE_DONE
 )
 
@@ -43,6 +43,11 @@ class AdjacencyManager:
         """
         Build initial Database Description packet (ExStart state)
 
+        Per RFC 2328 Section 10.6: In ExStart, both routers claim to be master
+        by sending empty DBDs with I=1, M=1, MS=1 and their own sequence numbers.
+        Master/slave is determined when the lower Router ID receives a DBD from
+        the higher Router ID and switches to slave mode.
+
         Args:
             neighbor: Target neighbor
             area_id: OSPF area ID
@@ -52,19 +57,17 @@ class AdjacencyManager:
         """
         import struct
         import socket as sock
+        import time
 
-        # In ExStart, master/slave was already determined by neighbor.start_database_exchange()
-        # Use the neighbor's is_master attribute which has correct numerical comparison
-        is_master = neighbor.is_master
+        # In ExStart, ALWAYS claim to be master with our own sequence number
+        # The actual master/slave determination happens in process_dbd when we
+        # compare router IDs and one side backs down
+        if not neighbor.dd_sequence_number:
+            neighbor.dd_sequence_number = int(time.time()) & 0xFFFFFFFF
 
-        if is_master:
-            # We are master, use our sequence number (should already be set)
-            dd_sequence = neighbor.dd_sequence_number
-        else:
-            # We are slave, will use neighbor's sequence number when we receive their DBD
-            dd_sequence = 0  # Will be set when we receive their DBD
+        dd_sequence = neighbor.dd_sequence_number
 
-        # Build DBD packet with I, M, MS bits set appropriately
+        # Build DBD packet - in ExStart, ALWAYS use I=1, M=1, MS=1
         header = OSPFHeader(
             version=2,
             type=DATABASE_DESCRIPTION,
@@ -76,14 +79,52 @@ class AdjacencyManager:
         dbd = OSPFDBDescription(
             interface_mtu=self.interface_mtu,
             options=0x02,  # E-bit
-            flags=0x07 if is_master else 0x06,  # I=1, M=1, MS=1/0
+            flags=0x07,    # I=1, M=1, MS=1 - claim master in ExStart
             dd_sequence=dd_sequence
         )
 
         packet = header / dbd
 
         logger.debug(f"Built initial DBD for {neighbor.router_id}, "
-                    f"master={is_master}, seq={dd_sequence}")
+                    f"flags=0x07 (I=1,M=1,MS=1), seq={dd_sequence}")
+
+        return bytes(packet)
+
+    def build_slave_ack_dbd_packet(self, neighbor: OSPFNeighbor, area_id: str) -> bytes:
+        """
+        Build slave acknowledgment DBD packet
+
+        Per RFC 2328: When slave receives master's initial DBD in ExStart,
+        slave responds with DBD having I=0, M=1, MS=0 and master's sequence number.
+        This packet is empty (no LSA headers).
+
+        Args:
+            neighbor: Target neighbor
+            area_id: OSPF area ID
+
+        Returns:
+            DBD packet as bytes
+        """
+        header = OSPFHeader(
+            version=2,
+            type=DATABASE_DESCRIPTION,
+            router_id=self.router_id,
+            area_id=area_id,
+            auth_type=0
+        )
+
+        # Slave ack: I=0, M=1, MS=0 = 0x02
+        dbd = OSPFDBDescription(
+            interface_mtu=self.interface_mtu,
+            options=0x02,  # E-bit
+            flags=0x02,    # I=0, M=1 (we have more), MS=0 (slave)
+            dd_sequence=neighbor.dd_sequence_number
+        )
+
+        packet = header / dbd
+
+        logger.info(f"Built slave ack DBD for {neighbor.router_id}, "
+                   f"flags=0x02 (I=0,M=1,MS=0), seq={neighbor.dd_sequence_number}")
 
         return bytes(packet)
 
@@ -133,16 +174,22 @@ class AdjacencyManager:
             dd_sequence=neighbor.dd_sequence_number
         )
 
-        # Add LSA headers as payload
-        # Note: In real implementation, would attach LSA headers properly
-        # For now, simplified
+        # Build LSA headers payload (20 bytes each)
+        lsa_payload = b''
+        for lsa_header in lsa_headers:
+            # Serialize LSA header (20 bytes)
+            lsa_payload += bytes(lsa_header)
 
+        # Combine header, DBD, and LSA headers
         packet = header / dbd
+        if lsa_payload:
+            packet = packet / lsa_payload
 
         logger.debug(f"Built DBD for {neighbor.router_id}, "
                     f"seq={neighbor.dd_sequence_number}, "
                     f"more={is_more}, "
-                    f"lsa_count={len(lsa_headers)}")
+                    f"lsa_count={len(lsa_headers)}, "
+                    f"lsa_payload_size={len(lsa_payload)}")
 
         return bytes(packet)
 
@@ -181,6 +228,18 @@ class AdjacencyManager:
             # Handle Exchange state
             elif current_state == STATE_EXCHANGE:
                 return self._process_dbd_exchange(dbd, packet_data, neighbor)
+
+            # Handle DBD in Loading/Full state (duplicate/retransmission from master)
+            elif current_state == STATE_LOADING or current_state == STATE_FULL:
+                # RFC 2328 Section 10.8: Slave should respond to duplicate DBDs
+                # Master may retransmit if it didn't receive our last response
+                if not neighbor.is_master:  # We are slave
+                    logger.info(f"Received duplicate DBD from {neighbor.router_id} in {neighbor.get_state_name()}, "
+                               f"responding to retransmission")
+                    return (True, [], False)  # Signal to send response
+                else:
+                    logger.debug(f"Ignoring DBD from {neighbor.router_id} in {neighbor.get_state_name()}")
+                    return (False, [], False)
 
             else:
                 logger.warning(f"Received DBD in unexpected state: {neighbor.get_state_name()}")
@@ -422,18 +481,33 @@ class AdjacencyManager:
 
         if our_lsa is None:
             # We don't have this LSA
+            logger.debug(f"Need LSA (not in LSDB): type={lsa_header.ls_type}, "
+                        f"id={lsa_header.link_state_id}, adv={lsa_header.advertising_router}")
             return True
 
         # Compare sequence numbers (RFC 2328 Section 13.1)
         neighbor_seq = lsa_header.ls_sequence_number
         our_seq = our_lsa.header.ls_sequence_number
 
+        # Handle None values safely - if either is None, we need the LSA
+        if neighbor_seq is None:
+            logger.warning(f"Neighbor LSA has None sequence number: type={lsa_header.ls_type}")
+            return True
+        if our_seq is None:
+            logger.warning(f"Our LSA has None sequence number: type={lsa_header.ls_type}")
+            return True
+
         # Higher sequence number = newer (accounting for wraparound)
         if neighbor_seq > our_seq:
+            logger.debug(f"Need LSA (newer seq): type={lsa_header.ls_type}, "
+                        f"neighbor_seq={hex(neighbor_seq)}, our_seq={hex(our_seq)}")
             return True
         elif neighbor_seq == our_seq:
             # Same sequence, compare checksum
-            if lsa_header.ls_checksum > our_lsa.header.ls_checksum:
+            neighbor_cksum = lsa_header.ls_checksum or 0
+            our_cksum = our_lsa.header.ls_checksum or 0
+            if neighbor_cksum > our_cksum:
+                logger.debug(f"Need LSA (higher checksum): type={lsa_header.ls_type}")
                 return True
 
         return False

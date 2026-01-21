@@ -1,0 +1,70 @@
+{
+  "version": "1.0.0",
+  "templates": [
+    {
+      "id": "spine-leaf-datacenter",
+      "name": "Spine-Leaf Data Center",
+      "category": "datacenter",
+      "agent_count": 6,
+      "protocols": ["ebgp", "vxlan", "evpn"],
+      "description": "Modern data center with VXLAN/EVPN overlay"
+    },
+    {
+      "id": "three-tier-enterprise",
+      "name": "Three-Tier Enterprise",
+      "category": "enterprise",
+      "agent_count": 8,
+      "protocols": ["ospf", "ibgp", "ebgp", "dhcp"],
+      "description": "Classic enterprise network with core, distribution, access"
+    },
+    {
+      "id": "mpls-service-provider",
+      "name": "MPLS Service Provider Core",
+      "category": "service-provider",
+      "agent_count": 6,
+      "protocols": ["ospf", "mpls", "ldp", "ibgp"],
+      "description": "Service provider MPLS backbone with L3VPN"
+    },
+    {
+      "id": "campus-network",
+      "name": "Campus Network",
+      "category": "campus",
+      "agent_count": 8,
+      "protocols": ["ospf", "vrrp", "dhcp"],
+      "description": "Multi-building campus with OSPF multi-area"
+    },
+    {
+      "id": "wan-hub-spoke",
+      "name": "WAN Hub-and-Spoke",
+      "category": "wan",
+      "agent_count": 5,
+      "protocols": ["ibgp", "ospf", "dhcp"],
+      "description": "Enterprise WAN with GRE tunnels to branches"
+    },
+    {
+      "id": "bgp-anycast",
+      "name": "BGP Anycast DNS/CDN",
+      "category": "cdn",
+      "agent_count": 4,
+      "protocols": ["ebgp"],
+      "description": "Global anycast for DNS or CDN services"
+    },
+    {
+      "id": "large-datacenter-fabric",
+      "name": "Large Datacenter Fabric (Multi-Pod)",
+      "category": "hyperscale",
+      "agent_count": 10,
+      "protocols": ["ebgp", "vxlan", "evpn"],
+      "description": "Hyperscale datacenter with super-spine and pods"
+    }
+  ],
+  "categories": {
+    "datacenter": "Data center and cloud infrastructure",
+    "enterprise": "Enterprise campus and office networks",
+    "service-provider": "ISP and carrier networks",
+    "campus": "Educational and corporate campus",
+    "wan": "Wide area networking",
+    "cdn": "Content delivery and anycast",
+    "hyperscale": "Large-scale cloud infrastructure"
+  }
+}
