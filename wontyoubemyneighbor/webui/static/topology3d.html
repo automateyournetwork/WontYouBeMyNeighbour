@@ -611,14 +611,18 @@
 
         // Protocol colors
         const protocolColors = {
-            ospf: 0x4ade80,
-            bgp: 0xa78bfa,
-            isis: 0xfacc15,
-            mpls: 0xf472b6,
-            vxlan: 0x00d9ff,
-            evpn: 0x00d9ff,
-            default: 0x888888,
-            down: 0xef4444
+            ospf: 0x4ade80,      // Green - OSPF working
+            ospfv3: 0x4ade80,    // Green - OSPFv3
+            bgp: 0xa78bfa,       // Purple - BGP
+            ebgp: 0xa78bfa,      // Purple - eBGP
+            ibgp: 0xa78bfa,      // Purple - iBGP
+            isis: 0xfacc15,      // Yellow - IS-IS
+            mpls: 0xf472b6,      // Pink - MPLS
+            vxlan: 0x00d9ff,     // Cyan - VXLAN
+            evpn: 0x00d9ff,      // Cyan - EVPN
+            default: 0x888888,   // Gray - Unknown/Default
+            down: 0xef4444,      // Red - Down/Stopped
+            deployed: 0x60a5fa  // Blue - Deployed but no protocol
         };
 
         function init() {
@@ -855,12 +859,29 @@
                                 Object.entries(details.agents).forEach(([agentId, agent]) => {
                                     // Determine protocols from agent config or API response
                                     let protocols = [];
+
+                                    // Check config.protos first
                                     if (agent.config?.protos) {
                                         agent.config.protos.forEach(p => {
-                                            if (p.p) protocols.push(p.p);
+                                            const protoType = (p.p || p.t || '').toLowerCase();
+                                            if (protoType && !protocols.includes(protoType)) {
+                                                protocols.push(protoType);
+                                            }
                                         });
                                     }
+
+                                    // Also check runtime protocol state from status API
+                                    if (agent.ospf_neighbors > 0 || agent.ospf_status) {
+                                        if (!protocols.includes('ospf')) protocols.push('ospf');
+                                    }
+                                    if (agent.bgp_peers > 0 || agent.bgp_status) {
+                                        if (!protocols.includes('bgp')) protocols.push('bgp');
+                                    }
+
+                                    // Default to 'deployed' if no protocols found
                                     if (protocols.length === 0) protocols.push('deployed');
+
+                                    console.log(`Agent ${agentId}: protocols=${protocols.join(',')}, status=${agent.status}`);
 
                                     // Get underlay info from API or derive from protocols
                                     let underlayInfo = agent.underlay_info;
@@ -960,14 +981,38 @@
 
                     if (status.router_id) {
                         const protocols = [];
-                        if (status.ospf) protocols.push('ospf');
-                        if (status.bgp) protocols.push('bgp');
+                        const protocolStatus = {};  // Track per-protocol status
+
+                        // Check OSPF status
+                        if (status.ospf) {
+                            protocols.push('ospf');
+                            const ospfUp = status.ospf.full_neighbors > 0 || status.ospf.neighbors > 0;
+                            protocolStatus.ospf = {
+                                up: ospfUp,
+                                neighbors: status.ospf.neighbors || 0,
+                                fullNeighbors: status.ospf.full_neighbors || 0,
+                                routes: status.ospf.routes || 0
+                            };
+                        }
+
+                        // Check BGP status
+                        if (status.bgp) {
+                            protocols.push('bgp');
+                            const bgpUp = status.bgp.established_peers > 0;
+                            protocolStatus.bgp = {
+                                up: bgpUp,
+                                totalPeers: status.bgp.total_peers || 0,
+                                establishedPeers: status.bgp.established_peers || 0,
+                                routes: status.bgp.loc_rib_routes || 0
+                            };
+                        }
 
                         topologyData.nodes.push({
                             id: status.router_id,
                             name: status.agent_name || `Router ${status.router_id}`,
                             status: status.running ? 'running' : 'stopped',
                             protocols: protocols,
+                            protocolStatus: protocolStatus,  // Include detailed protocol status
                             neighbors: (status.ospf?.neighbors || 0) + (status.bgp?.total_peers || 0),
                             routes: (status.ospf?.routes || 0) + (status.bgp?.loc_rib_routes || 0)
                         });
@@ -1188,6 +1233,7 @@
             nodes.forEach(node => {
                 const pos = nodePositions[node.id];
                 const color = getNodeColor(node);
+                const emissiveColor = getNodeEmissive(node);
 
                 // Determine node size based on focus/neighbor status
                 let sphereRadius = 6;
@@ -1205,23 +1251,31 @@
                     glowRadius = 8;
                 }
 
+                // Increase emissive intensity for connected/running nodes
+                const isConnected = node.status === 'running' || node.status === 'established' || node.status === 'full';
+                if (isConnected) {
+                    emissiveIntensity = Math.min(emissiveIntensity + 0.2, 0.6);
+                } else if (node.status === 'initializing') {
+                    emissiveIntensity = Math.max(emissiveIntensity - 0.1, 0.1);
+                }
+
                 // Main sphere
                 const geometry = new THREE.SphereGeometry(sphereRadius, 32, 32);
                 const material = new THREE.MeshPhongMaterial({
                     color: color,
-                    emissive: color,
+                    emissive: emissiveColor,
                     emissiveIntensity: emissiveIntensity,
                     shininess: 100
                 });
                 const sphere = new THREE.Mesh(geometry, material);
                 sphere.position.set(pos.x, pos.y, pos.z);
 
-                // Glow effect
+                // Glow effect - stronger for connected nodes
                 const glowGeometry = new THREE.SphereGeometry(glowRadius, 32, 32);
                 const glowMaterial = new THREE.MeshBasicMaterial({
                     color: color,
                     transparent: true,
-                    opacity: node.isFocused ? 0.4 : 0.2
+                    opacity: node.isFocused ? 0.4 : (isConnected ? 0.3 : 0.15)
                 });
                 const glow = new THREE.Mesh(glowGeometry, glowMaterial);
                 glow.position.copy(sphere.position);
@@ -1370,13 +1424,44 @@
         }
 
         function getNodeColor(node) {
+            // Red for down/stopped
             if (node.status === 'stopped' || node.status === 'down') {
                 return protocolColors.down;
             }
-            if (node.protocols && node.protocols.length > 0) {
-                return protocolColors[node.protocols[0]] || protocolColors.default;
+
+            // If no protocols, use default gray
+            if (!node.protocols || node.protocols.length === 0) {
+                return protocolColors.default;
             }
-            return protocolColors.default;
+
+            // Get the primary protocol
+            const primaryProtocol = node.protocols[0].toLowerCase();
+
+            // Check if the node is fully connected/running
+            const isConnected = node.status === 'running' || node.status === 'established' || node.status === 'full';
+
+            // For connected nodes, show protocol color; for initializing, show dimmer version
+            if (isConnected) {
+                // Return the protocol color (purple for bgp, green for ospf, etc)
+                return protocolColors[primaryProtocol] || protocolColors.default;
+            } else if (node.status === 'initializing' || node.status === 'active' || node.status === 'connect') {
+                // Return a dimmer version (yellow/amber for "connecting" state)
+                return 0xfbbf24; // Amber/yellow for initializing
+            }
+
+            // Fallback to protocol color
+            return protocolColors[primaryProtocol] || protocolColors.default;
+        }
+
+        function getNodeEmissive(node) {
+            // Emissive glow for running nodes - makes them stand out more
+            if (node.status === 'running' || node.status === 'established' || node.status === 'full') {
+                const primaryProtocol = (node.protocols && node.protocols[0]) ? node.protocols[0].toLowerCase() : 'default';
+                const color = protocolColors[primaryProtocol] || protocolColors.default;
+                // Return dimmer version for emissive
+                return color;
+            }
+            return 0x000000; // No glow for non-running nodes
         }
 
         // Create text sprite for labels
@@ -1838,9 +1923,39 @@
             document.getElementById('agentRouterId').textContent = node.id;
             document.getElementById('agentStatus').textContent = node.status;
 
-            const protocolsHtml = node.protocols ? node.protocols.map(p =>
-                `<span class="protocol-badge protocol-${p}">${p.toUpperCase()}</span>`
-            ).join('') : '-';
+            // Build protocol badges with status indicators
+            let protocolsHtml = '-';
+            if (node.protocols && node.protocols.length > 0) {
+                protocolsHtml = node.protocols.map(p => {
+                    const pLower = p.toLowerCase();
+                    const ps = node.protocolStatus ? node.protocolStatus[pLower] : null;
+
+                    // Determine if protocol is up (working/connected)
+                    let isUp = false;
+                    let statusText = '';
+
+                    if (ps) {
+                        isUp = ps.up;
+                        if (pLower === 'ospf') {
+                            statusText = ps.fullNeighbors > 0 ? `${ps.fullNeighbors} FULL` : (ps.neighbors > 0 ? `${ps.neighbors} nbrs` : 'No neighbors');
+                        } else if (pLower === 'bgp') {
+                            statusText = ps.establishedPeers > 0 ? `${ps.establishedPeers} established` : (ps.totalPeers > 0 ? `${ps.totalPeers} peers` : 'No peers');
+                        }
+                    } else {
+                        // Infer from node status
+                        isUp = node.status === 'running' || node.status === 'established' || node.status === 'full';
+                    }
+
+                    // Status indicator: green dot for up, red dot for down
+                    const statusDot = isUp
+                        ? '<span style="color: #4ade80; margin-right: 4px;">●</span>'
+                        : '<span style="color: #ef4444; margin-right: 4px;">●</span>';
+
+                    const tooltip = statusText ? ` title="${statusText}"` : '';
+
+                    return `<span class="protocol-badge protocol-${pLower}"${tooltip}>${statusDot}${p.toUpperCase()}</span>`;
+                }).join('');
+            }
             document.getElementById('agentProtocols').innerHTML = protocolsHtml;
 
             document.getElementById('agentNeighbors').textContent = node.neighbors || 0;

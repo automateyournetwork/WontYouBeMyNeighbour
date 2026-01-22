@@ -135,6 +135,17 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
         description="Web UI for Won't You Be My Neighbor routing agent"
     )
 
+    # Startup event handler to initialize agentic bridge and GAIT
+    @app.on_event("startup")
+    async def startup_event():
+        """Initialize agentic bridge and GAIT tracking on server startup"""
+        if agentic_bridge:
+            try:
+                await agentic_bridge.initialize()
+                logging.getLogger("WebUI").info("AgenticBridge and GAIT initialized successfully")
+            except Exception as e:
+                logging.getLogger("WebUI").error(f"Failed to initialize AgenticBridge: {e}")
+
     # Include wizard router if available
     if WIZARD_AVAILABLE and wizard_router:
         app.include_router(wizard_router)
@@ -772,8 +783,13 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
         return details
 
     # ==================== pyATS Testing API ====================
+    # Store recent test results in memory for persistence across page refreshes
+    _recent_test_results: Dict[str, Any] = {"results": [], "timestamp": None, "summary": {}}
+
     async def run_pyats_tests(suites: List[str], agent_id: Optional[str]) -> Dict[str, Any]:
         """Run pyATS tests for the specified suites"""
+        nonlocal _recent_test_results
+
         try:
             from pyATS_Tests import run_all_tests, get_tests_for_agent
         except ImportError:
@@ -789,7 +805,8 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             "n": getattr(asi_app, 'agent_name', None) or f"Agent {asi_app.router_id}",
             "r": asi_app.router_id,
             "ifs": [],
-            "protos": []
+            "protos": [],
+            "state": {}  # Include runtime state for dynamic tests
         }
 
         # Add interfaces
@@ -800,22 +817,58 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
 
         # Add protocols
         if asi_app.ospf_interface:
-            agent_config["protos"].append({"t": "ospf", "area": asi_app.ospf_interface.area_id})
+            agent_config["protos"].append({
+                "p": "ospf",
+                "area": asi_app.ospf_interface.area_id,
+                "peers": []
+            })
+            # Add OSPF neighbors to state for dynamic tests
+            ospf_nbrs = []
+            for nbr_id, nbr in asi_app.ospf_interface.neighbors.items():
+                ospf_nbrs.append({
+                    "ip": nbr.source_ip,
+                    "router_id": nbr_id,
+                    "state": "FULL" if nbr.is_full() else "INIT"
+                })
+            agent_config["state"]["nbrs"] = ospf_nbrs
+
         if asi_app.bgp_speaker:
-            agent_config["protos"].append({"t": "bgp", "asn": asi_app.bgp_speaker.agent.local_as})
+            bgp_peers = []
+            for peer_ip, session in asi_app.bgp_speaker.agent.sessions.items():
+                bgp_peers.append({
+                    "ip": peer_ip,
+                    "asn": session.config.peer_as,
+                    "state": session.state.name if hasattr(session.state, 'name') else str(session.state)
+                })
+            agent_config["protos"].append({
+                "p": "bgp",
+                "asn": asi_app.bgp_speaker.agent.local_as,
+                "peers": bgp_peers
+            })
+            agent_config["state"]["peers"] = bgp_peers
+
         isis_speaker = getattr(asi_app, 'isis_speaker', None)
         if isis_speaker:
-            agent_config["protos"].append({"t": "isis"})
+            agent_config["protos"].append({"p": "isis"})
         mpls_forwarder = getattr(asi_app, 'mpls_forwarder', None)
         if mpls_forwarder:
-            agent_config["protos"].append({"t": "mpls"})
+            agent_config["protos"].append({"p": "mpls"})
         evpn_manager = getattr(asi_app, 'evpn_manager', None)
         if evpn_manager:
-            agent_config["protos"].append({"t": "vxlan"})
+            agent_config["protos"].append({"p": "vxlan"})
 
         try:
             # Run tests
             test_results = await run_all_tests(agent_config, suite_filter=suites if suites else None)
+
+            # Store results for persistence
+            _recent_test_results = {
+                "results": test_results.get("results", []),
+                "timestamp": datetime.now().isoformat(),
+                "summary": test_results.get("summary", {}),
+                "agent_id": agent_id or asi_app.router_id
+            }
+
             return test_results
         except Exception as e:
             logging.getLogger("WebUI").error(f"Test execution failed: {e}")
@@ -824,6 +877,10 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
                 "message": str(e),
                 "results": []
             }
+
+    def get_recent_test_results() -> Dict[str, Any]:
+        """Get the most recent test results (for page refresh persistence)"""
+        return _recent_test_results
 
     async def update_test_schedule(
         agent_id: Optional[str],
@@ -899,45 +956,59 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
 
     # ==================== GAIT API ====================
     async def get_gait_history(agent_id: Optional[str]) -> Dict[str, Any]:
-        """Get GAIT conversation history for an agent"""
+        """Get GAIT conversation history for an agent - now linked to chat"""
         gait_data = {
             "total_turns": 0,
             "user_messages": 0,
             "agent_messages": 0,
             "actions_taken": 0,
-            "history": []
+            "history": [],
+            "gait_initialized": False
         }
 
-        # Try to get conversation history from agentic bridge
+        # Try to get conversation history from agentic bridge (with GAIT integration)
         if agentic_bridge:
             try:
-                # Check if bridge has conversation history
-                if hasattr(agentic_bridge, 'conversation_history'):
-                    history = agentic_bridge.conversation_history
-                    for item in history:
-                        msg_type = item.get('role', 'user')
-                        gait_data["history"].append({
-                            "type": msg_type,
-                            "sender": msg_type.capitalize(),
-                            "message": item.get('content', ''),
-                            "timestamp": item.get('timestamp', datetime.now().isoformat())
-                        })
-                        gait_data["total_turns"] += 1
-                        if msg_type == 'user':
-                            gait_data["user_messages"] += 1
-                        elif msg_type in ['assistant', 'agent']:
-                            gait_data["agent_messages"] += 1
+                # Use new GAIT-integrated methods if available
+                if hasattr(agentic_bridge, 'get_gait_status'):
+                    status = agentic_bridge.get_gait_status()
+                    gait_data.update({
+                        "total_turns": status.get("total_turns", 0),
+                        "user_messages": status.get("user_messages", 0),
+                        "agent_messages": status.get("agent_messages", 0),
+                        "actions_taken": status.get("actions_taken", 0),
+                        "gait_initialized": status.get("gait_initialized", False),
+                        "head_commit": status.get("head_commit"),
+                        "pinned_memory": status.get("pinned_memory", 0)
+                    })
 
-                # Check for action history
-                if hasattr(agentic_bridge, 'action_history'):
-                    for action in agentic_bridge.action_history:
-                        gait_data["history"].append({
-                            "type": "action",
-                            "sender": "Action",
-                            "message": f"{action.get('action', 'Unknown')}: {action.get('result', '')}",
-                            "timestamp": action.get('timestamp', datetime.now().isoformat())
-                        })
-                        gait_data["actions_taken"] += 1
+                # Get history from GAIT client
+                if hasattr(agentic_bridge, 'get_gait_history'):
+                    history = await agentic_bridge.get_gait_history(limit=100)
+                    gait_data["history"] = history
+                else:
+                    # Fallback to local conversation history
+                    if hasattr(agentic_bridge, 'conversation_history'):
+                        history = agentic_bridge.conversation_history
+                        for item in history:
+                            msg_type = item.get('role', 'user')
+                            gait_data["history"].append({
+                                "type": msg_type,
+                                "sender": msg_type.capitalize(),
+                                "message": item.get('content', ''),
+                                "timestamp": item.get('timestamp', datetime.now().isoformat())
+                            })
+
+                    # Also include action history
+                    if hasattr(agentic_bridge, 'action_history'):
+                        for action in agentic_bridge.action_history:
+                            gait_data["history"].append({
+                                "type": "action",
+                                "sender": "Action",
+                                "message": f"{action.get('action', 'Unknown')}: {action.get('result', '')}",
+                                "timestamp": action.get('timestamp', datetime.now().isoformat())
+                            })
+
             except Exception as e:
                 logging.getLogger("WebUI").debug(f"Failed to get GAIT history: {e}")
 
@@ -1083,7 +1154,18 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
 
     @app.get("/api/tests/results")
     async def get_test_results(limit: int = 10) -> Dict[str, Any]:
-        """Get recent test results"""
+        """Get recent test results - includes both scheduler and on-demand results"""
+        results_data = get_recent_test_results()
+
+        # If we have recent on-demand results, return those
+        if results_data.get("results"):
+            return {
+                "results": results_data["results"],
+                "timestamp": results_data.get("timestamp"),
+                "summary": results_data.get("summary", {})
+            }
+
+        # Fall back to scheduler results
         try:
             from pyATS_Tests.scheduler import get_scheduler
             scheduler = get_scheduler()
@@ -14165,6 +14247,11 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
                             "type": "chat_response",
                             "data": {"response": response.response, "timestamp": response.timestamp}
                         })
+                        # Also send updated GAIT data so the timeline updates
+                        # Note: GAIT recording is now awaited in bridge.py, but small delay for any async I/O
+                        await asyncio.sleep(0.2)
+                        gait_data = await get_gait_history(data.get("agent_id"))
+                        await safe_send({"type": "gait", "data": gait_data})
                     elif data.get("type") == "get_status":
                         status = await get_status()
                         await safe_send({"type": "status", "data": status})

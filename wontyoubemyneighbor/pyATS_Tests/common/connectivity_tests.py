@@ -8,7 +8,7 @@ Tests:
 - Peer connectivity (based on protocol config)
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import asyncio
 import subprocess
 import logging
@@ -162,59 +162,175 @@ class InterfaceIPConnectivityTest(BaseTest):
 
 
 class PeerConnectivityTest(BaseTest):
-    """Test connectivity to configured protocol peers"""
+    """Test connectivity to configured protocol peers and discovered neighbors"""
 
     test_id = "connectivity_peers"
     test_name = "Peer Connectivity"
-    description = "Verify connectivity to all configured protocol peers"
+    description = "Verify connectivity to all configured peers, OSPF neighbors, and BGP peers"
     severity = TestSeverity.CRITICAL
     timeout = 60.0
 
-    async def execute(self) -> TestResult:
-        peers_tested = []
-        failed = 0
+    def _extract_all_peer_ips(self) -> List[Dict[str, Any]]:
+        """
+        Dynamically extract all peer IPs from:
+        1. Protocol peer configurations
+        2. Runtime state (OSPF neighbors, BGP peers)
+        3. Interface neighbor hints from topology
+        """
+        peers_to_test = []
+        seen_ips = set()
 
+        # 1. Get peers from protocol configuration
         for proto in self.protocols:
             proto_type = proto.get("p", "unknown")
             peers = proto.get("peers", [])
 
             for peer in peers:
                 peer_ip = peer.get("ip")
-                if not peer_ip:
-                    continue
-
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        "ping", "-c", "2", "-W", "3", peer_ip,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    stdout, _ = await proc.communicate()
-
-                    if proc.returncode == 0:
-                        peers_tested.append({
-                            "protocol": proto_type,
-                            "peer_ip": peer_ip,
-                            "peer_asn": peer.get("asn"),
-                            "status": "reachable"
-                        })
-                    else:
-                        peers_tested.append({
-                            "protocol": proto_type,
-                            "peer_ip": peer_ip,
-                            "peer_asn": peer.get("asn"),
-                            "status": "unreachable"
-                        })
-                        failed += 1
-
-                except Exception as e:
-                    peers_tested.append({
+                if peer_ip and peer_ip not in seen_ips:
+                    seen_ips.add(peer_ip)
+                    peers_to_test.append({
+                        "ip": peer_ip,
                         "protocol": proto_type,
-                        "peer_ip": peer_ip,
-                        "status": "error",
-                        "error": str(e)
+                        "asn": peer.get("asn"),
+                        "source": "config"
                     })
+
+        # 2. Get from runtime state if available (OSPF neighbors)
+        runtime_state = self.agent_config.get("state", {})
+
+        # Check OSPF neighbors from runtime state
+        ospf_neighbors = runtime_state.get("nbrs", [])
+        for nbr in ospf_neighbors:
+            nbr_ip = nbr.get("ip") or nbr.get("address")
+            if nbr_ip and nbr_ip not in seen_ips:
+                seen_ips.add(nbr_ip)
+                peers_to_test.append({
+                    "ip": nbr_ip,
+                    "protocol": "ospf",
+                    "router_id": nbr.get("router_id") or nbr.get("r"),
+                    "source": "runtime_ospf"
+                })
+
+        # Check BGP peers from runtime state
+        bgp_peers = runtime_state.get("peers", [])
+        for peer in bgp_peers:
+            peer_ip = peer.get("ip") or peer.get("address")
+            if peer_ip and peer_ip not in seen_ips:
+                seen_ips.add(peer_ip)
+                peers_to_test.append({
+                    "ip": peer_ip,
+                    "protocol": "bgp",
+                    "asn": peer.get("asn") or peer.get("remote_as"),
+                    "source": "runtime_bgp"
+                })
+
+        # 3. Extract peer IPs from interface configurations (underlay connectivity)
+        # Look for point-to-point links where we can derive the neighbor IP
+        for iface in self.interfaces:
+            addresses = iface.get("a", [])
+            iface_type = iface.get("t", "eth")
+
+            # For point-to-point interfaces, derive neighbor from subnet
+            for addr in addresses:
+                if "/" in addr:
+                    ip, prefix = addr.split("/")
+                    prefix_len = int(prefix)
+
+                    # /30 or /31 subnets are point-to-point, we can derive neighbor
+                    if prefix_len >= 30:
+                        neighbor_ip = self._get_neighbor_ip(ip, prefix_len)
+                        if neighbor_ip and neighbor_ip not in seen_ips:
+                            seen_ips.add(neighbor_ip)
+                            peers_to_test.append({
+                                "ip": neighbor_ip,
+                                "protocol": "underlay",
+                                "interface": iface.get("n", iface.get("id")),
+                                "source": "interface_subnet"
+                            })
+
+        return peers_to_test
+
+    def _get_neighbor_ip(self, ip: str, prefix_len: int) -> Optional[str]:
+        """Calculate neighbor IP for point-to-point links (/30 or /31)"""
+        try:
+            parts = ip.split(".")
+            if len(parts) != 4:
+                return None
+
+            ip_int = sum(int(p) << (24 - 8*i) for i, p in enumerate(parts))
+
+            if prefix_len == 31:
+                # /31: flip the last bit
+                neighbor_int = ip_int ^ 1
+            elif prefix_len == 30:
+                # /30: network has .0, .1, .2, .3 - we use .1 and .2
+                last_octet = ip_int & 3
+                if last_octet == 1:
+                    neighbor_int = ip_int + 1
+                elif last_octet == 2:
+                    neighbor_int = ip_int - 1
+                else:
+                    return None  # .0 or .3 are not usable
+            else:
+                return None
+
+            # Convert back to IP string
+            return ".".join(str((neighbor_int >> (24 - 8*i)) & 255) for i in range(4))
+        except Exception:
+            return None
+
+    async def execute(self) -> TestResult:
+        peers_tested = []
+        failed = 0
+
+        # Get all peer IPs dynamically
+        peers_to_test = self._extract_all_peer_ips()
+
+        for peer in peers_to_test:
+            peer_ip = peer.get("ip")
+            if not peer_ip:
+                continue
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ping", "-c", "2", "-W", "3", peer_ip,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, _ = await proc.communicate()
+
+                result_entry = {
+                    "protocol": peer.get("protocol", "unknown"),
+                    "peer_ip": peer_ip,
+                    "source": peer.get("source", "unknown")
+                }
+
+                # Add optional fields
+                if peer.get("asn"):
+                    result_entry["peer_asn"] = peer["asn"]
+                if peer.get("router_id"):
+                    result_entry["router_id"] = peer["router_id"]
+                if peer.get("interface"):
+                    result_entry["interface"] = peer["interface"]
+
+                if proc.returncode == 0:
+                    result_entry["status"] = "reachable"
+                    peers_tested.append(result_entry)
+                else:
+                    result_entry["status"] = "unreachable"
+                    peers_tested.append(result_entry)
                     failed += 1
+
+            except Exception as e:
+                peers_tested.append({
+                    "protocol": peer.get("protocol", "unknown"),
+                    "peer_ip": peer_ip,
+                    "source": peer.get("source", "unknown"),
+                    "status": "error",
+                    "error": str(e)
+                })
+                failed += 1
 
         if not peers_tested:
             return TestResult(
@@ -222,8 +338,12 @@ class PeerConnectivityTest(BaseTest):
                 test_name=self.test_name,
                 status=TestStatus.SKIPPED,
                 severity=self.severity,
-                message="No peers configured to test"
+                message="No peers configured or discovered to test"
             )
+
+        # Build detailed message showing what was tested
+        sources = set(p.get("source", "unknown") for p in peers_tested)
+        source_summary = ", ".join(sources)
 
         if failed == 0:
             return TestResult(
@@ -231,8 +351,8 @@ class PeerConnectivityTest(BaseTest):
                 test_name=self.test_name,
                 status=TestStatus.PASSED,
                 severity=self.severity,
-                message=f"All {len(peers_tested)} peers are reachable",
-                details={"peers": peers_tested}
+                message=f"All {len(peers_tested)} peers reachable (sources: {source_summary})",
+                details={"peers": peers_tested, "sources": list(sources)}
             )
         else:
             return TestResult(
@@ -240,8 +360,8 @@ class PeerConnectivityTest(BaseTest):
                 test_name=self.test_name,
                 status=TestStatus.FAILED,
                 severity=self.severity,
-                message=f"{failed} of {len(peers_tested)} peers are unreachable",
-                details={"peers": peers_tested, "failed_count": failed}
+                message=f"{failed} of {len(peers_tested)} peers unreachable (sources: {source_summary})",
+                details={"peers": peers_tested, "failed_count": failed, "sources": list(sources)}
             )
 
 

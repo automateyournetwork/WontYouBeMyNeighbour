@@ -14,6 +14,14 @@ class AgentDashboard {
         this.maxReconnectAttempts = 10;
         this.reconnectDelay = 2000;
 
+        // Store detailed data for markmap visualization
+        this.interfaceDetails = [];
+        this.ospfNeighborDetails = [];
+        this.bgpPeerDetails = [];
+        this.ospfRoutes = [];
+        this.bgpRoutes = [];
+        this.isisAdjacencies = [];
+
         this.init();
     }
 
@@ -109,7 +117,16 @@ class AgentDashboard {
                     // Could add log streaming here
                     break;
                 case 'test_results':
-                    this.updateTestResults(data.data.results || []);
+                    // Re-enable the run tests button
+                    this._testsRunning = false;
+                    const btn = document.getElementById('run-all-tests-btn');
+                    if (btn) {
+                        btn.textContent = 'Run All Tests';
+                        btn.disabled = false;
+                    }
+                    // Handle different response formats
+                    const results = data.data.results || data.data || [];
+                    this.updateTestResults(Array.isArray(results) ? results : []);
                     break;
                 case 'testing':
                     this.updateTestingData(data.data);
@@ -230,6 +247,9 @@ class AgentDashboard {
         if (!interfaces || !Array.isArray(interfaces)) {
             interfaces = [];
         }
+
+        // Store for markmap visualization
+        this.interfaceDetails = interfaces;
 
         // Calculate metrics
         const total = interfaces.length;
@@ -386,10 +406,25 @@ class AgentDashboard {
         document.querySelectorAll('.protocol-content').forEach(content => {
             content.classList.toggle('active', content.id === `${protocol}-content`);
         });
+
+        // Request data for specific tabs that need it
+        if (protocol === 'gait') {
+            // Request GAIT history when GAIT tab is selected
+            this.send({ type: 'get_gait', agent_id: this.agentId });
+        } else if (protocol === 'markmap') {
+            // Request markmap data when Markmap tab is selected
+            this.send({ type: 'get_markmap', agent_id: this.agentId });
+        } else if (protocol === 'testing') {
+            // Fetch previous test results when Testing tab is selected
+            this.fetchPreviousTestResults();
+        }
     }
 
     updateOSPFData(ospf) {
         if (!ospf) return;
+
+        // Store for markmap visualization
+        this.ospfNeighborDetails = ospf.neighbor_details || [];
 
         document.getElementById('ospf-neighbors').textContent = ospf.neighbors || 0;
         document.getElementById('ospf-full').textContent = ospf.full_neighbors || 0;
@@ -422,6 +457,9 @@ class AgentDashboard {
     updateBGPData(bgp) {
         if (!bgp || bgp.error) return;
 
+        // Store for markmap visualization
+        this.bgpPeerDetails = bgp.peer_details || [];
+
         document.getElementById('bgp-peers').textContent = bgp.total_peers || 0;
         document.getElementById('bgp-established').textContent = bgp.established_peers || 0;
         document.getElementById('bgp-prefixes-in').textContent = bgp.loc_rib_routes || 0;
@@ -451,6 +489,10 @@ class AgentDashboard {
     }
 
     updateRoutes(routes) {
+        // Store for markmap visualization
+        this.ospfRoutes = routes.ospf || [];
+        this.bgpRoutes = routes.bgp || [];
+
         // OSPF routes
         const ospfRoutesTable = document.getElementById('ospf-routes-table');
         if (ospfRoutesTable && routes.ospf) {
@@ -753,6 +795,9 @@ class AgentDashboard {
         if (resultsFilter) {
             resultsFilter.addEventListener('change', (e) => this.filterTestResults(e.target.value));
         }
+
+        // Fetch previous test results on page load for persistence
+        this.fetchPreviousTestResults();
     }
 
     runAllTests() {
@@ -770,19 +815,39 @@ class AgentDashboard {
         btn.textContent = 'Running...';
         btn.disabled = true;
 
-        // Send test request via WebSocket
+        // Track that we're waiting for results
+        this._testsRunning = true;
+
+        // Send test request via WebSocket - real results will arrive via onMessage handler
         this.send({
             type: 'run_tests',
             suites: selectedSuites,
             agent_id: this.agentId
         });
 
-        // Simulate test execution (will be replaced with actual WebSocket response)
+        // Timeout safety - re-enable button after 60 seconds if no response
         setTimeout(() => {
-            btn.textContent = 'Run All Tests';
-            btn.disabled = false;
-            this.updateTestResults(this.generateMockTestResults(selectedSuites));
-        }, 3000);
+            if (this._testsRunning) {
+                btn.textContent = 'Run All Tests';
+                btn.disabled = false;
+                this._testsRunning = false;
+            }
+        }, 60000);
+    }
+
+    async fetchPreviousTestResults() {
+        // Fetch previous test results on page load for persistence
+        try {
+            const response = await fetch('/api/tests/results?limit=50');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.results && data.results.length > 0) {
+                    this.updateTestResults(data.results);
+                }
+            }
+        } catch (err) {
+            console.log('No previous test results available:', err.message);
+        }
     }
 
     generateMockTestResults(suites) {
@@ -1136,13 +1201,21 @@ class AgentDashboard {
             const sender = item.sender || (type === 'user' ? 'User' : type === 'agent' ? 'Agent' : type === 'action' ? 'Action' : 'System');
             const time = item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : '--';
             const message = item.message || item.text || '';
+            const commitId = item.commit_id || '';
+
+            // Sender icon based on type
+            const senderIcon = type === 'user' ? '👤' : type === 'agent' ? '🤖' : type === 'action' ? '⚡' : '📋';
+
+            // Commit ID badge if available
+            const commitBadge = commitId ? `<span class="commit-badge" title="Commit ID: ${commitId}">${commitId.substring(0, 8)}</span>` : '';
 
             html += `
-                <div class="timeline-item ${type}" data-type="${type}">
+                <div class="timeline-item ${type}" data-type="${type}" data-commit="${commitId}">
                     <div class="timeline-marker"></div>
                     <div class="timeline-content">
                         <div class="timeline-header">
-                            <span class="timeline-sender">${sender}</span>
+                            <span class="timeline-sender">${senderIcon} ${sender}</span>
+                            ${commitBadge}
                             <span class="timeline-time">${time}</span>
                         </div>
                         <div class="timeline-message">${this.escapeHtml(message)}</div>
@@ -1209,6 +1282,12 @@ class AgentDashboard {
         this.markmapAutoRefresh = true;
         this.markmapRefreshInterval = null;
         this.markmapInstance = null;
+        this.markmapLibraryLoaded = false;
+        this.markmapLastRefresh = null;
+        this.markmapRefreshIntervalMs = 5 * 60 * 1000; // 5 minutes default
+
+        // Load markmap library dynamically
+        this.loadMarkmapLibrary();
 
         // Auto-refresh checkbox
         const autoRefreshCb = document.getElementById('markmap-auto-refresh');
@@ -1219,6 +1298,19 @@ class AgentDashboard {
                     this.startMarkmapAutoRefresh();
                 } else {
                     this.stopMarkmapAutoRefresh();
+                }
+            });
+        }
+
+        // Refresh interval selector (similar to testing scheduler)
+        const intervalSelect = document.getElementById('markmap-refresh-interval');
+        if (intervalSelect) {
+            intervalSelect.addEventListener('change', (e) => {
+                const minutes = parseInt(e.target.value) || 5;
+                this.markmapRefreshIntervalMs = minutes * 60 * 1000;
+                if (this.markmapAutoRefresh) {
+                    this.stopMarkmapAutoRefresh();
+                    this.startMarkmapAutoRefresh();
                 }
             });
         }
@@ -1241,23 +1333,229 @@ class AgentDashboard {
             fullscreenBtn.addEventListener('click', () => this.toggleMarkmapFullscreen());
         }
 
-        // Initial render after a short delay to ensure data is loaded
-        setTimeout(() => this.refreshMarkmap(), 1000);
+        // Initial render after library loads
+        this.waitForMarkmapLibrary().then(() => {
+            this.refreshMarkmap();
+        });
 
-        // Start auto-refresh if enabled
+        // Start scheduled auto-refresh (5 minute interval like testing)
         if (this.markmapAutoRefresh) {
             this.startMarkmapAutoRefresh();
         }
     }
 
+    loadMarkmapLibrary() {
+        // Check if already loaded - try different variable names
+        if (this._checkMarkmapLoaded()) {
+            this.markmapLibraryLoaded = true;
+            return Promise.resolve();
+        }
+
+        // Load d3 first, then markmap
+        return new Promise((resolve, reject) => {
+            // Load D3
+            if (typeof d3 === 'undefined') {
+                const d3Script = document.createElement('script');
+                d3Script.src = 'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js';
+                d3Script.onload = () => this.loadMarkmapScripts(resolve, reject);
+                d3Script.onerror = () => reject(new Error('Failed to load D3'));
+                document.head.appendChild(d3Script);
+            } else {
+                this.loadMarkmapScripts(resolve, reject);
+            }
+        });
+    }
+
+    _checkMarkmapLoaded() {
+        // Check various ways markmap might be exposed
+        // Log for debugging
+        console.log('Checking markmap globals:', {
+            markmap: typeof markmap,
+            'window.markmap': typeof window.markmap,
+            markmapLib: typeof markmapLib,
+            markmapView: typeof markmapView,
+            'window.markmapLib': typeof window.markmapLib
+        });
+
+        // Check markmap global
+        if (typeof markmap !== 'undefined' && markmap) {
+            if (markmap.Transformer && markmap.Markmap) return true;
+            // Some versions expose at markmap.markmap
+            if (markmap.markmap && markmap.markmap.Transformer) return true;
+        }
+
+        // Check window.markmap
+        if (typeof window.markmap !== 'undefined' && window.markmap) {
+            if (window.markmap.Transformer && window.markmap.Markmap) return true;
+        }
+
+        // Check separate lib and view
+        if (typeof markmapLib !== 'undefined' && typeof markmapView !== 'undefined') {
+            if (markmapLib.Transformer && markmapView.Markmap) return true;
+        }
+
+        // Check window versions
+        if (typeof window.markmapLib !== 'undefined' && typeof window.markmapView !== 'undefined') {
+            if (window.markmapLib.Transformer && window.markmapView.Markmap) return true;
+        }
+
+        return false;
+    }
+
+    _getMarkmap() {
+        // Get the markmap object from wherever it's defined
+        if (typeof markmap !== 'undefined' && markmap) {
+            if (markmap.Transformer && markmap.Markmap) return markmap;
+            if (markmap.markmap && markmap.markmap.Transformer) return markmap.markmap;
+        }
+
+        if (typeof window.markmap !== 'undefined' && window.markmap) {
+            if (window.markmap.Transformer && window.markmap.Markmap) return window.markmap;
+        }
+
+        // Try markmapLib + markmapView combo
+        if (typeof markmapLib !== 'undefined' && typeof markmapView !== 'undefined') {
+            if (markmapLib.Transformer && markmapView.Markmap) {
+                return { Transformer: markmapLib.Transformer, Markmap: markmapView.Markmap };
+            }
+        }
+
+        // Window versions
+        if (typeof window.markmapLib !== 'undefined' && typeof window.markmapView !== 'undefined') {
+            if (window.markmapLib.Transformer && window.markmapView.Markmap) {
+                return { Transformer: window.markmapLib.Transformer, Markmap: window.markmapView.Markmap };
+            }
+        }
+
+        return null;
+    }
+
+    loadMarkmapScripts(resolve, reject) {
+        // Load markmap-common first (required dependency)
+        const commonScript = document.createElement('script');
+        commonScript.src = 'https://cdn.jsdelivr.net/npm/markmap-common@0.15.4/dist/index.js';
+        commonScript.onload = () => {
+            // Load markmap-lib
+            const libScript = document.createElement('script');
+            libScript.src = 'https://cdn.jsdelivr.net/npm/markmap-lib@0.15.4/dist/browser/index.js';
+            libScript.onload = () => {
+                // Then load markmap-view
+                const viewScript = document.createElement('script');
+                viewScript.src = 'https://cdn.jsdelivr.net/npm/markmap-view@0.15.4/dist/browser/index.js';
+                viewScript.onload = () => {
+                    // Give scripts time to initialize globals
+                    setTimeout(() => {
+                        if (this._checkMarkmapLoaded()) {
+                            this.markmapLibraryLoaded = true;
+                            console.log('Markmap library loaded successfully');
+                            resolve();
+                        } else {
+                            console.warn('Markmap scripts loaded but globals not found, trying fallback');
+                            this.loadMarkmapFallback(resolve, reject);
+                        }
+                    }, 200);
+                };
+                viewScript.onerror = () => {
+                    console.warn('markmap-view failed, trying fallback');
+                    this.loadMarkmapFallback(resolve, reject);
+                };
+                document.head.appendChild(viewScript);
+            };
+            libScript.onerror = () => {
+                console.warn('markmap-lib failed, trying fallback');
+                this.loadMarkmapFallback(resolve, reject);
+            };
+            document.head.appendChild(libScript);
+        };
+        commonScript.onerror = () => {
+            console.warn('markmap-common failed, trying direct fallback');
+            this.loadMarkmapFallback(resolve, reject);
+        };
+        document.head.appendChild(commonScript);
+    }
+
+    loadMarkmapFallback(resolve, reject) {
+        // Try unpkg CDN as fallback
+        console.log('Trying unpkg CDN for markmap...');
+
+        // Load lib from unpkg
+        const libScript = document.createElement('script');
+        libScript.src = 'https://unpkg.com/markmap-lib@0.15.4/dist/browser/index.js';
+        libScript.onload = () => {
+            const viewScript = document.createElement('script');
+            viewScript.src = 'https://unpkg.com/markmap-view@0.15.4/dist/browser/index.js';
+            viewScript.onload = () => {
+                setTimeout(() => {
+                    if (this._checkMarkmapLoaded()) {
+                        this.markmapLibraryLoaded = true;
+                        console.log('Markmap loaded via unpkg fallback');
+                        resolve();
+                    } else {
+                        // Last resort - try the autoloader
+                        const autoScript = document.createElement('script');
+                        autoScript.src = 'https://cdn.jsdelivr.net/npm/markmap-autoloader@0.15.4';
+                        autoScript.onload = () => {
+                            setTimeout(() => {
+                                if (this._checkMarkmapLoaded()) {
+                                    this.markmapLibraryLoaded = true;
+                                    console.log('Markmap loaded via autoloader');
+                                    resolve();
+                                } else {
+                                    console.error('All markmap loading methods failed');
+                                    reject(new Error('Markmap library failed to expose globals'));
+                                }
+                            }, 300);
+                        };
+                        autoScript.onerror = () => reject(new Error('All markmap loading methods failed'));
+                        document.head.appendChild(autoScript);
+                    }
+                }, 200);
+            };
+            viewScript.onerror = () => reject(new Error('unpkg markmap-view failed'));
+            document.head.appendChild(viewScript);
+        };
+        libScript.onerror = () => reject(new Error('unpkg markmap-lib failed'));
+        document.head.appendChild(libScript);
+    }
+
+    waitForMarkmapLibrary() {
+        return new Promise((resolve) => {
+            const check = () => {
+                if (this.markmapLibraryLoaded || (typeof markmap !== 'undefined' && markmap.Transformer)) {
+                    this.markmapLibraryLoaded = true;
+                    resolve();
+                } else {
+                    setTimeout(check, 100);
+                }
+            };
+            // Also try loading if not already loading
+            this.loadMarkmapLibrary().then(resolve).catch(() => {
+                // Retry check in case it loaded from elsewhere
+                setTimeout(check, 500);
+            });
+        });
+    }
+
     startMarkmapAutoRefresh() {
         if (this.markmapRefreshInterval) return;
 
+        // Use scheduler-based refresh similar to testing page (5 minute default)
         this.markmapRefreshInterval = setInterval(() => {
-            if (this.activeProtocol === 'markmap') {
+            // Refresh when markmap tab is active OR when significant time has passed
+            const now = Date.now();
+            const shouldRefresh = this.activeProtocol === 'markmap' ||
+                                  !this.markmapLastRefresh ||
+                                  (now - this.markmapLastRefresh) >= this.markmapRefreshIntervalMs;
+
+            if (shouldRefresh) {
                 this.refreshMarkmap();
+                this.markmapLastRefresh = now;
+                this.updateMarkmapNextRefresh();
             }
-        }, 5000); // Refresh every 5 seconds instead of 1
+        }, Math.min(this.markmapRefreshIntervalMs, 30000)); // Check every 30s or interval, whichever is smaller
+
+        // Update next refresh display
+        this.updateMarkmapNextRefresh();
     }
 
     stopMarkmapAutoRefresh() {
@@ -1267,59 +1565,144 @@ class AgentDashboard {
         }
     }
 
+    updateMarkmapNextRefresh() {
+        const nextRefreshEl = document.getElementById('markmap-next-refresh');
+        if (nextRefreshEl && this.markmapAutoRefresh) {
+            const nextTime = new Date(Date.now() + this.markmapRefreshIntervalMs);
+            nextRefreshEl.textContent = nextTime.toLocaleTimeString();
+        } else if (nextRefreshEl) {
+            nextRefreshEl.textContent = '--';
+        }
+    }
+
     refreshMarkmap() {
         // Generate markdown from current agent state and render locally
         const markdown = this.generateAgentMarkdownState();
         this.renderMarkmap(markdown);
+
+        // Update last refresh timestamp
+        const lastRefreshEl = document.getElementById('markmap-last-refresh');
+        if (lastRefreshEl) {
+            lastRefreshEl.textContent = new Date().toLocaleTimeString();
+        }
     }
 
     renderMarkmap(markdown) {
         const svgElement = document.getElementById('markmap-svg');
         if (!svgElement) return;
 
+        const mm = this._getMarkmap();
+
         // Check if markmap library is loaded
-        if (typeof markmap === 'undefined' || !markmap.Transformer) {
-            // Fallback: show the markdown as text with basic styling
-            svgElement.innerHTML = `
-                <foreignObject x="10" y="10" width="100%" height="100%">
-                    <div xmlns="http://www.w3.org/1999/xhtml" style="color: #eee; font-family: monospace; white-space: pre-wrap; padding: 20px;">
-                        ${this.escapeHtml(markdown)}
-                    </div>
-                </foreignObject>
-            `;
+        if (!this.markmapLibraryLoaded || !mm) {
+            // Show loading state with the markdown content as a simple tree view
+            this._renderMarkmapFallback(svgElement, markdown, 'Loading mindmap library...');
+
+            // Try loading library again
+            this.waitForMarkmapLibrary().then(() => this.refreshMarkmap());
             return;
         }
 
         try {
-            // Clear existing content
+            // Clear existing content and instance for fresh render
             svgElement.innerHTML = '';
+            this.markmapInstance = null;
 
             // Transform markdown to markmap data
-            const transformer = new markmap.Transformer();
+            const transformer = new mm.Transformer();
             const { root } = transformer.transform(markdown);
 
-            // Create or update the markmap
-            if (!this.markmapInstance) {
-                this.markmapInstance = markmap.Markmap.create(svgElement, {
-                    colorFreezeLevel: 2,
-                    duration: 500,
-                    maxWidth: 300,
-                    zoom: true,
-                    pan: true
-                }, root);
-            } else {
-                this.markmapInstance.setData(root);
-                this.markmapInstance.fit();
-            }
+            // Create the markmap with dark theme colors
+            this.markmapInstance = mm.Markmap.create(svgElement, {
+                colorFreezeLevel: 2,
+                duration: 500,
+                maxWidth: 300,
+                zoom: true,
+                pan: true,
+                color: (node) => {
+                    // Custom color scheme for dark theme - check node structure
+                    const colors = ['#00bcd4', '#4ade80', '#facc15', '#f97316', '#a78bfa', '#f472b6'];
+                    const depth = node.state?.depth ?? node.depth ?? 0;
+                    return colors[depth % colors.length];
+                }
+            }, root);
+
+            // Apply dark theme styles to SVG elements after a short delay
+            setTimeout(() => {
+                svgElement.querySelectorAll('text').forEach(text => {
+                    text.style.fill = '#e0e0e0';
+                });
+                svgElement.querySelectorAll('path').forEach(path => {
+                    if (!path.getAttribute('fill') || path.getAttribute('fill') === 'none') {
+                        path.style.stroke = '#546e7a';
+                    }
+                });
+            }, 100);
+
         } catch (err) {
             console.error('Markmap render error:', err);
-            // Show error in SVG
-            svgElement.innerHTML = `
-                <text x="50%" y="50%" text-anchor="middle" fill="#ef4444" font-size="14">
-                    Error rendering mindmap: ${this.escapeHtml(err.message)}
-                </text>
-            `;
+            // Show the markdown as a fallback tree view
+            this._renderMarkmapFallback(svgElement, markdown, `Render error: ${err.message}`);
         }
+    }
+
+    _renderMarkmapFallback(svgElement, markdown, statusMessage) {
+        // Render a simple text-based view when library isn't available
+        svgElement.innerHTML = '';
+
+        // Create a foreignObject to hold HTML content
+        const foreignObj = document.createElementNS('http://www.w3.org/2000/svg', 'foreignObject');
+        foreignObj.setAttribute('x', '0');
+        foreignObj.setAttribute('y', '0');
+        foreignObj.setAttribute('width', '100%');
+        foreignObj.setAttribute('height', '100%');
+
+        const container = document.createElement('div');
+        container.style.cssText = `
+            width: 100%;
+            height: 100%;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow: auto;
+            background: #0d1117;
+        `;
+
+        // Status message
+        const status = document.createElement('div');
+        status.style.cssText = 'color: #00bcd4; margin-bottom: 15px; font-size: 14px;';
+        status.textContent = statusMessage;
+        container.appendChild(status);
+
+        // Parse markdown into simple tree
+        const tree = document.createElement('div');
+        tree.style.cssText = 'color: #e0e0e0; font-family: monospace; font-size: 13px; line-height: 1.6;';
+
+        const lines = markdown.split('\n');
+        lines.forEach(line => {
+            if (line.trim()) {
+                const div = document.createElement('div');
+                const match = line.match(/^(#{1,6})\s*(.*)$/);
+                if (match) {
+                    const level = match[1].length;
+                    const text = match[2];
+                    const colors = ['#00bcd4', '#4ade80', '#facc15', '#f97316', '#a78bfa', '#f472b6'];
+                    div.style.cssText = `
+                        padding-left: ${(level - 1) * 20}px;
+                        color: ${colors[(level - 1) % colors.length]};
+                        font-weight: ${level <= 2 ? 'bold' : 'normal'};
+                    `;
+                    div.textContent = (level > 1 ? '├─ ' : '● ') + text;
+                } else {
+                    div.style.paddingLeft = '40px';
+                    div.textContent = '  ' + line.trim();
+                }
+                tree.appendChild(div);
+            }
+        });
+
+        container.appendChild(tree);
+        foreignObj.appendChild(container);
+        svgElement.appendChild(foreignObj);
     }
 
     updateMarkmapData(markmap) {
@@ -1336,26 +1719,60 @@ class AgentDashboard {
     }
 
     generateAgentMarkdownState() {
-        // Generate markdown representation of agent state for markmap
+        // Generate detailed markdown representation of agent state for markmap
         const agentName = document.getElementById('agent-name').textContent || 'Agent';
         let md = `# ${agentName}\n\n`;
 
         // Router info
         const routerId = document.getElementById('router-id').textContent;
         if (routerId && routerId !== '--') {
-            md += `## Router: ${routerId}\n\n`;
+            md += `## Router ID: ${routerId}\n\n`;
         }
 
-        // Interfaces section
-        const ifTotal = document.getElementById('if-total').textContent || '0';
-        const ifUp = document.getElementById('if-up').textContent || '0';
-        const ifDown = document.getElementById('if-down').textContent || '0';
+        // ==================== INTERFACES SECTION ====================
+        const ifTotal = this.interfaceDetails.length || document.getElementById('if-total').textContent || '0';
+        const ifUp = this.interfaceDetails.filter(i => (i.status || i.s) === 'up').length;
+        const ifDown = parseInt(ifTotal) - ifUp;
 
         md += `## Interfaces (${ifTotal})\n`;
-        md += `### Up: ${ifUp}\n`;
-        md += `### Down: ${ifDown}\n\n`;
 
-        // Active protocols
+        if (this.interfaceDetails.length > 0) {
+            // Group interfaces by type
+            const upInterfaces = this.interfaceDetails.filter(i => (i.status || i.s) === 'up');
+            const downInterfaces = this.interfaceDetails.filter(i => (i.status || i.s) !== 'up');
+
+            if (upInterfaces.length > 0) {
+                md += `### Up (${upInterfaces.length})\n`;
+                for (const iface of upInterfaces) {
+                    const name = iface.name || iface.n || iface.id;
+                    const type = iface.type || iface.t || 'eth';
+                    const addresses = iface.addresses || iface.a || [];
+                    const mtu = iface.mtu || 1500;
+
+                    md += `#### ${name}\n`;
+                    md += `##### Type: ${this._getInterfaceTypeName(type)}\n`;
+                    if (addresses.length > 0) {
+                        for (const addr of addresses) {
+                            md += `##### IP: ${addr}\n`;
+                        }
+                    }
+                    md += `##### MTU: ${mtu}\n`;
+                }
+            }
+
+            if (downInterfaces.length > 0) {
+                md += `### Down (${downInterfaces.length})\n`;
+                for (const iface of downInterfaces) {
+                    const name = iface.name || iface.n || iface.id;
+                    md += `#### ${name} (disabled)\n`;
+                }
+            }
+        } else {
+            md += `### Up: ${ifUp}\n`;
+            md += `### Down: ${ifDown}\n`;
+        }
+
+        // ==================== PROTOCOLS SECTION ====================
         const protocolCount = Object.keys(this.protocols).length;
         if (protocolCount > 0) {
             md += `## Protocols (${protocolCount})\n`;
@@ -1364,33 +1781,112 @@ class AgentDashboard {
                 md += `### ${proto.toUpperCase()}\n`;
 
                 if (proto === 'ospf' && data) {
-                    md += `#### Neighbors: ${data.neighbors || 0}\n`;
-                    md += `#### Full: ${data.full_neighbors || 0}\n`;
-                    md += `#### LSDB: ${data.lsdb_size || 0} LSAs\n`;
-                    md += `#### Routes: ${data.routes || 0}\n`;
+                    md += `#### Summary\n`;
+                    md += `##### Neighbors: ${data.neighbors || 0}\n`;
+                    md += `##### Full: ${data.full_neighbors || 0}\n`;
+                    md += `##### LSDB: ${data.lsdb_size || 0} LSAs\n`;
+                    md += `##### Routes: ${data.routes || 0}\n`;
+
+                    // OSPF Neighbor Details
+                    if (this.ospfNeighborDetails.length > 0) {
+                        md += `#### Neighbors\n`;
+                        for (const n of this.ospfNeighborDetails) {
+                            const stateIcon = n.is_full ? '✓' : '○';
+                            md += `##### ${stateIcon} ${n.router_id}\n`;
+                            md += `###### IP: ${n.ip}\n`;
+                            md += `###### State: ${n.state}\n`;
+                            if (n.dr) md += `###### DR: ${n.dr}\n`;
+                        }
+                    }
+
+                    // OSPF Routes (top 10)
+                    if (this.ospfRoutes.length > 0) {
+                        md += `#### Routes (${this.ospfRoutes.length})\n`;
+                        for (const r of this.ospfRoutes.slice(0, 10)) {
+                            md += `##### ${r.prefix}\n`;
+                            md += `###### Next Hop: ${r.next_hop || 'Direct'}\n`;
+                            md += `###### Cost: ${r.cost}\n`;
+                            if (r.type) md += `###### Type: ${r.type}\n`;
+                        }
+                        if (this.ospfRoutes.length > 10) {
+                            md += `##### ... and ${this.ospfRoutes.length - 10} more\n`;
+                        }
+                    }
+
                 } else if (proto === 'bgp' && data) {
-                    md += `#### Peers: ${data.total_peers || 0}\n`;
-                    md += `#### Established: ${data.established_peers || 0}\n`;
-                    md += `#### Prefixes In: ${data.loc_rib_routes || 0}\n`;
-                    md += `#### Prefixes Out: ${data.advertised_routes || 0}\n`;
+                    md += `#### Summary\n`;
+                    md += `##### Local AS: ${data.local_as || '-'}\n`;
+                    md += `##### Total Peers: ${data.total_peers || 0}\n`;
+                    md += `##### Established: ${data.established_peers || 0}\n`;
+                    md += `##### Prefixes In: ${data.loc_rib_routes || 0}\n`;
+                    md += `##### Prefixes Out: ${data.advertised_routes || 0}\n`;
+
+                    // BGP Peer Details
+                    if (this.bgpPeerDetails.length > 0) {
+                        md += `#### Peers\n`;
+                        for (const p of this.bgpPeerDetails) {
+                            const stateIcon = p.state === 'Established' ? '✓' : '○';
+                            md += `##### ${stateIcon} AS ${p.remote_as}\n`;
+                            md += `###### IP: ${p.ip}\n`;
+                            md += `###### State: ${p.state}\n`;
+                            md += `###### Type: ${p.peer_type}\n`;
+                        }
+                    }
+
+                    // BGP Routes (top 10)
+                    if (this.bgpRoutes.length > 0) {
+                        md += `#### Routes (${this.bgpRoutes.length})\n`;
+                        for (const r of this.bgpRoutes.slice(0, 10)) {
+                            md += `##### ${r.prefix}\n`;
+                            md += `###### Next Hop: ${r.next_hop}\n`;
+                            if (r.as_path) md += `###### AS Path: ${r.as_path}\n`;
+                            if (r.origin) md += `###### Origin: ${r.origin}\n`;
+                        }
+                        if (this.bgpRoutes.length > 10) {
+                            md += `##### ... and ${this.bgpRoutes.length - 10} more\n`;
+                        }
+                    }
+
                 } else if (proto === 'isis' && data) {
-                    md += `#### Adjacencies: ${data.adjacencies || 0}\n`;
-                    md += `#### LSPs: ${data.lsp_count || 0}\n`;
-                    md += `#### Level: ${data.level || 'L1/L2'}\n`;
+                    md += `#### Summary\n`;
+                    md += `##### Adjacencies: ${data.adjacencies || 0}\n`;
+                    md += `##### LSPs: ${data.lsp_count || 0}\n`;
+                    md += `##### Level: ${data.level || 'L1/L2'}\n`;
+                    md += `##### Area: ${data.area || '-'}\n`;
+
+                    // IS-IS Adjacency Details
+                    if (this.isisAdjacencies.length > 0) {
+                        md += `#### Adjacencies\n`;
+                        for (const a of this.isisAdjacencies) {
+                            const stateIcon = a.state === 'Up' ? '✓' : '○';
+                            md += `##### ${stateIcon} ${a.system_id}\n`;
+                            md += `###### Interface: ${a.interface}\n`;
+                            md += `###### Level: ${a.level}\n`;
+                            md += `###### Hold Time: ${a.hold_time}s\n`;
+                        }
+                    }
+
                 } else if (proto === 'mpls' && data) {
-                    md += `#### LFIB Entries: ${data.lfib_entries || 0}\n`;
-                    md += `#### Labels: ${data.labels_allocated || 0}\n`;
-                    md += `#### LDP Neighbors: ${data.ldp_neighbors || 0}\n`;
+                    md += `#### Summary\n`;
+                    md += `##### LFIB Entries: ${data.lfib_entries || 0}\n`;
+                    md += `##### Labels Allocated: ${data.labels_allocated || 0}\n`;
+                    md += `##### LDP Neighbors: ${data.ldp_neighbors || 0}\n`;
+
                 } else if (proto === 'vxlan' && data) {
-                    md += `#### VNIs: ${data.vni_count || 0}\n`;
-                    md += `#### VTEPs: ${data.vtep_count || 0}\n`;
-                    md += `#### MACs: ${data.mac_entries || 0}\n`;
+                    md += `#### Summary\n`;
+                    md += `##### VNIs: ${data.vni_count || 0}\n`;
+                    md += `##### VTEPs: ${data.vtep_count || 0}\n`;
+                    md += `##### MAC Entries: ${data.mac_entries || 0}\n`;
+
                 } else if (proto === 'dhcp' && data) {
-                    md += `#### Pools: ${data.pool_count || 0}\n`;
-                    md += `#### Leases: ${data.active_leases || 0}\n`;
+                    md += `#### Summary\n`;
+                    md += `##### Pools: ${data.pool_count || 0}\n`;
+                    md += `##### Active Leases: ${data.active_leases || 0}\n`;
+
                 } else if (proto === 'dns' && data) {
-                    md += `#### Zones: ${data.zone_count || 0}\n`;
-                    md += `#### Records: ${data.record_count || 0}\n`;
+                    md += `#### Summary\n`;
+                    md += `##### Zones: ${data.zone_count || 0}\n`;
+                    md += `##### Records: ${data.record_count || 0}\n`;
                 }
             }
         } else {
@@ -1398,12 +1894,26 @@ class AgentDashboard {
             md += `### No active protocols\n`;
         }
 
-        // Connection status
+        // ==================== STATUS SECTION ====================
         const wsStatus = document.getElementById('connection-text').textContent || 'Unknown';
-        md += `\n## Status\n`;
+        md += `## Status\n`;
         md += `### WebSocket: ${wsStatus}\n`;
+        md += `### Last Update: ${new Date().toLocaleTimeString()}\n`;
 
         return md;
+    }
+
+    _getInterfaceTypeName(type) {
+        const typeNames = {
+            'eth': 'Ethernet',
+            'lo': 'Loopback',
+            'vlan': 'VLAN',
+            'tun': 'Tunnel',
+            'sub': 'Sub-Interface',
+            'bond': 'Bond',
+            'bridge': 'Bridge'
+        };
+        return typeNames[type] || type;
     }
 
     exportMarkmapSVG() {

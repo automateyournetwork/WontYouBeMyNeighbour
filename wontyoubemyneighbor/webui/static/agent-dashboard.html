@@ -661,6 +661,23 @@
             line-height: 1.5;
         }
 
+        .commit-badge {
+            background: var(--bg-tertiary);
+            color: var(--accent-purple);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-family: 'Roboto Mono', monospace;
+            margin-left: 8px;
+            border: 1px solid var(--accent-purple);
+            opacity: 0.8;
+        }
+
+        .commit-badge:hover {
+            opacity: 1;
+            background: rgba(167, 139, 250, 0.1);
+        }
+
         /* Markmap Tab Styles */
         .markmap-controls {
             display: flex;
@@ -1488,11 +1505,23 @@
             <div class="section">
                 <div class="section-header">
                     <h3>Agent State Mind Map</h3>
-                    <div class="markmap-controls">
-                        <label>
+                    <div class="markmap-controls" style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; gap: 5px;">
                             <input type="checkbox" id="markmap-auto-refresh" checked>
-                            Auto-refresh (1s)
+                            Auto-refresh
                         </label>
+                        <select id="markmap-refresh-interval" style="background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); padding: 4px 8px; border-radius: 4px;">
+                            <option value="1">Every 1 min</option>
+                            <option value="5" selected>Every 5 min</option>
+                            <option value="10">Every 10 min</option>
+                            <option value="30">Every 30 min</option>
+                        </select>
+                        <span style="color: var(--text-secondary); font-size: 0.85rem;">
+                            Last: <span id="markmap-last-refresh">--</span>
+                        </span>
+                        <span style="color: var(--text-secondary); font-size: 0.85rem;">
+                            Next: <span id="markmap-next-refresh">--</span>
+                        </span>
                         <button class="btn btn-secondary" id="markmap-refresh-btn">Refresh Now</button>
                         <button class="btn btn-secondary" id="markmap-export-btn">Export SVG</button>
                         <button class="btn btn-secondary" id="markmap-fullscreen-btn">Fullscreen</button>
@@ -1505,10 +1534,7 @@
         </div>
     </div>
 
-    <!-- Markmap library for mind map rendering -->
-    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-    <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.15.4"></script>
-    <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.15.4"></script>
+    <!-- Markmap library for mind map rendering (loaded dynamically in JS for better error handling) -->
 
     <script src="/static/agent-dashboard.js"></script>
 </body>

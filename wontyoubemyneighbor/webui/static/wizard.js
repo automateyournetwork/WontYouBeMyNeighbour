@@ -2691,7 +2691,7 @@ async function closeBuilder() {
                         The Network Builder is shutting down. Your agents are still running.
                     </p>
                     <p style="color: #00d9ff; margin-bottom: 20px;">
-                        You can now close this browser tab.
+                        Closing browser tab...
                     </p>
                     <p style="color: #888; font-size: 0.9rem;">
                         To start the builder again later, run:<br>
@@ -2717,6 +2717,54 @@ async function closeBuilder() {
             // Server may have already shut down, which is expected
             console.log('Shutdown in progress (connection closed as expected)');
         }
+
+        // Attempt to close the browser tab/window after a short delay
+        setTimeout(() => {
+            closeBrowserTab();
+        }, 1000);
+    }
+}
+
+// Attempt to close the browser tab/window
+function closeBrowserTab() {
+    // Try multiple methods to close the tab
+    try {
+        // Method 1: Standard window.close() - works if page was opened by script
+        window.close();
+
+        // Method 2: For some browsers, opening about:blank then closing works
+        setTimeout(() => {
+            // If we're still here, try alternative approach
+            window.open('about:blank', '_self');
+            window.close();
+        }, 500);
+
+        // Method 3: If still open after 1 second, update message
+        setTimeout(() => {
+            const container = document.querySelector('.wizard-content') || document.querySelector('.container');
+            if (container && document.visibilityState !== 'hidden') {
+                container.innerHTML = `
+                    <div style="text-align: center; padding: 60px 20px;">
+                        <h2 style="color: #4ade80; margin-bottom: 20px;">✅ Builder Shutdown Complete</h2>
+                        <p style="color: #888; margin-bottom: 20px;">
+                            The Network Builder has been shut down. Your agents are still running.
+                        </p>
+                        <p style="color: #facc15; margin-bottom: 20px;">
+                            Please close this browser tab manually (Cmd+W / Ctrl+W)
+                        </p>
+                        <p style="color: #888; font-size: 0.9rem;">
+                            To start the builder again later, run:<br>
+                            <code style="background: #1a1a2e; padding: 8px 12px; border-radius: 4px; display: inline-block; margin-top: 10px; color: #4ade80;">
+                                python3 wontyoubemyneighbor.py
+                            </code>
+                        </p>
+                    </div>
+                `;
+            }
+        }, 1500);
+
+    } catch (e) {
+        console.log('Could not close tab automatically:', e);
     }
 }
 

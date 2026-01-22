@@ -18,6 +18,7 @@ from ..knowledge.state_manager import NetworkStateManager
 from ..knowledge.analytics import NetworkAnalytics
 from ..multi_agent.gossip import GossipProtocol
 from ..multi_agent.consensus import ConsensusEngine
+from ..mcp.gait_mcp import GAITClient, GAITEventType, GAITActor, get_gait_client
 
 
 class AgenticBridge:
@@ -76,6 +77,10 @@ class AgenticBridge:
         self.action_history: List[Dict[str, Any]] = []
         self._max_history_length = 1000  # Maximum items to retain
 
+        # GAIT MCP Client for persistent audit trail
+        self.gait_client: GAITClient = get_gait_client(asi_id)
+        self._gait_initialized = False
+
         # State update task
         self._state_update_task: Optional[asyncio.Task] = None
         self._running = False
@@ -86,6 +91,15 @@ class AgenticBridge:
 
         # Initialize LLM providers
         await self.llm.initialize_providers()
+
+        # Initialize GAIT for conversation tracking
+        if not self._gait_initialized:
+            gait_result = await self.gait_client.init()
+            if gait_result.get("success"):
+                self._gait_initialized = True
+                print(f"[AgenticBridge] GAIT initialized for {self.asi_id}")
+            else:
+                print(f"[AgenticBridge] GAIT init failed: {gait_result.get('error')}")
 
         # Register gossip handlers
         self._register_gossip_handlers()
@@ -158,83 +172,90 @@ class AgenticBridge:
 
         print(f"[AgenticBridge] Parsed intent: {intent.intent_type.value} (confidence: {intent.confidence:.2f})")
 
-        # Handle based on intent type
+        # Handle based on intent type - response will be recorded centrally
+        response = None
+
         if intent.intent_type == IntentType.QUERY_NEIGHBOR:
-            return await self._handle_query_neighbors(intent)
+            response = await self._handle_query_neighbors(intent)
 
         elif intent.intent_type == IntentType.QUERY_ROUTE:
-            return await self._handle_query_route(intent)
+            response = await self._handle_query_route(intent)
 
         elif intent.intent_type == IntentType.QUERY_STATUS:
-            return await self._handle_query_status(intent)
+            response = await self._handle_query_status(intent)
 
         elif intent.intent_type == IntentType.QUERY_BGP_PEER:
-            return await self._handle_query_bgp_peers(intent)
+            response = await self._handle_query_bgp_peers(intent)
 
         elif intent.intent_type == IntentType.QUERY_RIB:
-            return await self._handle_query_rib(intent)
+            response = await self._handle_query_rib(intent)
 
         elif intent.intent_type == IntentType.DETECT_ANOMALY:
-            return await self._handle_detect_anomaly(intent)
+            response = await self._handle_detect_anomaly(intent)
 
         elif intent.intent_type == IntentType.ANALYZE_TOPOLOGY:
-            return await self._handle_analyze_topology(intent)
+            response = await self._handle_analyze_topology(intent)
 
         elif intent.intent_type == IntentType.EXPLAIN_DECISION:
-            return await self._handle_explain_decision(intent)
+            response = await self._handle_explain_decision(intent)
 
         elif intent.intent_type == IntentType.ACTION_ADJUST_METRIC:
-            return await self._handle_action_adjust_metric(intent)
+            response = await self._handle_action_adjust_metric(intent)
 
         elif intent.intent_type == IntentType.ACTION_INJECT_ROUTE:
-            return await self._handle_action_inject_route(intent)
+            response = await self._handle_action_inject_route(intent)
 
         elif intent.intent_type == IntentType.QUERY_ROUTER_ID:
-            return await self._handle_query_router_id(intent)
+            response = await self._handle_query_router_id(intent)
 
         elif intent.intent_type == IntentType.QUERY_LSA:
-            return await self._handle_query_lsa(intent)
+            response = await self._handle_query_lsa(intent)
 
         elif intent.intent_type == IntentType.QUERY_STATISTICS:
-            return await self._handle_query_statistics(intent)
+            response = await self._handle_query_statistics(intent)
 
         elif intent.intent_type == IntentType.QUERY_INTERFACE:
-            return await self._handle_query_interface(intent)
+            response = await self._handle_query_interface(intent)
 
         elif intent.intent_type == IntentType.ANALYZE_HEALTH:
-            return await self._handle_analyze_health(intent)
+            response = await self._handle_analyze_health(intent)
 
         elif intent.intent_type == IntentType.QUERY_PROTOCOL_STATUS:
-            return await self._handle_query_protocol_status(intent)
+            response = await self._handle_query_protocol_status(intent)
 
         elif intent.intent_type == IntentType.QUERY_CAPABILITIES:
-            return await self._handle_query_capabilities(intent)
+            response = await self._handle_query_capabilities(intent)
 
         elif intent.intent_type == IntentType.QUERY_FIB:
-            return await self._handle_query_fib(intent)
+            response = await self._handle_query_fib(intent)
 
         elif intent.intent_type == IntentType.QUERY_CHANGES:
-            return await self._handle_query_changes(intent)
+            response = await self._handle_query_changes(intent)
 
         elif intent.intent_type == IntentType.QUERY_METRICS:
-            return await self._handle_query_metrics(intent)
+            response = await self._handle_query_metrics(intent)
 
         elif intent.intent_type == IntentType.DIAGNOSTIC_PING:
-            return await self._handle_ping(intent)
+            response = await self._handle_ping(intent)
 
         elif intent.intent_type == IntentType.DIAGNOSTIC_TRACEROUTE:
-            return await self._handle_traceroute(intent)
+            response = await self._handle_traceroute(intent)
 
         else:
             # Use LLM for complex queries
             response = await self.llm.query(user_message)
             response = response or "I'm not sure how to help with that."
-            self._record_conversation('assistant', response)
-            return response
+
+        # Record assistant response centrally for ALL handlers (GAIT tracking)
+        # Use async version to ensure GAIT recording completes before returning
+        if response:
+            await self._record_conversation_async('assistant', response)
+
+        return response
 
     def _record_conversation(self, role: str, content: str) -> None:
         """
-        Record a conversation message for GAIT tracking.
+        Record a conversation message for GAIT tracking (fire-and-forget).
 
         Args:
             role: 'user' or 'assistant'
@@ -249,6 +270,57 @@ class AgenticBridge:
         # Trim history if too long
         if len(self.conversation_history) > self._max_history_length:
             self.conversation_history = self.conversation_history[-self._max_history_length:]
+
+        # Also record to GAIT for persistent audit trail (fire-and-forget)
+        if self._gait_initialized:
+            asyncio.create_task(self._record_to_gait(role, content))
+
+    async def _record_conversation_async(self, role: str, content: str) -> None:
+        """
+        Record a conversation message for GAIT tracking (await-able version).
+
+        Use this for assistant responses to ensure GAIT recording completes
+        before returning to the client.
+
+        Args:
+            role: 'user' or 'assistant'
+            content: Message content
+        """
+        self.conversation_history.append({
+            'role': role,
+            'content': content,
+            'timestamp': datetime.now().isoformat()
+        })
+
+        # Trim history if too long
+        if len(self.conversation_history) > self._max_history_length:
+            self.conversation_history = self.conversation_history[-self._max_history_length:]
+
+        # Also record to GAIT for persistent audit trail (await for completion)
+        if self._gait_initialized:
+            await self._record_to_gait(role, content)
+
+    async def _record_to_gait(self, role: str, content: str) -> None:
+        """Record conversation turn to GAIT asynchronously"""
+        try:
+            if role == 'user':
+                await self.gait_client.record_turn(
+                    user_text=content,
+                    assistant_text="",
+                    event_type=GAITEventType.USER_PROMPT,
+                    actor=GAITActor.USER,
+                    note="Chat message from user"
+                )
+            else:
+                await self.gait_client.record_turn(
+                    user_text="",
+                    assistant_text=content,
+                    event_type=GAITEventType.AGENT_RESPONSE,
+                    actor=GAITActor.AGENT,
+                    note="Chat response from agent"
+                )
+        except Exception as e:
+            print(f"[AgenticBridge] Failed to record to GAIT: {e}")
 
     def _record_action(self, action: str, result: Any, success: bool = True) -> None:
         """
@@ -269,6 +341,100 @@ class AgenticBridge:
         # Trim history if too long
         if len(self.action_history) > self._max_history_length:
             self.action_history = self.action_history[-self._max_history_length:]
+
+        # Also record to GAIT
+        if self._gait_initialized:
+            asyncio.create_task(self._record_action_to_gait(action, result, success))
+
+    async def _record_action_to_gait(self, action: str, result: Any, success: bool) -> None:
+        """Record action to GAIT asynchronously"""
+        try:
+            await self.gait_client.record_turn(
+                user_text=f"Action: {action}",
+                assistant_text=str(result)[:500] if result else "",
+                event_type=GAITEventType.MCP_CALL if action.startswith("mcp_") else GAITEventType.SYSTEM,
+                actor=GAITActor.AGENT,
+                note=f"Action {'succeeded' if success else 'failed'}: {action}",
+                artifacts=[{
+                    "type": "action_result",
+                    "action": action,
+                    "success": success,
+                    "result_preview": str(result)[:200] if result else ""
+                }]
+            )
+        except Exception as e:
+            print(f"[AgenticBridge] Failed to record action to GAIT: {e}")
+
+    async def get_gait_history(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Get GAIT conversation history for UI display.
+
+        Returns:
+            List of history items formatted for the GAIT timeline
+        """
+        if not self._gait_initialized:
+            # Return local history if GAIT not initialized
+            history = []
+            for item in self.conversation_history[-limit:]:
+                history.append({
+                    "type": "user" if item["role"] == "user" else "agent",
+                    "sender": "User" if item["role"] == "user" else "Agent",
+                    "message": item["content"],
+                    "timestamp": item["timestamp"]
+                })
+            return history
+
+        # Get from GAIT client
+        try:
+            commits = await self.gait_client.get_history(limit=limit)
+            history = []
+            for commit in reversed(commits):  # Oldest first
+                item_type = "user" if commit.event_type == GAITEventType.USER_PROMPT else \
+                           "agent" if commit.event_type == GAITEventType.AGENT_RESPONSE else \
+                           "action" if commit.event_type in [GAITEventType.MCP_CALL, GAITEventType.CONFIG_CHANGE] else "system"
+
+                sender = "User" if commit.actor == GAITActor.USER else \
+                        "Agent" if commit.actor == GAITActor.AGENT else \
+                        "System"
+
+                # Extract message content
+                details = commit.details
+                message = details.get("user_text") or details.get("assistant_text") or commit.message
+
+                history.append({
+                    "type": item_type,
+                    "sender": sender,
+                    "message": message,
+                    "timestamp": commit.timestamp,
+                    "commit_id": commit.commit_id
+                })
+            return history
+        except Exception as e:
+            print(f"[AgenticBridge] Failed to get GAIT history: {e}")
+            return []
+
+    def get_gait_status(self) -> Dict[str, Any]:
+        """Get GAIT status for UI display"""
+        if not self._gait_initialized:
+            return {
+                "total_turns": len(self.conversation_history),
+                "user_messages": len([c for c in self.conversation_history if c["role"] == "user"]),
+                "agent_messages": len([c for c in self.conversation_history if c["role"] == "assistant"]),
+                "actions_taken": len(self.action_history),
+                "gait_initialized": False
+            }
+
+        status = self.gait_client.get_status()
+        return {
+            "total_turns": status.get("total_commits", 0),
+            "user_messages": len([c for c in self.conversation_history if c["role"] == "user"]),
+            "agent_messages": len([c for c in self.conversation_history if c["role"] == "assistant"]),
+            "actions_taken": len(self.action_history),
+            "gait_initialized": True,
+            "gait_dir": status.get("gait_dir"),
+            "head_commit": status.get("head_commit"),
+            "pinned_memory": status.get("pinned_memory", 0)
+        }
 
     async def _handle_query_neighbors(self, intent) -> str:
         """Handle OSPF neighbor query"""
@@ -292,7 +458,6 @@ class AgenticBridge:
         else:
             response = f"Error querying neighbors: {result.error}"
 
-        self._record_conversation('assistant', response)
         self._record_action('query_neighbors', result.result if result.result else result.error, bool(result.result))
         return response
 
@@ -497,7 +662,6 @@ class AgenticBridge:
             response = f"✗ Action failed: {result.error}"
             success = False
 
-        self._record_conversation('assistant', response)
         self._record_action('metric_adjustment', {'interface': interface, 'metric': proposed_metric, 'status': result.status.value}, success)
         return response
 
@@ -524,7 +688,6 @@ class AgenticBridge:
             response = f"✗ Action failed: {result.error}"
             success = False
 
-        self._record_conversation('assistant', response)
         self._record_action('route_injection', {'network': network, 'protocol': protocol, 'status': result.status.value}, success)
         return response
 
