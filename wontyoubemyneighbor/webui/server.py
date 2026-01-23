@@ -861,15 +861,39 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             # Run tests
             test_results = await run_all_tests(agent_config, suite_filter=suites if suites else None)
 
+            # Flatten results from all suites into a single array for the UI
+            # The pyATS test framework returns results nested under "suites"
+            flattened_results = []
+            for suite in test_results.get("suites", []):
+                suite_name = suite.get("suite_name", "Unknown Suite")
+                for result in suite.get("results", []):
+                    flattened_results.append({
+                        "test_id": result.get("test_id", ""),
+                        "test_name": result.get("test_name", "Unknown Test"),
+                        "description": result.get("message", ""),
+                        "suite_name": suite_name,
+                        "status": result.get("status", "unknown"),
+                        "failure_reason": result.get("message", "") if result.get("status") == "failed" else None,
+                        "duration": f"{result.get('duration_ms', 0):.2f}ms",
+                        "timestamp": result.get("timestamp", datetime.now().isoformat())
+                    })
+
             # Store results for persistence
             _recent_test_results = {
-                "results": test_results.get("results", []),
+                "results": flattened_results,
                 "timestamp": datetime.now().isoformat(),
                 "summary": test_results.get("summary", {}),
                 "agent_id": agent_id or asi_app.router_id
             }
 
-            return test_results
+            # Return with flattened results for the UI
+            return {
+                "agent_id": test_results.get("agent_id"),
+                "timestamp": test_results.get("timestamp"),
+                "duration_ms": test_results.get("duration_ms"),
+                "summary": test_results.get("summary", {}),
+                "results": flattened_results
+            }
         except Exception as e:
             logging.getLogger("WebUI").error(f"Test execution failed: {e}")
             return {
