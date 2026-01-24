@@ -210,6 +210,14 @@ class BGPAgent:
                     else:
                         # Peer has higher ID - accept incoming, close our outgoing attempt
                         self.logger.info(f"Connection collision with {peer_ip}: peer ID higher, accepting incoming, dropping outgoing")
+                        # CRITICAL: Cancel message reader task FIRST to prevent race condition
+                        if session.message_reader_task and not session.message_reader_task.done():
+                            self.logger.debug("Canceling existing message reader task before collision resolution")
+                            session.message_reader_task.cancel()
+                            try:
+                                await session.message_reader_task
+                            except asyncio.CancelledError:
+                                pass
                         # Close existing connection attempt
                         if session.writer:
                             try:

@@ -1150,6 +1150,34 @@ Or: Create a BGP router in AS 65001 that peers with neighbor 192.168.1.2 in AS 6
                     <div class="hint">Your API key is stored only in memory and passed securely to containers. Paste with Ctrl+V / Cmd+V.</div>
                 </div>
 
+                <div class="form-group">
+                    <label for="llm-model">Model</label>
+                    <select id="llm-model">
+                        <!-- Claude models -->
+                        <optgroup label="Claude (Anthropic)" id="claude-models" style="display: block;">
+                            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Latest)</option>
+                            <option value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet (June 2024)</option>
+                            <option value="claude-3-sonnet-20240229">Claude 3 Sonnet</option>
+                            <option value="claude-3-opus-20240229">Claude 3 Opus</option>
+                            <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                        </optgroup>
+                        <!-- OpenAI models -->
+                        <optgroup label="OpenAI" id="openai-models" style="display: none;">
+                            <option value="gpt-4-turbo">GPT-4 Turbo</option>
+                            <option value="gpt-4o">GPT-4o (Latest)</option>
+                            <option value="gpt-4">GPT-4</option>
+                            <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
+                        </optgroup>
+                        <!-- Gemini models -->
+                        <optgroup label="Gemini (Google)" id="gemini-models" style="display: none;">
+                            <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                            <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                            <option value="gemini-pro">Gemini Pro</option>
+                        </optgroup>
+                    </select>
+                    <div class="hint">Select the AI model to use for your agents. Different models have different capabilities and costs.</div>
+                </div>
+
                 <button class="btn btn-secondary" onclick="validateApiKey()" style="margin-bottom: 20px;">Validate Key</button>
                 <div id="api-key-status"></div>
 

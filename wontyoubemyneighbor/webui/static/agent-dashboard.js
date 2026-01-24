@@ -327,7 +327,8 @@ class AgentDashboard {
         const mcpTabs = {
             testing: 'Testing',
             gait: 'GAIT',
-            markmap: 'Markmap'
+            markmap: 'Markmap',
+            logs: 'Logs'
         };
 
         let html = '';

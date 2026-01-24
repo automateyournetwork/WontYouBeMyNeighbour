@@ -22,7 +22,15 @@ class ClaudeProvider(BaseLLMProvider):
 
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
         super().__init__(api_key, model)
-        self.model = model or "claude-3-5-sonnet-20241022"
+        # Try multiple valid model versions in order of preference
+        # The API will use the first available one
+        self.model_fallbacks = [
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-sonnet-20240620",
+            "claude-3-sonnet-20240229",
+            "claude-3-haiku-20240307"
+        ]
+        self.model = model or self.model_fallbacks[0]
         self.client = None
 
     async def initialize(self) -> bool:
@@ -39,17 +47,29 @@ class ClaudeProvider(BaseLLMProvider):
 
         try:
             self.client = AsyncAnthropic(api_key=api_key)
-            # Test with simple completion (with 10 second timeout)
-            response = await asyncio.wait_for(
-                self.client.messages.create(
-                    model=self.model,
-                    max_tokens=5,
-                    messages=[{"role": "user", "content": "test"}]
-                ),
-                timeout=10.0
-            )
-            self.available = True
-            return True
+            # Try each model fallback until one works
+            last_error = None
+            for model_name in self.model_fallbacks:
+                try:
+                    response = await asyncio.wait_for(
+                        self.client.messages.create(
+                            model=model_name,
+                            max_tokens=5,
+                            messages=[{"role": "user", "content": "test"}]
+                        ),
+                        timeout=10.0
+                    )
+                    # Success! Use this model
+                    self.model = model_name
+                    self.available = True
+                    print(f"[Claude] Initialized successfully with model: {model_name}")
+                    return True
+                except Exception as e:
+                    last_error = e
+                    continue
+            # All models failed
+            print(f"[Claude] All model fallbacks failed. Last error: {last_error}")
+            return False
         except asyncio.TimeoutError:
             print(f"[Claude] Initialization timed out (API key may be invalid)")
             return False

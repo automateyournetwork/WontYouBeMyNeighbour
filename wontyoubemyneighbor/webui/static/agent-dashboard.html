@@ -236,6 +236,7 @@
         .metric-card.vxlan::before { background: var(--accent-pink); }
         .metric-card.dhcp::before { background: #60a5fa; }
         .metric-card.dns::before { background: #34d399; }
+        .metric-card.logs::before { background: #10b981; }
 
         .metric-label {
             color: var(--text-secondary);
@@ -386,6 +387,7 @@
 
         /* Chat Tab Styles */
         .protocol-tab.chat.active { color: #00d9ff; }
+        .protocol-tab.logs.active { color: #10b981; }
         .metric-card.chat::before { background: #00d9ff; }
 
         .chat-container {
@@ -789,6 +791,143 @@
             .gait-controls {
                 flex-wrap: wrap;
             }
+        }
+
+        /* Logs Viewer Styles */
+        .logs-container {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 600px;
+            max-height: 800px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            position: relative;
+        }
+
+        .log-entry {
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border-color);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.4;
+        }
+
+        .log-entry:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .log-entry.error {
+            background: rgba(239, 68, 68, 0.1);
+            border-left: 3px solid var(--accent-red);
+        }
+
+        .log-entry.warning {
+            background: rgba(250, 204, 21, 0.1);
+            border-left: 3px solid var(--accent-yellow);
+        }
+
+        .log-entry.info {
+            border-left: 3px solid var(--accent-cyan);
+        }
+
+        .log-timestamp {
+            color: var(--text-secondary);
+            margin-right: 10px;
+        }
+
+        .log-level {
+            font-weight: bold;
+            margin-right: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.75rem;
+        }
+
+        .log-level.ERROR {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--accent-red);
+        }
+
+        .log-level.WARNING {
+            background: rgba(250, 204, 21, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        .log-level.INFO {
+            background: rgba(0, 217, 255, 0.2);
+            color: var(--accent-cyan);
+        }
+
+        .log-level.DEBUG {
+            background: rgba(167, 139, 250, 0.2);
+            color: var(--accent-purple);
+        }
+
+        .logs-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        .logs-controls button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+
+        .logs-controls button.primary {
+            background: var(--accent-green);
+            color: var(--bg-primary);
+        }
+
+        .logs-controls button.secondary {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .logs-controls button:hover {
+            opacity: 0.8;
+        }
+
+        .logs-controls button.paused {
+            background: var(--accent-yellow);
+            color: var(--bg-primary);
+        }
+
+        .logs-status {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logs-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+        }
+
+        .logs-status-dot.paused {
+            background: var(--accent-yellow);
+        }
+
+        .logs-filter {
+            padding: 6px 10px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
         }
 
         @media (max-width: 768px) {
@@ -1532,10 +1671,268 @@
                 </div>
             </div>
         </div>
+
+        <!-- Logs Content (Live Log Viewer) -->
+        <div class="protocol-content" id="logs-content">
+            <div class="metrics-row">
+                <div class="metric-card logs">
+                    <div class="metric-label">Total Entries</div>
+                    <div class="metric-value" id="logs-total">0</div>
+                </div>
+                <div class="metric-card logs">
+                    <div class="metric-label">Errors</div>
+                    <div class="metric-value" id="logs-errors">0</div>
+                </div>
+                <div class="metric-card logs">
+                    <div class="metric-label">Warnings</div>
+                    <div class="metric-value" id="logs-warnings">0</div>
+                </div>
+                <div class="metric-card logs">
+                    <div class="metric-label">Last Updated</div>
+                    <div class="metric-value" id="logs-last-update">--</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>Live Agent Logs</h3>
+                    <div class="logs-controls">
+                        <button class="primary" id="logs-refresh-btn">
+                            <span>🔄</span> Refresh
+                        </button>
+                        <button class="secondary" id="logs-pause-btn">
+                            <span>⏸️</span> Pause
+                        </button>
+                        <button class="secondary" id="logs-clear-btn">
+                            <span>🗑️</span> Clear
+                        </button>
+                        <button class="secondary" id="logs-download-btn">
+                            <span>💾</span> Download
+                        </button>
+                        <select class="logs-filter" id="logs-level-filter">
+                            <option value="all">All Levels</option>
+                            <option value="ERROR">Errors Only</option>
+                            <option value="WARNING">Warnings Only</option>
+                            <option value="INFO">Info Only</option>
+                            <option value="DEBUG">Debug Only</option>
+                        </select>
+                        <input type="text" id="logs-search" placeholder="Search logs..." class="search-input" style="flex: 1; min-width: 200px;">
+                        <div class="logs-status">
+                            <div class="logs-status-dot" id="logs-status-indicator"></div>
+                            <span id="logs-status-text">Live</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="logs-container" id="logs-viewer">
+                    <div class="log-entry">
+                        <span class="log-timestamp">[--]</span>
+                        <span class="log-level INFO">INFO</span>
+                        <span>Waiting for logs...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Markmap library for mind map rendering (loaded dynamically in JS for better error handling) -->
 
     <script src="/static/agent-dashboard.js"></script>
+
+    <!-- Logs Tab Functionality -->
+    <script>
+    (function() {
+        let logsPaused = false;
+        let logsRefreshInterval = null;
+        let allLogs = [];
+
+        // Initialize logs tab
+        function initLogsTab() {
+            const pauseBtn = document.getElementById('logs-pause-btn');
+            const refreshBtn = document.getElementById('logs-refresh-btn');
+            const downloadBtn = document.getElementById('logs-download-btn');
+            const clearBtn = document.getElementById('logs-clear-btn');
+            const levelFilter = document.getElementById('logs-level-filter');
+            const searchInput = document.getElementById('logs-search');
+
+            // Pause/Resume functionality
+            pauseBtn.addEventListener('click', () => {
+                logsPaused = !logsPaused;
+                if (logsPaused) {
+                    pauseBtn.innerHTML = '<span>▶️</span> Resume';
+                    pauseBtn.classList.add('paused');
+                    document.getElementById('logs-status-indicator').classList.add('paused');
+                    document.getElementById('logs-status-text').textContent = 'Paused';
+                    if (logsRefreshInterval) {
+                        clearInterval(logsRefreshInterval);
+                        logsRefreshInterval = null;
+                    }
+                } else {
+                    pauseBtn.innerHTML = '<span>⏸️</span> Pause';
+                    pauseBtn.classList.remove('paused');
+                    document.getElementById('logs-status-indicator').classList.remove('paused');
+                    document.getElementById('logs-status-text').textContent = 'Live';
+                    startAutoRefresh();
+                }
+            });
+
+            // Refresh functionality
+            refreshBtn.addEventListener('click', () => {
+                fetchLogs();
+            });
+
+            // Download functionality
+            downloadBtn.addEventListener('click', () => {
+                downloadLogs();
+            });
+
+            // Clear functionality
+            clearBtn.addEventListener('click', () => {
+                allLogs = [];
+                renderLogs([]);
+                updateLogsMetrics();
+            });
+
+            // Filter functionality
+            levelFilter.addEventListener('change', () => {
+                filterAndRenderLogs();
+            });
+
+            // Search functionality
+            searchInput.addEventListener('input', () => {
+                filterAndRenderLogs();
+            });
+
+            // Start auto-refresh
+            startAutoRefresh();
+        }
+
+        // Fetch logs from API
+        async function fetchLogs() {
+            try {
+                const response = await fetch('/api/logs?tail=500');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.logs) {
+                        allLogs = data.logs;
+                        filterAndRenderLogs();
+                        updateLogsMetrics();
+                        document.getElementById('logs-last-update').textContent = new Date().toLocaleTimeString();
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to fetch logs:', error);
+            }
+        }
+
+        // Filter and render logs based on current filters
+        function filterAndRenderLogs() {
+            const levelFilter = document.getElementById('logs-level-filter').value;
+            const searchText = document.getElementById('logs-search').value.toLowerCase();
+
+            let filtered = allLogs;
+
+            // Filter by level
+            if (levelFilter !== 'all') {
+                filtered = filtered.filter(log => log.level === levelFilter);
+            }
+
+            // Filter by search text
+            if (searchText) {
+                filtered = filtered.filter(log =>
+                    log.message.toLowerCase().includes(searchText) ||
+                    (log.timestamp && log.timestamp.toLowerCase().includes(searchText))
+                );
+            }
+
+            renderLogs(filtered);
+        }
+
+        // Render logs to the viewer
+        function renderLogs(logs) {
+            const viewer = document.getElementById('logs-viewer');
+
+            if (logs.length === 0) {
+                viewer.innerHTML = '<div class="log-entry"><span class="log-timestamp">[--]</span><span class="log-level INFO">INFO</span><span>No logs available</span></div>';
+                return;
+            }
+
+            const html = logs.map(log => {
+                const levelClass = log.level ? log.level.toLowerCase() : 'info';
+                return `
+                    <div class="log-entry ${levelClass}">
+                        <span class="log-timestamp">${log.timestamp || '--'}</span>
+                        <span class="log-level ${log.level || 'INFO'}">${log.level || 'INFO'}</span>
+                        <span>${escapeHtml(log.message)}</span>
+                    </div>
+                `;
+            }).join('');
+
+            viewer.innerHTML = html;
+
+            // Auto-scroll to bottom if not paused
+            if (!logsPaused) {
+                viewer.scrollTop = viewer.scrollHeight;
+            }
+        }
+
+        // Update logs metrics
+        function updateLogsMetrics() {
+            const errors = allLogs.filter(log => log.level === 'ERROR').length;
+            const warnings = allLogs.filter(log => log.level === 'WARNING').length;
+
+            document.getElementById('logs-total').textContent = allLogs.length;
+            document.getElementById('logs-errors').textContent = errors;
+            document.getElementById('logs-warnings').textContent = warnings;
+        }
+
+        // Download logs as file
+        function downloadLogs() {
+            const logsText = allLogs.map(log =>
+                `${log.timestamp || '--'} [${log.level || 'INFO'}] ${log.message}`
+            ).join('\n');
+
+            const blob = new Blob([logsText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `agent-logs-${new Date().toISOString()}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // Start auto-refresh
+        function startAutoRefresh() {
+            if (logsRefreshInterval) {
+                clearInterval(logsRefreshInterval);
+            }
+
+            // Fetch immediately
+            fetchLogs();
+
+            // Then fetch every 2 seconds
+            logsRefreshInterval = setInterval(() => {
+                if (!logsPaused) {
+                    fetchLogs();
+                }
+            }, 2000);
+        }
+
+        // Escape HTML to prevent XSS
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Initialize when DOM is ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initLogsTab);
+        } else {
+            initLogsTab();
+        }
+    })();
+    </script>
 </body>
 </html>

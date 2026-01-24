@@ -293,6 +293,10 @@ class BGPSession:
         # because the peer never received our OPEN (it was on the old connection)
         if is_collision and was_in_open_state:
             self.logger.info(f"Collision resolution: re-sending OPEN on new connection")
+            # CRITICAL: Stop all timers from the old connection before resetting state
+            # This prevents old keepalive/hold timers from trying to use closed writer
+            self.logger.debug("Stopping all FSM timers before collision resolution")
+            self.fsm._stop_all_timers()
             # Reset FSM to Connect state so TcpConnectionConfirmed triggers OPEN send
             self.fsm.state = STATE_CONNECT
             await self.fsm.process_event(BGPEvent.TcpConnectionConfirmed)

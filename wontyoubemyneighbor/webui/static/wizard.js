@@ -2225,6 +2225,7 @@ function importTopologyLinks() {
 function updateApiKeyPlaceholder() {
     const provider = document.getElementById('llm-provider').value;
     const input = document.getElementById('api-key');
+    const modelSelect = document.getElementById('llm-model');
 
     const placeholders = {
         'claude': 'sk-ant-...',
@@ -2233,6 +2234,31 @@ function updateApiKeyPlaceholder() {
     };
 
     input.placeholder = placeholders[provider] || '';
+
+    // Show/hide appropriate model optgroups
+    const optgroups = {
+        'claude': 'claude-models',
+        'openai': 'openai-models',
+        'gemini': 'gemini-models'
+    };
+
+    // Hide all optgroups
+    document.querySelectorAll('#llm-model optgroup').forEach(group => {
+        group.style.display = 'none';
+    });
+
+    // Show the selected provider's models
+    if (optgroups[provider]) {
+        const targetGroup = document.getElementById(optgroups[provider]);
+        if (targetGroup) {
+            targetGroup.style.display = 'block';
+            // Select the first option in the visible group
+            const firstOption = targetGroup.querySelector('option');
+            if (firstOption) {
+                modelSelect.value = firstOption.value;
+            }
+        }
+    }
 }
 
 function toggleApiKeyVisibility() {

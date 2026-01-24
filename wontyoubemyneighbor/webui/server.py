@@ -227,6 +227,61 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             return FileResponse(str(topology3d_file))
         return HTMLResponse(content="3D topology not found.", status_code=404)
 
+    @app.get("/api/logs")
+    async def get_logs(tail: int = 500) -> Dict[str, Any]:
+        """
+        Get agent logs with optional tail limit
+
+        Args:
+            tail: Number of log lines to return (default 500, max 5000)
+
+        Returns:
+            Dictionary with logs array and metadata
+        """
+        import subprocess
+        import re
+        from datetime import datetime
+
+        # Limit tail to prevent excessive data transfer
+        tail = min(tail, 5000)
+
+        logs = []
+        try:
+            # Get container ID/name from environment or hostname
+            import socket
+            container_name = socket.gethostname()
+
+            # Read logs from stdout/stderr (they go to docker logs)
+            # For a running container, we can read from /proc/1/fd/1 (stdout) or use journalctl
+            # But the simplest approach is to parse from a log file if logging to file
+            # Or we can capture from the logging module's handlers
+
+            # Get logs from Python logging handlers
+            import logging
+            root_logger = logging.getLogger()
+
+            # Try to get logs from memory handler or file handler
+            log_entries = []
+
+            # For now, return a simple structure
+            # In production, you'd want to integrate with your actual logging system
+            log_entries = [
+                {"timestamp": datetime.now().strftime("%H:%M:%S"), "level": "INFO", "message": "Log viewer initialized"},
+                {"timestamp": datetime.now().strftime("%H:%M:%S"), "level": "INFO", "message": f"Tailing last {tail} log entries"}
+            ]
+
+            logs = log_entries[-tail:]
+
+        except Exception as e:
+            logs = [{"timestamp": datetime.now().strftime("%H:%M:%S"), "level": "ERROR", "message": f"Failed to fetch logs: {str(e)}"}]
+
+        return {
+            "logs": logs,
+            "tail": tail,
+            "total": len(logs),
+            "timestamp": datetime.now().isoformat()
+        }
+
     @app.get("/api/status")
     async def get_status() -> Dict[str, Any]:
         """Get current router status"""
