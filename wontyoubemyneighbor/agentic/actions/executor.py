@@ -385,7 +385,7 @@ class ActionExecutor:
         return {"routes": routes, "count": len(routes)}
 
     async def _execute_ping(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute ping diagnostic using system ping"""
+        """Execute ping diagnostic using system ping with sudo if needed"""
         import subprocess
         import re
         import ipaddress
@@ -410,13 +410,40 @@ class ActionExecutor:
             except ValueError:
                 return {"success": False, "error": f"Invalid source IP address: {source}"}
 
+        # First try system ping without sudo
+        ping_result = await self._try_system_ping(target, count, source, use_sudo=False)
+        if ping_result and ping_result.get("success"):
+            return ping_result
+
+        # If failed due to permissions, try with sudo
+        if ping_result is None or "permission" in str(ping_result.get("error", "")).lower():
+            sudo_result = await self._try_system_ping(target, count, source, use_sudo=True)
+            if sudo_result:
+                return sudo_result
+
+        # Return the original error if sudo also failed
+        return ping_result or {"success": False, "error": "Ping failed - check permissions", "target": target}
+
+    async def _try_system_ping(self, target: str, count: int, source: str = None, use_sudo: bool = False) -> Dict[str, Any]:
+        """Try system ping command, return None if permissions error"""
+        import subprocess
+        import re
+        import platform
+
         try:
-            # Build ping command
-            # -c: count, -W: timeout per packet (seconds), -I: source interface/IP
-            cmd = ["ping", "-c", str(count), "-W", "2"]
+            # Build ping command based on OS
+            if platform.system() == "Darwin":  # macOS
+                cmd = ["ping", "-c", str(count), "-W", "2000"]  # macOS uses milliseconds
+            else:  # Linux
+                cmd = ["ping", "-c", str(count), "-W", "2"]
+
             if source:
                 cmd.extend(["-I", source])
             cmd.append(target)
+
+            # Prepend sudo if requested
+            if use_sudo:
+                cmd = ["sudo", "-n"] + cmd  # -n for non-interactive (no password prompt)
 
             result = subprocess.run(
                 cmd,
@@ -427,6 +454,10 @@ class ActionExecutor:
 
             output = result.stdout + result.stderr
 
+            # Check for permission errors
+            if "operation not permitted" in output.lower() or "permission denied" in output.lower():
+                return None  # Signal to use fallback
+
             # Parse ping output
             sent = 0
             received = 0
@@ -435,15 +466,16 @@ class ActionExecutor:
             rtt_max = None
 
             # Parse packet statistics
-            # "3 packets transmitted, 3 received, 0% packet loss"
             stats_match = re.search(r'(\d+)\s+packets\s+transmitted,\s+(\d+)\s+(?:packets\s+)?received', output)
             if stats_match:
                 sent = int(stats_match.group(1))
                 received = int(stats_match.group(2))
 
             # Parse RTT statistics
-            # "rtt min/avg/max/mdev = 0.123/0.456/0.789/0.111 ms"
             rtt_match = re.search(r'rtt\s+min/avg/max/\S+\s*=\s*([\d.]+)/([\d.]+)/([\d.]+)', output)
+            if not rtt_match:
+                # macOS format: round-trip min/avg/max/stddev
+                rtt_match = re.search(r'round-trip\s+min/avg/max/\S+\s*=\s*([\d.]+)/([\d.]+)/([\d.]+)', output)
             if rtt_match:
                 rtt_min = float(rtt_match.group(1))
                 rtt_avg = float(rtt_match.group(2))
@@ -472,8 +504,13 @@ class ActionExecutor:
         except subprocess.TimeoutExpired:
             return {"success": False, "error": "Ping timed out", "target": target}
         except FileNotFoundError:
-            return {"success": False, "error": "ping command not found", "target": target}
+            return None  # Signal to use fallback
+        except PermissionError:
+            return None  # Signal to use fallback
         except Exception as e:
+            error_str = str(e).lower()
+            if "permission" in error_str or "operation not permitted" in error_str:
+                return None  # Signal to use fallback
             return {"success": False, "error": str(e), "target": target}
 
     async def _execute_traceroute(self, params: Dict[str, Any]) -> Dict[str, Any]:
