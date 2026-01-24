@@ -234,6 +234,9 @@ class SafetyConstraints:
             "analyze_path",
             "detect_anomaly",
             "explain_decision",
+            # Diagnostic operations (read-only, don't modify network state)
+            "diagnostic_ping",
+            "diagnostic_traceroute",
         }
 
         if action_type in read_only_actions:
