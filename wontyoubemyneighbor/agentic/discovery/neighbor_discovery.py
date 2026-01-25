@@ -326,7 +326,7 @@ class NeighborDiscoveryProtocol:
             return
 
         # Extract network prefix from local address
-        # Format: fd00:a510:0:NETWORK_ID::AGENT_INDEX
+        # Format: fd00:a510:0:{network_id}::{agent_index} (e.g., fd00:a510:0:1::1)
         try:
             parts = self._local_ipv6.split('::')
             if len(parts) == 2:

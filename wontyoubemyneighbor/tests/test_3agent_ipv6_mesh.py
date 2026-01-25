@@ -4,7 +4,7 @@ Test Script: 3-Agent IPv6 Mesh with Neighbor Discovery
 
 This test launches 3 agents from the templates:
 - Layer 1: Docker network (172.20.0.0/16 - IPv4)
-- Layer 2: ASI Overlay (fd00:a510:0:NETWORK::AGENT - IPv6)
+- Layer 2: ASI Overlay (fd00:a510:0:{net}::{agent}/64 - IPv6, e.g., fd00:a510:0:1::1/64)
 - Layer 3: Underlay (user-defined routing)
 
 Tests:
@@ -215,7 +215,7 @@ async def test_ipv6_mesh_connectivity(deployment):
         logger.error(f"✗ Expected 3 unique addresses, got {len(unique_addrs)}")
         return False
 
-    # Verify IPv6 addresses follow the expected pattern (fd00:a510:0:NETWORK_ID::AGENT_INDEX)
+    # Verify IPv6 addresses follow the expected pattern (e.g., fd00:a510:0:1::1/64)
     for agent_id, ipv6 in ipv6_addresses.items():
         if ipv6.startswith("fd00:a510:0:"):
             logger.info(f"✓ {agent_id} has valid ASI overlay address: {ipv6}")
