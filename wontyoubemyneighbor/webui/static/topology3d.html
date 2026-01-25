@@ -149,6 +149,121 @@
             color: var(--bg-primary);
         }
 
+        /* Connection Status Indicator */
+        .connection-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .connection-status::before {
+            content: '';
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .connection-status.connected {
+            background: rgba(74, 222, 128, 0.15);
+            color: #4ade80;
+            border: 1px solid rgba(74, 222, 128, 0.3);
+        }
+
+        .connection-status.connected::before {
+            background: #4ade80;
+        }
+
+        .connection-status.disconnected {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .connection-status.disconnected::before {
+            background: #ef4444;
+            animation: none;
+        }
+
+        .connection-status.reconnecting {
+            background: rgba(250, 204, 21, 0.15);
+            color: #facc15;
+            border: 1px solid rgba(250, 204, 21, 0.3);
+        }
+
+        .connection-status.reconnecting::before {
+            background: #facc15;
+        }
+
+        .connection-status.error {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .connection-status.error::before {
+            background: #ef4444;
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* Last Refresh Indicator */
+        .last-refresh {
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        /* Subtle Refreshing Indicator */
+        .refresh-indicator {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(22, 33, 62, 0.9);
+            border: 1px solid var(--accent-cyan);
+            border-radius: 20px;
+            padding: 6px 14px;
+            font-size: 0.75rem;
+            color: var(--accent-cyan);
+            opacity: 0;
+            transform: translateY(-10px);
+            transition: all 0.3s ease;
+            z-index: 200;
+            pointer-events: none;
+        }
+
+        .refresh-indicator.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .refresh-indicator .spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid transparent;
+            border-top-color: var(--accent-cyan);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
         /* Info Panel */
         .info-panel {
             position: absolute;
@@ -348,6 +463,10 @@
     <div id="canvas-container">
         <div class="loading" id="loading">Loading network topology...</div>
         <div class="tooltip" id="tooltip"></div>
+        <div class="refresh-indicator" id="refreshIndicator">
+            <div class="spinner"></div>
+            <span>Syncing...</span>
+        </div>
     </div>
 
     <!-- Header -->
@@ -356,6 +475,9 @@
             <h1 id="pageTitle">3D Network Topology</h1>
             <span class="subtitle" id="pageSubtitle">Interactive 3D Visualization</span>
             <span class="view-mode-badge" id="viewModeBadge">PER-AGENT VIEW</span>
+        </div>
+        <div style="display: flex; flex-direction: column; align-items: center;">
+            <span class="connection-status disconnected" id="connectionStatus">Connecting...</span>
         </div>
         <div class="nav-links">
             <a href="/wizard" class="nav-link" id="wizardLink">Network Builder</a>
@@ -497,6 +619,9 @@
                     <span class="value" id="agentUnderlayInfo" style="font-family: monospace; font-size: 0.8rem;">-</span>
                 </div>
             </div>
+            <div class="last-refresh" style="margin-top: 8px; text-align: right;">
+                Last updated: <span id="lastRefresh">-</span>
+            </div>
         </div>
         <div id="noSelection" style="color: var(--text-secondary); font-size: 0.85rem;">
             Click on a node to view details
@@ -560,6 +685,10 @@
             <div class="value" id="statRoutes">0</div>
             <div class="label">Routes</div>
         </div>
+        <div class="stat-item" style="border-left: 1px solid var(--border-color); padding-left: 15px; margin-left: 10px;">
+            <div class="value" id="statLastSync" style="font-size: 0.9rem;">-</div>
+            <div class="label">Last Sync</div>
+        </div>
     </div>
 
     <script>
@@ -594,6 +723,15 @@
         let perAgentMode = false;
         let focusedAgentId = null;
 
+        // WebSocket and auto-refresh for real-time sync
+        let ws = null;
+        let wsReconnectAttempts = 0;
+        const maxWsReconnectAttempts = 10;
+        const wsReconnectDelay = 2000;
+        let autoRefreshInterval = null;
+        const AUTO_REFRESH_MS = 30000;  // 30 second auto-refresh fallback
+        let lastUpdateTime = null;
+
         // Check URL parameters for agent-specific view
         const urlParams = new URLSearchParams(window.location.search);
         const agentParam = urlParams.get('agent');
@@ -624,6 +762,355 @@
             down: 0xef4444,      // Red - Down/Stopped
             deployed: 0x60a5fa  // Blue - Deployed but no protocol
         };
+
+        // ==================== WebSocket Real-Time Sync ====================
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/monitor`;
+
+            try {
+                ws = new WebSocket(wsUrl);
+                ws.onopen = onWsConnect;
+                ws.onmessage = onWsMessage;
+                ws.onclose = onWsDisconnect;
+                ws.onerror = onWsError;
+            } catch (err) {
+                console.error('WebSocket connection failed:', err);
+                scheduleWsReconnect();
+            }
+        }
+
+        function onWsConnect() {
+            wsReconnectAttempts = 0;
+            updateConnectionStatus('connected');
+            console.log('3D Topology WebSocket connected');
+
+            // Subscribe to topology and protocol updates
+            sendWsMessage({ type: 'subscribe', topics: ['metrics', 'topology', 'protocol_update', 'agent_status'] });
+        }
+
+        function onWsMessage(event) {
+            try {
+                const data = JSON.parse(event.data);
+                lastUpdateTime = Date.now();
+
+                switch (data.type) {
+                    case 'metrics':
+                        // Update stats bar with live metrics
+                        if (data.data) {
+                            updateLiveStats(data.data);
+                        }
+                        break;
+
+                    case 'topology':
+                        // Full topology update - refresh the view
+                        console.log('Received topology update via WebSocket');
+                        loadTopology();
+                        break;
+
+                    case 'agent_details':
+                        // Live details for selected agent
+                        if (data.data && selectedNode && selectedNode.data) {
+                            const details = data.data;
+                            if (details.id === selectedNode.data.id) {
+                                // Update the selected node with fresh details
+                                if (details.protocols) {
+                                    selectedNode.data.protocols = details.protocols.map(p => p.name.toLowerCase());
+                                }
+                                if (details.statistics) {
+                                    if (details.statistics.neighbors !== undefined) {
+                                        selectedNode.data.neighbors = details.statistics.neighbors;
+                                    }
+                                    if (details.statistics.routes !== undefined) {
+                                        selectedNode.data.routes = details.statistics.routes;
+                                    }
+                                }
+                                updateInfoPanel(selectedNode.data);
+                            }
+                        }
+                        break;
+
+                    case 'protocol_update':
+                    case 'agent_status':
+                        // Protocol or agent status changed - refresh
+                        console.log('Received protocol/agent status update');
+                        loadTopology();
+                        // If a node is selected, refresh its data
+                        if (selectedNode) {
+                            refreshSelectedNodeData();
+                        }
+                        break;
+
+                    case 'subscribed':
+                        console.log('Subscribed to topics:', data.topics);
+                        break;
+
+                    default:
+                        // Handle other message types if needed
+                        break;
+                }
+            } catch (err) {
+                console.error('Error parsing WebSocket message:', err);
+            }
+        }
+
+        function onWsDisconnect() {
+            updateConnectionStatus('disconnected');
+            console.log('3D Topology WebSocket disconnected');
+            scheduleWsReconnect();
+        }
+
+        function onWsError(error) {
+            console.error('WebSocket error:', error);
+            updateConnectionStatus('error');
+        }
+
+        function scheduleWsReconnect() {
+            if (wsReconnectAttempts < maxWsReconnectAttempts) {
+                wsReconnectAttempts++;
+                const delay = wsReconnectDelay * Math.pow(1.5, wsReconnectAttempts - 1);
+                updateConnectionStatus('reconnecting');
+                setTimeout(connectWebSocket, delay);
+            } else {
+                console.log('Max WebSocket reconnect attempts reached, relying on auto-refresh');
+            }
+        }
+
+        function sendWsMessage(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(data));
+            }
+        }
+
+        function updateConnectionStatus(status) {
+            const indicator = document.getElementById('connectionStatus');
+            if (indicator) {
+                indicator.className = `connection-status ${status}`;
+                const statusText = {
+                    'connected': 'Live',
+                    'disconnected': 'Offline',
+                    'reconnecting': 'Reconnecting...',
+                    'error': 'Error'
+                };
+                indicator.textContent = statusText[status] || status;
+            }
+        }
+
+        function updateLiveStats(metrics) {
+            // Update stats bar with live data from WebSocket
+            if (metrics.totalAgents !== undefined && metrics.totalAgents > 0) {
+                document.getElementById('statAgents').textContent = metrics.totalAgents;
+            }
+            if (metrics.totalRoutes !== undefined) {
+                document.getElementById('statRoutes').textContent = metrics.totalRoutes;
+            }
+            if (metrics.totalNeighbors !== undefined) {
+                // Total neighbors can be shown in tooltip or used to verify data consistency
+                // If we have per-node neighbor data, update nodes
+            }
+            if (metrics.protocols) {
+                // Update protocol count from live data
+                const protocolCount = Object.keys(metrics.protocols).filter(p => {
+                    const proto = metrics.protocols[p];
+                    return proto && (proto.active || proto.neighbors > 0 || proto.peers > 0);
+                }).length;
+                if (protocolCount > 0) {
+                    document.getElementById('statProtocols').textContent = protocolCount;
+                }
+            }
+        }
+
+        // ==================== Refresh Indicator ====================
+        function showRefreshIndicator() {
+            const indicator = document.getElementById('refreshIndicator');
+            if (indicator) {
+                indicator.classList.add('visible');
+            }
+        }
+
+        function hideRefreshIndicator() {
+            const indicator = document.getElementById('refreshIndicator');
+            if (indicator) {
+                indicator.classList.remove('visible');
+            }
+        }
+
+        // ==================== Auto-Refresh Mechanism ====================
+        function startAutoRefresh() {
+            // Auto-refresh as fallback when WebSocket isn't working
+            autoRefreshInterval = setInterval(() => {
+                const timeSinceUpdate = lastUpdateTime ? Date.now() - lastUpdateTime : AUTO_REFRESH_MS + 1;
+                // Only auto-refresh if no WebSocket update recently
+                if (timeSinceUpdate > AUTO_REFRESH_MS / 2) {
+                    console.log('Auto-refreshing topology data...');
+                    loadTopology();
+                    // Refresh selected node if any
+                    if (selectedNode) {
+                        refreshSelectedNodeData();
+                    }
+                }
+            }, AUTO_REFRESH_MS);
+        }
+
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+        }
+
+        // ==================== Live Data Fetching for Selected Node ====================
+        function requestAgentDetails(agentId) {
+            // Request agent details via WebSocket for real-time data
+            sendWsMessage({ type: 'get_agent_details', agent_id: agentId });
+        }
+
+        async function refreshSelectedNodeData() {
+            if (!selectedNode || !selectedNode.data) return;
+
+            const node = selectedNode.data;
+
+            // First, try WebSocket for real-time data
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                requestAgentDetails(node.id);
+            }
+
+            // Also fetch via REST API as fallback/supplement
+            try {
+                // Try to fetch fresh data for this specific agent
+                let freshData = null;
+
+                // First try orchestrator API for multi-network
+                try {
+                    const networksResponse = await fetch('/api/wizard/networks');
+                    const networks = await networksResponse.json();
+
+                    for (const network of networks) {
+                        const detailsResponse = await fetch(`/api/wizard/networks/${network.network_id}/status`);
+                        const details = await detailsResponse.json();
+
+                        if (details.agents && details.agents[node.id]) {
+                            const agent = details.agents[node.id];
+                            freshData = {
+                                neighbors: (agent.ospf_neighbors || 0) + (agent.bgp_peers || 0),
+                                routes: agent.routes || 0,
+                                status: agent.status || 'unknown',
+                                ospf_neighbors: agent.ospf_neighbors || 0,
+                                bgp_peers: agent.bgp_peers || 0
+                            };
+                            break;
+                        }
+                    }
+                } catch (e) {
+                    console.log('Could not fetch from orchestrator API');
+                }
+
+                // Fallback to single agent /api/status
+                if (!freshData) {
+                    const statusResponse = await fetch('/api/status');
+                    const status = await statusResponse.json();
+
+                    if (status.router_id === node.id || status.agent_name === node.name) {
+                        freshData = {
+                            neighbors: (status.ospf?.neighbors || 0) + (status.bgp?.total_peers || 0),
+                            routes: (status.ospf?.routes || 0) + (status.bgp?.loc_rib_routes || 0),
+                            status: status.running ? 'running' : 'stopped',
+                            protocolStatus: {}
+                        };
+
+                        // Build detailed protocol status
+                        if (status.ospf) {
+                            freshData.protocolStatus.ospf = {
+                                up: status.ospf.full_neighbors > 0 || status.ospf.neighbors > 0,
+                                neighbors: status.ospf.neighbors || 0,
+                                fullNeighbors: status.ospf.full_neighbors || 0,
+                                routes: status.ospf.routes || 0
+                            };
+                        }
+                        if (status.bgp) {
+                            freshData.protocolStatus.bgp = {
+                                up: status.bgp.established_peers > 0,
+                                totalPeers: status.bgp.total_peers || 0,
+                                establishedPeers: status.bgp.established_peers || 0,
+                                routes: status.bgp.loc_rib_routes || 0
+                            };
+                        }
+                    }
+                }
+
+                // Update the node's data and re-render the info panel
+                if (freshData) {
+                    node.neighbors = freshData.neighbors;
+                    node.routes = freshData.routes;
+                    node.status = freshData.status;
+                    if (freshData.protocolStatus) {
+                        node.protocolStatus = freshData.protocolStatus;
+                    }
+
+                    // Update the info panel with fresh data
+                    updateInfoPanel(node);
+                    // Update stats
+                    updateStats();
+                }
+            } catch (error) {
+                console.error('Error refreshing selected node data:', error);
+            }
+        }
+
+        function updateInfoPanel(node) {
+            document.getElementById('agentName').textContent = node.name;
+            document.getElementById('agentRouterId').textContent = node.id;
+            document.getElementById('agentStatus').textContent = node.status;
+
+            // Build protocol badges with status indicators
+            let protocolsHtml = '-';
+            if (node.protocols && node.protocols.length > 0) {
+                protocolsHtml = node.protocols.map(p => {
+                    const pLower = p.toLowerCase();
+                    const ps = node.protocolStatus ? node.protocolStatus[pLower] : null;
+
+                    // Determine if protocol is up (working/connected)
+                    let isUp = false;
+                    let statusText = '';
+
+                    if (ps) {
+                        isUp = ps.up;
+                        if (pLower === 'ospf') {
+                            statusText = ps.fullNeighbors > 0 ? `${ps.fullNeighbors} FULL` : (ps.neighbors > 0 ? `${ps.neighbors} nbrs` : 'No neighbors');
+                        } else if (pLower === 'bgp') {
+                            statusText = ps.establishedPeers > 0 ? `${ps.establishedPeers} established` : (ps.totalPeers > 0 ? `${ps.totalPeers} peers` : 'No peers');
+                        }
+                    } else {
+                        // Infer from node status
+                        isUp = node.status === 'running' || node.status === 'established' || node.status === 'full';
+                    }
+
+                    // Status indicator: green dot for up, red dot for down
+                    const statusDot = isUp
+                        ? '<span style="color: #4ade80; margin-right: 4px;">●</span>'
+                        : '<span style="color: #ef4444; margin-right: 4px;">●</span>';
+
+                    const tooltip = statusText ? ` title="${statusText}"` : '';
+
+                    return `<span class="protocol-badge protocol-${pLower}"${tooltip}>${statusDot}${p.toUpperCase()}</span>`;
+                }).join('');
+            }
+            document.getElementById('agentProtocols').innerHTML = protocolsHtml;
+
+            document.getElementById('agentNeighbors').textContent = node.neighbors || 0;
+            document.getElementById('agentRoutes').textContent = node.routes || 0;
+
+            // Update 3-Layer network info
+            document.getElementById('agentDockerIp').textContent = node.docker_ip || node.ip || '-';
+            document.getElementById('agentOverlayIpv6').textContent = node.overlay_ipv6 || '-';
+            document.getElementById('agentUnderlayInfo').textContent = node.underlay_info || (node.protocols ? node.protocols.join(', ') : '-');
+
+            // Update last refresh indicator
+            const lastRefreshEl = document.getElementById('lastRefresh');
+            if (lastRefreshEl) {
+                lastRefreshEl.textContent = new Date().toLocaleTimeString();
+            }
+        }
 
         function init() {
             const container = document.getElementById('canvas-container');
@@ -774,8 +1261,32 @@
             // Load data
             loadTopology();
 
+            // Connect to WebSocket for real-time updates
+            connectWebSocket();
+
+            // Start auto-refresh as fallback
+            startAutoRefresh();
+
             // Start animation loop
             animate();
+
+            // Cleanup on page unload
+            window.addEventListener('beforeunload', () => {
+                stopAutoRefresh();
+                if (ws) {
+                    ws.close();
+                }
+            });
+
+            // Refresh when page becomes visible again
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                    loadTopology();
+                    if (selectedNode) {
+                        refreshSelectedNodeData();
+                    }
+                }
+            });
         }
 
         let isDragging = false;
@@ -834,6 +1345,13 @@
         }
 
         async function loadTopology() {
+            // Show refresh indicator (only if not initial load)
+            if (!document.getElementById('loading').classList.contains('hidden')) {
+                // Initial load - don't show refresh indicator
+            } else {
+                showRefreshIndicator();
+            }
+
             try {
                 let topologyData = {
                     nodes: [],
@@ -1076,9 +1594,21 @@
                     filterForPerAgentView();
                 }
 
+                // Preserve selected node ID before recreating visualization
+                const previouslySelectedId = selectedNode ? selectedNode.data?.id : null;
+
                 createVisualization();
                 updateStats();
                 document.getElementById('loading').classList.add('hidden');
+                hideRefreshIndicator();
+
+                // Restore selection if the node still exists
+                if (previouslySelectedId && nodeObjects[previouslySelectedId]) {
+                    selectNode(nodeObjects[previouslySelectedId]);
+                }
+
+                // Update last update time
+                lastUpdateTime = Date.now();
 
             } catch (error) {
                 console.error('Failed to load topology:', error);
@@ -1086,9 +1616,19 @@
                 const demo = createDemoTopology();
                 nodes = demo.nodes;
                 links = demo.links;
+
+                // Preserve selected node ID before recreating visualization
+                const previouslySelectedId = selectedNode ? selectedNode.data?.id : null;
+
                 createVisualization();
                 updateStats();
                 document.getElementById('loading').classList.add('hidden');
+                hideRefreshIndicator();
+
+                // Restore selection if the node still exists
+                if (previouslySelectedId && nodeObjects[previouslySelectedId]) {
+                    selectNode(nodeObjects[previouslySelectedId]);
+                }
             }
         }
 
@@ -1683,7 +2223,21 @@
 
                     if (nodeEntry) {
                         const node = nodeEntry[1].data;
-                        tooltip.innerHTML = `<strong>${node.name}</strong><br>${node.status}`;
+                        // Build enhanced tooltip with protocol info
+                        let tooltipContent = `<strong>${node.name}</strong><br>`;
+                        tooltipContent += `<span style="color: ${node.status === 'running' ? '#4ade80' : '#ef4444'};">${node.status}</span>`;
+
+                        if (node.protocols && node.protocols.length > 0) {
+                            tooltipContent += `<br><span style="color: #888;">Protocols:</span> ${node.protocols.join(', ').toUpperCase()}`;
+                        }
+                        if (node.neighbors !== undefined) {
+                            tooltipContent += `<br><span style="color: #888;">Neighbors:</span> ${node.neighbors}`;
+                        }
+                        if (node.routes !== undefined && node.routes > 0) {
+                            tooltipContent += `<br><span style="color: #888;">Routes:</span> ${node.routes}`;
+                        }
+
+                        tooltip.innerHTML = tooltipContent;
                         tooltip.style.display = 'block';
                         tooltip.style.left = event.clientX + 15 + 'px';
                         tooltip.style.top = event.clientY + 15 + 'px';
@@ -1919,52 +2473,12 @@
             const node = nodeObj.data;
             document.getElementById('agentInfo').classList.add('visible');
             document.getElementById('noSelection').style.display = 'none';
-            document.getElementById('agentName').textContent = node.name;
-            document.getElementById('agentRouterId').textContent = node.id;
-            document.getElementById('agentStatus').textContent = node.status;
 
-            // Build protocol badges with status indicators
-            let protocolsHtml = '-';
-            if (node.protocols && node.protocols.length > 0) {
-                protocolsHtml = node.protocols.map(p => {
-                    const pLower = p.toLowerCase();
-                    const ps = node.protocolStatus ? node.protocolStatus[pLower] : null;
+            // Show cached data immediately for responsiveness
+            updateInfoPanel(node);
 
-                    // Determine if protocol is up (working/connected)
-                    let isUp = false;
-                    let statusText = '';
-
-                    if (ps) {
-                        isUp = ps.up;
-                        if (pLower === 'ospf') {
-                            statusText = ps.fullNeighbors > 0 ? `${ps.fullNeighbors} FULL` : (ps.neighbors > 0 ? `${ps.neighbors} nbrs` : 'No neighbors');
-                        } else if (pLower === 'bgp') {
-                            statusText = ps.establishedPeers > 0 ? `${ps.establishedPeers} established` : (ps.totalPeers > 0 ? `${ps.totalPeers} peers` : 'No peers');
-                        }
-                    } else {
-                        // Infer from node status
-                        isUp = node.status === 'running' || node.status === 'established' || node.status === 'full';
-                    }
-
-                    // Status indicator: green dot for up, red dot for down
-                    const statusDot = isUp
-                        ? '<span style="color: #4ade80; margin-right: 4px;">●</span>'
-                        : '<span style="color: #ef4444; margin-right: 4px;">●</span>';
-
-                    const tooltip = statusText ? ` title="${statusText}"` : '';
-
-                    return `<span class="protocol-badge protocol-${pLower}"${tooltip}>${statusDot}${p.toUpperCase()}</span>`;
-                }).join('');
-            }
-            document.getElementById('agentProtocols').innerHTML = protocolsHtml;
-
-            document.getElementById('agentNeighbors').textContent = node.neighbors || 0;
-            document.getElementById('agentRoutes').textContent = node.routes || 0;
-
-            // Update 3-Layer network info
-            document.getElementById('agentDockerIp').textContent = node.docker_ip || node.ip || '-';
-            document.getElementById('agentOverlayIpv6').textContent = node.overlay_ipv6 || '-';
-            document.getElementById('agentUnderlayInfo').textContent = node.underlay_info || (node.protocols ? node.protocols.join(', ') : '-');
+            // Then fetch live data asynchronously to update neighbors/routes
+            refreshSelectedNodeData();
         }
 
         function deselectNode() {
@@ -1988,6 +2502,11 @@
 
             const totalRoutes = nodes.reduce((sum, n) => sum + (n.routes || 0), 0);
             document.getElementById('statRoutes').textContent = totalRoutes;
+
+            // Update last sync time
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            document.getElementById('statLastSync').textContent = timeStr;
         }
 
         function animate() {

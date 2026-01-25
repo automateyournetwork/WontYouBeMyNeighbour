@@ -108,16 +108,16 @@ class AgentLauncher:
         Generate unique IPv6 overlay address for an agent
 
         The ASI overlay network uses the format:
-        fd00:asi:0:NETWORK_ID::AGENT_INDEX/64
+        fd00:a510:0:{network_id}::{agent_index}/64
 
         Args:
-            network_id: Network identifier (1-65535)
-            agent_index: Agent index within network (1-65535)
+            network_id: Network identifier (1-65535), converted to hex
+            agent_index: Agent index within network (1-65535), converted to hex
 
         Returns:
-            IPv6 address string with prefix length (e.g., "fd00:asi:0:1::1/64")
+            IPv6 address string with prefix length (e.g., "fd00:a510:0:1::1/64")
         """
-        # Format: fd00:a510:0:NETWORK::AGENT/64
+        # Format: fd00:a510:0:{network_hex}::{agent_hex}/64
         # Using ULA (Unique Local Address) range fd00::/8
         # Convert network_id and agent_index to hex for valid IPv6 format
         network_hex = f"{network_id:x}"  # Convert to hex without 0x prefix
