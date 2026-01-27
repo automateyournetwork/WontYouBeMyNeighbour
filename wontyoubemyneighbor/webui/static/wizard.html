@@ -527,6 +527,7 @@
         <header>
             <div class="logo">
                 <h1>ASI Network Builder</h1>
+                <span id="network-name-badge" class="network-badge" style="display: none; margin-left: 15px; padding: 5px 12px; background: rgba(0, 217, 255, 0.2); border: 1px solid #00d9ff; border-radius: 20px; font-size: 0.9rem; color: #00d9ff;"></span>
             </div>
         </header>
 
@@ -674,12 +675,12 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label for="subnet" id="subnet-label">Subnet</label>
-                        <input type="text" id="subnet" placeholder="e.g., fd00:docker:1::/64" value="fd00:docker:1::/64">
+                        <input type="text" id="subnet" placeholder="e.g., fd00:d0c:1::/64" value="fd00:d0c:1::/64">
                         <div class="hint" id="subnet-hint">Subnet for Docker containers</div>
                     </div>
                     <div class="form-group">
                         <label for="gateway" id="gateway-label">Gateway</label>
-                        <input type="text" id="gateway" placeholder="e.g., fd00:docker:1::1" value="fd00:docker:1::1">
+                        <input type="text" id="gateway" placeholder="e.g., fd00:d0c:1::1" value="fd00:d0c:1::1">
                         <div class="hint" id="gateway-hint">Default gateway for containers</div>
                     </div>
                 </div>
@@ -785,6 +786,7 @@
                     <button class="tab active" onclick="showAgentTab('new')">New Agent</button>
                     <button class="tab" onclick="showAgentTab('template')">From Template</button>
                     <button class="tab" onclick="showAgentTab('nl')">Natural Language</button>
+                    <button class="tab" onclick="showAgentTab('netbox')" style="background: #06b6d4; color: #1a1a2e;">Import from NetBox</button>
                     <button class="tab" onclick="showAgentTab('bulk')" style="background: #4ade80; color: #1a1a2e;">Bulk Import</button>
                 </div>
 
@@ -828,25 +830,83 @@
                                 <div class="form-group">
                                     <label for="if-type">Interface Type</label>
                                     <select id="if-type" onchange="updateInterfaceName()">
-                                        <option value="eth">Ethernet</option>
-                                        <option value="lo">Loopback</option>
-                                        <option value="vlan">VLAN</option>
-                                        <option value="tun">Tunnel</option>
-                                        <option value="sub">Sub-Interface</option>
+                                        <optgroup label="Physical Interfaces">
+                                            <option value="eth">Ethernet</option>
+                                            <option value="lo">Loopback</option>
+                                        </optgroup>
+                                        <optgroup label="Link Aggregation">
+                                            <option value="bond">Bond (LACP)</option>
+                                            <option value="bond-member">Bond Member</option>
+                                        </optgroup>
+                                        <optgroup label="L2 Subinterfaces (802.1Q)">
+                                            <option value="sub-l2">L2 Subinterface (VLAN tagged)</option>
+                                            <option value="sub-l2-trunk">L2 Trunk Subinterface</option>
+                                        </optgroup>
+                                        <optgroup label="L3 Subinterfaces (Routed)">
+                                            <option value="sub-l3">L3 Routed Subinterface</option>
+                                        </optgroup>
+                                        <optgroup label="Overlay/Tunnel">
+                                            <option value="vxlan">VXLAN VTEP</option>
+                                            <option value="gre">GRE Tunnel</option>
+                                            <option value="tun">Generic Tunnel</option>
+                                        </optgroup>
+                                        <optgroup label="Virtual">
+                                            <option value="vlan">VLAN SVI</option>
+                                            <option value="bridge">Bridge Interface</option>
+                                        </optgroup>
                                     </select>
                                 </div>
-                                <!-- Sub-interface parent (hidden unless sub-interface selected) -->
-                                <div class="form-group" id="sub-interface-parent-group" style="display: none;">
-                                    <label for="sub-parent">Parent Interface</label>
-                                    <select id="sub-parent" onchange="updateSubInterfaceName()">
+                                <!-- Parent interface selection (for subinterfaces and bond members) -->
+                                <div class="form-group" id="parent-interface-group" style="display: none;">
+                                    <label for="parent-interface">Parent Interface</label>
+                                    <select id="parent-interface" onchange="updateSubInterfaceName()">
                                         <option value="eth0">eth0</option>
                                     </select>
-                                    <div class="hint">Parent interface for sub-interface (e.g., eth0.100)</div>
+                                    <div class="hint" id="parent-hint">Select parent interface</div>
                                 </div>
-                                <div class="form-group" id="sub-interface-vlan-group" style="display: none;">
+                                <!-- Bond selection (for bond members) -->
+                                <div class="form-group" id="bond-select-group" style="display: none;">
+                                    <label for="bond-select">Add to Bond</label>
+                                    <select id="bond-select">
+                                        <option value="">-- Select Bond --</option>
+                                    </select>
+                                    <div class="hint">Select bond interface to join</div>
+                                </div>
+                                <!-- LACP Mode (for bonds) -->
+                                <div class="form-group" id="lacp-mode-group" style="display: none;">
+                                    <label for="lacp-mode">LACP Mode</label>
+                                    <select id="lacp-mode">
+                                        <option value="active">Active (initiates LACP)</option>
+                                        <option value="passive">Passive (responds to LACP)</option>
+                                        <option value="on">Static (no LACP)</option>
+                                    </select>
+                                    <div class="hint">802.3ad link aggregation mode</div>
+                                </div>
+                                <!-- VLAN ID (for L2 subinterfaces) -->
+                                <div class="form-group" id="vlan-id-group" style="display: none;">
                                     <label for="sub-vlan">VLAN ID</label>
                                     <input type="number" id="sub-vlan" value="100" min="1" max="4094" onchange="updateSubInterfaceName()">
-                                    <div class="hint">VLAN tag for sub-interface (1-4094)</div>
+                                    <div class="hint">802.1Q VLAN tag (1-4094)</div>
+                                </div>
+                                <!-- Subinterface index (for L3 subinterfaces) -->
+                                <div class="form-group" id="subif-index-group" style="display: none;">
+                                    <label for="subif-index">Subinterface Index</label>
+                                    <input type="number" id="subif-index" value="0" min="0" max="255" onchange="updateSubInterfaceName()">
+                                    <div class="hint">L3 subinterface index (e.g., eth0:0, eth0:1)</div>
+                                </div>
+                                <!-- Interface Mode (for subinterfaces) -->
+                                <div class="form-group" id="interface-mode-group" style="display: none;">
+                                    <label for="interface-mode">Interface Mode</label>
+                                    <select id="interface-mode">
+                                        <option value="access">Access (single VLAN)</option>
+                                        <option value="trunk">Trunk (multiple VLANs)</option>
+                                    </select>
+                                </div>
+                                <!-- Allowed VLANs (for trunk subinterfaces) -->
+                                <div class="form-group" id="allowed-vlans-group" style="display: none;">
+                                    <label for="allowed-vlans">Allowed VLANs</label>
+                                    <input type="text" id="allowed-vlans" placeholder="100,200,300-400">
+                                    <div class="hint">Comma-separated VLANs or ranges</div>
                                 </div>
                             </div>
                             <div class="form-row">
@@ -887,25 +947,60 @@
                             <div class="form-group">
                                 <label for="protocol">Protocol Type</label>
                                 <select id="protocol" onchange="updateProtocolConfig()">
-                                    <optgroup label="Link State Protocols">
-                                        <option value="ospf">OSPF</option>
+                                    <optgroup label="IPv4 Routing Protocols">
+                                        <option value="ospf">OSPFv2 (IPv4)</option>
+                                        <option value="isis-ipv4">IS-IS (IPv4)</option>
+                                        <option value="ibgp-ipv4">iBGP (IPv4 unicast)</option>
+                                        <option value="ebgp-ipv4">eBGP (IPv4 unicast)</option>
+                                        <option value="rip">RIPv2 (IPv4)</option>
+                                        <option value="eigrp">EIGRP (IPv4)</option>
+                                        <option value="static-ipv4">Static Routes (IPv4)</option>
+                                    </optgroup>
+                                    <optgroup label="IPv6 Routing Protocols">
                                         <option value="ospfv3">OSPFv3 (IPv6)</option>
-                                        <option value="isis">IS-IS</option>
+                                        <option value="isis-ipv6">IS-IS (IPv6)</option>
+                                        <option value="ibgp-ipv6">iBGP (IPv6 unicast)</option>
+                                        <option value="ebgp-ipv6">eBGP (IPv6 unicast)</option>
+                                        <option value="ripng">RIPng (IPv6)</option>
+                                        <option value="static-ipv6">Static Routes (IPv6)</option>
                                     </optgroup>
-                                    <optgroup label="BGP Protocols">
-                                        <option value="ibgp">iBGP</option>
-                                        <option value="ebgp">eBGP</option>
+                                    <optgroup label="Dual-Stack / Multi-AF">
+                                        <option value="ibgp">iBGP (Multi-AF: IPv4 + IPv6)</option>
+                                        <option value="ebgp">eBGP (Multi-AF: IPv4 + IPv6)</option>
+                                        <option value="isis">IS-IS (Multi-topology)</option>
                                     </optgroup>
-                                    <optgroup label="MPLS/Overlay">
+                                    <optgroup label="MPLS/Label Switching">
                                         <option value="mpls">MPLS/LDP</option>
+                                        <option value="mpls-te">MPLS-TE (RSVP)</option>
+                                        <option value="segment-routing">Segment Routing</option>
+                                        <option value="srv6">SRv6 (Segment Routing IPv6)</option>
+                                    </optgroup>
+                                    <optgroup label="Overlay/Fabric">
                                         <option value="vxlan">VXLAN</option>
-                                        <option value="evpn">EVPN</option>
+                                        <option value="evpn">EVPN (L2VPN)</option>
+                                        <option value="evpn-l3">EVPN (L3VPN)</option>
+                                        <option value="vpls">VPLS</option>
+                                        <option value="l3vpn">L3VPN (VRF)</option>
+                                    </optgroup>
+                                    <optgroup label="First Hop Redundancy">
+                                        <option value="vrrp">VRRP</option>
+                                        <option value="hsrp">HSRP</option>
+                                        <option value="glbp">GLBP</option>
                                     </optgroup>
                                     <optgroup label="Network Services">
-                                        <option value="dhcp">DHCP Server</option>
+                                        <option value="dhcp">DHCPv4 Server</option>
+                                        <option value="dhcpv6">DHCPv6 Server</option>
                                         <option value="dns">DNS Server</option>
                                         <option value="ntp">NTP Server/Client</option>
                                         <option value="ptp">PTP (Precision Time)</option>
+                                        <option value="syslog">Syslog</option>
+                                        <option value="snmp">SNMP</option>
+                                    </optgroup>
+                                    <optgroup label="Multicast">
+                                        <option value="pim-sm">PIM Sparse Mode</option>
+                                        <option value="pim-dm">PIM Dense Mode</option>
+                                        <option value="igmp">IGMP</option>
+                                        <option value="mld">MLD (IPv6 Multicast)</option>
                                     </optgroup>
                                 </select>
                             </div>
@@ -983,6 +1078,111 @@ Or: Create a BGP router in AS 65001 that peers with neighbor 192.168.1.2 in AS 6
                         <div style="margin-top: 15px;">
                             <button class="btn btn-success" onclick="addNLAgent()">Add This Agent</button>
                             <button class="btn btn-secondary" onclick="clearNLPreview()">Clear</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- NetBox Import Tab -->
+                <div id="agent-tab-netbox" style="display: none;">
+                    <div class="alert alert-info" style="background: rgba(6, 182, 212, 0.1); border-color: #06b6d4;">
+                        <strong style="color: #06b6d4;">Import from NetBox:</strong> Pull device configuration from NetBox to auto-build an agent. Your network source of truth becomes your agent source!
+                    </div>
+
+                    <!-- NetBox Connection -->
+                    <div style="background: #1a1a2e; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                        <h4 style="color: #06b6d4; margin-bottom: 15px;">NetBox Connection</h4>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="netbox-import-url">NetBox URL</label>
+                                <input type="url" id="netbox-import-url" placeholder="https://netbox.example.com">
+                            </div>
+                            <div class="form-group">
+                                <label for="netbox-import-token">API Token</label>
+                                <input type="password" id="netbox-import-token" placeholder="Your NetBox API token">
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-secondary" onclick="testNetBoxConnection()">Test Connection</button>
+                            <button class="btn btn-primary" onclick="loadNetBoxDevices()">Load Devices</button>
+                        </div>
+                        <div id="netbox-connection-status" style="margin-top: 10px;"></div>
+                    </div>
+
+                    <!-- Device List -->
+                    <div id="netbox-devices-section" style="display: none;">
+                        <h4 style="margin-bottom: 15px;">Select Device to Import</h4>
+
+                        <!-- Filters -->
+                        <div class="form-row" style="margin-bottom: 15px;">
+                            <div class="form-group">
+                                <label for="netbox-filter-site">Filter by Site</label>
+                                <select id="netbox-filter-site" onchange="filterNetBoxDevices()">
+                                    <option value="">All Sites</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="netbox-filter-role">Filter by Role</label>
+                                <select id="netbox-filter-role" onchange="filterNetBoxDevices()">
+                                    <option value="">All Roles</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Device Table -->
+                        <div style="max-height: 300px; overflow-y: auto; background: #16213e; border-radius: 8px;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <thead style="position: sticky; top: 0; background: #1a1a2e;">
+                                    <tr>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #2a2a4e;">Device</th>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #2a2a4e;">Site</th>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #2a2a4e;">Role</th>
+                                        <th style="padding: 10px; text-align: left; border-bottom: 1px solid #2a2a4e;">Primary IP</th>
+                                        <th style="padding: 10px; text-align: center; border-bottom: 1px solid #2a2a4e;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="netbox-devices-list">
+                                    <tr><td colspan="5" style="padding: 20px; text-align: center; color: #888;">Load devices to see available options</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Import Preview -->
+                    <div id="netbox-import-preview" style="display: none; margin-top: 20px;">
+                        <h4 style="color: #06b6d4; margin-bottom: 15px;">Import Preview</h4>
+                        <div style="background: #1a1a2e; padding: 20px; border-radius: 8px;">
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Device Name</label>
+                                    <input type="text" id="netbox-preview-name" readonly style="background: #16213e;">
+                                </div>
+                                <div class="form-group">
+                                    <label>Router ID</label>
+                                    <input type="text" id="netbox-preview-router-id" readonly style="background: #16213e;">
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Site</label>
+                                    <input type="text" id="netbox-preview-site" readonly style="background: #16213e;">
+                                </div>
+                                <div class="form-group">
+                                    <label>Role</label>
+                                    <input type="text" id="netbox-preview-role" readonly style="background: #16213e;">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Interfaces (<span id="netbox-preview-if-count">0</span>)</label>
+                                <div id="netbox-preview-interfaces" style="background: #16213e; padding: 10px; border-radius: 4px; max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 0.85rem;"></div>
+                            </div>
+                            <div class="form-group">
+                                <label>Suggested Protocols</label>
+                                <div id="netbox-preview-protocols" style="display: flex; gap: 10px; flex-wrap: wrap;"></div>
+                            </div>
+                        </div>
+                        <div style="margin-top: 15px; display: flex; gap: 10px;">
+                            <button class="btn btn-success" onclick="importNetBoxDevice()">Import as Agent</button>
+                            <button class="btn btn-secondary" onclick="clearNetBoxPreview()">Cancel</button>
                         </div>
                     </div>
                 </div>
@@ -1155,11 +1355,10 @@ Or: Create a BGP router in AS 65001 that peers with neighbor 192.168.1.2 in AS 6
                     <select id="llm-model">
                         <!-- Claude models -->
                         <optgroup label="Claude (Anthropic)" id="claude-models" style="display: block;">
-                            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Latest)</option>
-                            <option value="claude-3-5-sonnet-20240620">Claude 3.5 Sonnet (June 2024)</option>
-                            <option value="claude-3-sonnet-20240229">Claude 3 Sonnet</option>
-                            <option value="claude-3-opus-20240229">Claude 3 Opus</option>
-                            <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                            <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (Latest)</option>
+                            <option value="claude-opus-4-5-20251101">Claude Opus 4.5 (Most Capable)</option>
+                            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Legacy)</option>
+                            <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku (Fast)</option>
                         </optgroup>
                         <!-- OpenAI models -->
                         <optgroup label="OpenAI" id="openai-models" style="display: none;">
@@ -1220,12 +1419,12 @@ Or: Create a BGP router in AS 65001 that peers with neighbor 192.168.1.2 in AS 6
 
     <!-- MCP Configuration Modal -->
     <div class="modal" id="mcp-config-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center;">
-        <div class="modal-content" style="background: #16213e; border-radius: 12px; width: 90%; max-width: 500px; max-height: 80vh; overflow: hidden;">
-            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #2a2a4e;">
+        <div class="modal-content" style="background: #16213e; border-radius: 12px; width: 90%; max-width: 500px; max-height: 85vh; display: flex; flex-direction: column;">
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #2a2a4e; flex-shrink: 0;">
                 <h3 id="mcp-modal-title" style="color: #00d9ff;">Configure MCP</h3>
                 <button onclick="closeMcpModal()" style="background: transparent; border: none; color: #888; font-size: 1.5rem; cursor: pointer;">&times;</button>
             </div>
-            <div class="modal-body" style="padding: 20px; overflow-y: auto;">
+            <div class="modal-body" style="padding: 20px; overflow-y: auto; flex: 1;">
                 <p id="mcp-modal-description" style="color: #888; margin-bottom: 20px;"></p>
 
                 <div id="mcp-config-fields">
@@ -1236,9 +1435,9 @@ Or: Create a BGP router in AS 65001 that peers with neighbor 192.168.1.2 in AS 6
                     <a id="mcp-docs-url" href="#" target="_blank" style="color: #00d9ff; font-size: 0.9rem;">View Documentation</a>
                 </div>
             </div>
-            <div class="modal-footer" style="padding: 15px 20px; border-top: 1px solid #2a2a4e; display: flex; justify-content: flex-end; gap: 10px;">
+            <div class="modal-footer" style="padding: 15px 20px; border-top: 1px solid #2a2a4e; display: flex; justify-content: flex-end; gap: 10px; flex-shrink: 0; background: #16213e;">
                 <button class="btn btn-secondary" onclick="closeMcpModal()">Cancel</button>
-                <button class="btn btn-success" onclick="saveMcpConfig()">Save & Enable</button>
+                <button class="btn btn-success" onclick="saveMcpConfig()" style="font-weight: bold;">Save & Enable</button>
             </div>
         </div>
     </div>

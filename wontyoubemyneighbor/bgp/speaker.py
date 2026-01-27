@@ -214,6 +214,17 @@ class BGPSpeaker:
         finally:
             await self.stop()
 
+    @property
+    def stats(self) -> Dict:
+        """
+        Get aggregated message statistics from all BGP sessions.
+        Used by Prometheus metrics collector.
+
+        Returns:
+            Dictionary with aggregated message counters
+        """
+        return self.agent.stats
+
     def get_statistics(self) -> Dict:
         """
         Get BGP statistics

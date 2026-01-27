@@ -265,12 +265,9 @@ class RouteRedistributor:
                     if route.prefix in self.redistributed_to.get("bgp", set()):
                         continue
 
-                    # Extract next-hop from attributes
-                    next_hop = self.local_ip
-                    if 3 in route.path_attributes:
-                        nh_attr = route.path_attributes[3]
-                        if hasattr(nh_attr, 'next_hop'):
-                            next_hop = nh_attr.next_hop
+                    # Extract next-hop using the BGPRoute.next_hop property
+                    # This correctly handles both IPv4 (NEXT_HOP attr) and IPv6 (_ipv6_next_hop)
+                    next_hop = route.next_hop or self.local_ip
                     all_routes.append({
                         "prefix": route.prefix,
                         "next_hop": next_hop,
@@ -508,6 +505,11 @@ class OSPFAgent:
         self.hello_handler.on_hello_received = self._on_hello_received
 
         self.logger.info(f"Initialized OSPF Agent: {router_id} on {interface} ({self.source_ip})")
+
+    @property
+    def stats(self):
+        """Get combined message statistics from all handlers"""
+        return self.hello_handler.stats if self.hello_handler else {}
 
     async def start(self):
         """
@@ -824,11 +826,37 @@ class OSPFAgent:
                         actual_gateway = neighbor.ip_address
                         self.logger.debug(f"Resolved next-hop {next_hop_router_id} -> {actual_gateway}")
                     else:
-                        # Fallback: if next_hop looks like an interface IP already (same subnet), use it
-                        # This handles edge cases where the path goes through the router itself
-                        self.logger.warning(f"Cannot resolve next-hop router ID {next_hop_router_id} "
-                                          f"to interface IP - neighbor not found")
-                        continue
+                        # Fallback strategies for resolving next-hop:
+                        # 1. Check if next_hop looks like an IP address already
+                        import ipaddress
+                        try:
+                            ip_obj = ipaddress.ip_address(next_hop_router_id)
+                            # If it's a valid IP and not the same as our router ID, use it directly
+                            actual_gateway = str(ip_obj)
+                            self.logger.debug(f"Using next-hop {next_hop_router_id} as IP address directly")
+                        except ValueError:
+                            pass
+
+                        # 2. Try to find neighbor by scanning LSDB for router LSA links
+                        if not actual_gateway and hasattr(self, 'lsdb'):
+                            for lsa in self.lsdb.get_lsas_by_type(1):  # Router LSAs
+                                if lsa.header.advertising_router == next_hop_router_id:
+                                    # Found the router - check its links for a point-to-point link back to us
+                                    for link in getattr(lsa, 'links', []):
+                                        if hasattr(link, 'link_data') and link.link_data:
+                                            # link_data often contains the interface IP
+                                            actual_gateway = str(link.link_data)
+                                            self.logger.debug(f"Resolved next-hop {next_hop_router_id} -> {actual_gateway} via LSDB")
+                                            break
+                                if actual_gateway:
+                                    break
+
+                        if not actual_gateway:
+                            self.logger.warning(f"Cannot resolve next-hop router ID {next_hop_router_id} "
+                                              f"to interface IP - neighbor not found, trying direct router ID")
+                            # Last resort: try using the router ID itself as the gateway
+                            # This works if router IDs are actual reachable IPs (common in lab setups)
+                            actual_gateway = next_hop_router_id
 
                     if actual_gateway and actual_gateway != self.source_ip:
                         success = self.kernel_route_manager.install_route(
@@ -1388,10 +1416,21 @@ async def run_unified_agent(args: argparse.Namespace):
     """
     logger = logging.getLogger("UnifiedAgent")
 
+    # Initialize WebUI log buffer early so ALL protocol logs are captured
+    # This must happen BEFORE any protocols start logging
+    from webui.server import LogBuffer, WebUILogHandler
+    global_log_buffer = LogBuffer(maxlen=1000)  # Keep more log history
+    log_handler = WebUILogHandler(global_log_buffer)
+    log_handler.setLevel(logging.DEBUG)  # Capture all levels
+    log_handler.setFormatter(logging.Formatter('%(name)s: %(message)s'))
+    logging.getLogger().addHandler(log_handler)
+    logger.info("Log capture initialized - all protocol logs will be visible in dashboard")
+
     # Create main application instance
     asi_app = WontYouBeMyNeighbor()
     asi_app.router_id = args.router_id
     asi_app.load_config_from_env()  # Load interfaces from orchestrator config
+    asi_app.log_buffer = global_log_buffer  # Store reference for WebUI
 
     ospf_agent = None
     ospfv3_speaker = None

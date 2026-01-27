@@ -16,41 +16,44 @@ class IntentType(str, Enum):
     """Types of network intents ASI can understand"""
 
     # Query intents
-    QUERY_STATUS = "query_status"  # "What is the status of X?"
-    QUERY_NEIGHBOR = "query_neighbor"  # "Show me my neighbors"
-    QUERY_ROUTE = "query_route"  # "How do I reach 10.0.0.0/24?"
-    QUERY_LSA = "query_lsa"  # "Show me LSAs from router X"
-    QUERY_BGP_PEER = "query_bgp_peer"  # "What's the state of BGP peer X?"
-    QUERY_RIB = "query_rib"  # "Show me the routing table"
-    QUERY_ROUTER_ID = "query_router_id"  # "What is my router ID?"
-    QUERY_INTERFACE = "query_interface"  # "What interfaces do I have?"
-    QUERY_STATISTICS = "query_statistics"  # "Show me statistics"
-    QUERY_PROTOCOL_STATUS = "query_protocol_status"  # "Is OSPF/BGP running?"
-    QUERY_CAPABILITIES = "query_capabilities"  # "What capabilities did we negotiate?"
-    QUERY_FIB = "query_fib"  # "What is my forwarding table?"
-    QUERY_CHANGES = "query_changes"  # "Show me recent network changes"
-    QUERY_METRICS = "query_metrics"  # "What metrics am I using?"
+    QUERY_STATUS = "query_status"
+    QUERY_NEIGHBOR = "query_neighbor"
+    QUERY_ROUTE = "query_route"
+    QUERY_LSA = "query_lsa"
+    QUERY_BGP_PEER = "query_bgp_peer"
+    QUERY_RIB = "query_rib"
+    QUERY_ROUTER_ID = "query_router_id"
+    QUERY_INTERFACE = "query_interface"
+    QUERY_STATISTICS = "query_statistics"
+    QUERY_PROTOCOL_STATUS = "query_protocol_status"
+    QUERY_CAPABILITIES = "query_capabilities"
+    QUERY_FIB = "query_fib"
+    QUERY_CHANGES = "query_changes"
+    QUERY_METRICS = "query_metrics"
 
     # Analysis intents
-    ANALYZE_TOPOLOGY = "analyze_topology"  # "Analyze the network topology"
-    ANALYZE_PATH = "analyze_path"  # "Why is traffic going through X?"
-    DETECT_ANOMALY = "detect_anomaly"  # "Are there any issues?"
-    EXPLAIN_DECISION = "explain_decision"  # "Why did you choose this route?"
-    ANALYZE_HEALTH = "analyze_health"  # "Is my network healthy?"
+    ANALYZE_TOPOLOGY = "analyze_topology"
+    ANALYZE_PATH = "analyze_path"
+    DETECT_ANOMALY = "detect_anomaly"
+    EXPLAIN_DECISION = "explain_decision"
+    ANALYZE_HEALTH = "analyze_health"
 
     # Action intents (require human approval)
-    ACTION_ADJUST_METRIC = "action_adjust_metric"  # "Increase OSPF cost on eth0"
-    ACTION_INJECT_ROUTE = "action_inject_route"  # "Advertise 10.0.0.0/24"
-    ACTION_MODIFY_PREFERENCE = "action_modify_preference"  # "Prefer routes from AS 65001"
-    ACTION_GRACEFUL_SHUTDOWN = "action_graceful_shutdown"  # "Gracefully shut down BGP"
+    ACTION_ADJUST_METRIC = "action_adjust_metric"
+    ACTION_INJECT_ROUTE = "action_inject_route"
+    ACTION_MODIFY_PREFERENCE = "action_modify_preference"
+    ACTION_GRACEFUL_SHUTDOWN = "action_graceful_shutdown"
 
     # Diagnostic intents
-    DIAGNOSTIC_PING = "diagnostic_ping"  # "Ping 10.0.0.1"
-    DIAGNOSTIC_TRACEROUTE = "diagnostic_traceroute"  # "Traceroute to 10.0.0.1"
+    DIAGNOSTIC_PING = "diagnostic_ping"
+    DIAGNOSTIC_TRACEROUTE = "diagnostic_traceroute"
+
+    # Notification intents
+    SEND_EMAIL = "send_email"
 
     # Multi-agent intents
-    COORDINATE_CONSENSUS = "coordinate_consensus"  # "All ASIs agree on X?"
-    GOSSIP_STATE = "gossip_state"  # "Share state with other ASIs"
+    COORDINATE_CONSENSUS = "coordinate_consensus"
+    GOSSIP_STATE = "gossip_state"
 
     # Unknown
     UNKNOWN = "unknown"
@@ -92,232 +95,16 @@ class IntentParser:
     """
     Parse natural language into structured network intents.
 
-    Uses combination of:
-    - Pattern matching for common queries
-    - LLM-based understanding for complex queries
-    - Context from network state
+    Uses LLM for natural language understanding - no hardcoded patterns.
+    The LLM interprets user queries and maps them to intent types.
     """
 
     def __init__(self, llm_interface=None):
         self.llm = llm_interface
-        self._compile_patterns()
-
-    def _compile_patterns(self):
-        """Compile regex patterns for intent matching"""
-        # Order matters! More specific patterns should be checked first
-        self.patterns = {
-            # Protocol status queries - check first
-            IntentType.QUERY_PROTOCOL_STATUS: [
-                r"is.*ospf.*running",
-                r"is.*bgp.*running",
-                r"ospf.*running",
-                r"bgp.*running",
-                r"protocol.*enabled",
-                r"is.*running",
-            ],
-            # Capabilities queries
-            IntentType.QUERY_CAPABILITIES: [
-                r"capabilit",
-                r"negotiate",
-                r"what.*did.*we.*negotiate",
-            ],
-            # FIB/Forwarding table queries
-            IntentType.QUERY_FIB: [
-                r"forwarding.*table",
-                r"fib\b",
-                r"kernel.*route",
-            ],
-            # Recent changes queries
-            IntentType.QUERY_CHANGES: [
-                r"recent.*change",
-                r"what.*changed",
-                r"change.*history",
-                r"state.*change",
-            ],
-            # Metrics queries
-            IntentType.QUERY_METRICS: [
-                r"what.*metric",
-                r"metric.*using",
-                r"ospf.*cost",
-                r"link.*cost",
-                r"med\b",
-                r"local.*pref",
-            ],
-            # Router ID queries - check before general status
-            IntentType.QUERY_ROUTER_ID: [
-                r"router.?id",
-                r"what.*my.*id",
-                r"my.*router.*id",
-            ],
-            # LSA queries - check before general routes
-            IntentType.QUERY_LSA: [
-                r"lsa",
-                r"link.?state.*advert",
-                r"link.?state.*database",
-                r"lsdb",
-                r"show.*database",
-            ],
-            # Statistics queries
-            IntentType.QUERY_STATISTICS: [
-                r"statistic",
-                r"stats\b",
-                r"counter",
-                r"how many.*total",
-                r"message.*count",
-            ],
-            # Interface queries
-            IntentType.QUERY_INTERFACE: [
-                r"interface",
-                r"what.*interface",
-                r"my.*interface",
-            ],
-            # Health analysis
-            IntentType.ANALYZE_HEALTH: [
-                r"health",
-                r"healthy",
-                r"network.*ok",
-                r"everything.*ok",
-                r"are.*you.*ok",
-                r"how.*are.*you",
-            ],
-            # Topology analysis
-            IntentType.ANALYZE_TOPOLOGY: [
-                r"topology",
-                r"analyze.*network",
-                r"network.*analys",
-            ],
-            # BGP peer queries - specific BGP patterns (check BEFORE neighbor)
-            IntentType.QUERY_BGP_PEER: [
-                r"bgp.*peer",
-                r"bgp.*session",
-                r"bgp.*neighbo[u]?r",
-                r"show.*bgp",
-                r"bgp.*summary",
-                r"bgp.*established",
-                r"ebgp|ibgp",
-                r"what.*as\b",
-                r"local.*as",
-                r"peer.*as",
-                r"autonomous.*system",
-            ],
-            # OSPF neighbor queries - specific OSPF patterns
-            IntentType.QUERY_NEIGHBOR: [
-                r"ospf.*neighbo[u]?r",
-                r"show.*ospf",
-                r"ospf.*adjacenc",
-                r"ospf.*full",
-                r"how many.*neighbo[u]?r",
-                r"neighbo[u]?r.*state",
-                r"neighbo[u]?r.*full",
-                r"list.*neighbo[u]?r",
-                r"my.*neighbo[u]?r",
-                r"neighbo[u]?r.*do i have",
-                r"do i have.*neighbo[u]?r",
-            ],
-            # Specific route lookup (with IP address)
-            IntentType.QUERY_ROUTE: [
-                r"how.*reach.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"route.*to.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"path.*to.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"next.*hop.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"best.*path.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-            ],
-            # General routing table queries
-            IntentType.QUERY_RIB: [
-                r"routing.*table",
-                r"show.*route",
-                r"what.*route",
-                r"my.*route",
-                r"list.*route",
-                r"all.*route",
-                r"how many.*route",
-                r"receiving.*route",
-                r"bgp.*route",
-                r"advertis",
-                r"prefix",
-                r"rib\b",
-                r"fib\b",
-            ],
-            # Status queries
-            IntentType.QUERY_STATUS: [
-                r"status",
-                r"what.*running",
-                r"show.*overview",
-                r"protocol.*running",
-                r"what.*area",
-                r"hello.*interval",
-                r"dead.*interval",
-                r"hold.*time",
-                r"network.*type",
-                r"what.*version",
-                r"dr\b|bdr\b",
-                r"tell.*me.*about.*(?:your|the).*state",
-                r"what.*(?:can|do).*you.*tell.*me",
-                r"summarize",
-                r"summary",
-                r"overview",
-                r"what.*do.*you.*know",
-                r"describe.*(?:your|the).*state",
-                r"what.*(?:is|are).*your.*state",
-            ],
-            # Explain routing decisions
-            IntentType.EXPLAIN_DECISION: [
-                r"explain.*rout",
-                r"why.*route",
-                r"why.*path",
-                r"routing.*decision",
-                r"why.*chose",
-                r"why.*select",
-            ],
-            # Anomaly detection
-            IntentType.DETECT_ANOMALY: [
-                r"issue",
-                r"problem",
-                r"wrong",
-                r"anomal",
-                r"detect",
-                r"alert",
-                r"flapping",
-                r"loop",
-            ],
-            # Diagnostic intents - Ping (with optional source)
-            IntentType.DIAGNOSTIC_PING: [
-                # Ping with source: "ping x.x.x.x from y.y.y.y"
-                r"ping\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+from\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"ping\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+(?:using|with)\s+(?:source\s+)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                # Standard ping (no source)
-                r"ping\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"ping\s+to\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"can\s+(?:i|you|we)\s+reach\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"is\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+reachable",
-                r"check\s+connectivity\s+to\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"test\s+connectivity\s+to\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-            ],
-            # Diagnostic intents - Traceroute
-            IntentType.DIAGNOSTIC_TRACEROUTE: [
-                r"traceroute\s+(?:to\s+)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"tracert\s+(?:to\s+)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"trace\s+(?:route\s+)?(?:to\s+)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"show\s+path\s+to\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-                r"what\s+(?:is\s+)?(?:the\s+)?path\s+to\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})",
-            ],
-            # Action intents
-            IntentType.ACTION_ADJUST_METRIC: [
-                r"increase.*cost",
-                r"decrease.*cost",
-                r"change.*metric",
-                r"adjust.*metric",
-            ],
-            IntentType.ACTION_INJECT_ROUTE: [
-                r"advertise.*route",
-                r"inject.*route",
-                r"announce.*prefix",
-            ],
-        }
 
     async def parse(self, query: str, context: Optional[Dict[str, Any]] = None) -> NetworkIntent:
         """
-        Parse natural language query into structured intent.
+        Parse natural language query into structured intent using LLM.
 
         Args:
             query: Natural language query from user
@@ -326,92 +113,41 @@ class IntentParser:
         Returns:
             NetworkIntent with type, parameters, and confidence
         """
-        query_lower = query.lower()
-
-        # Try pattern matching first (fast path)
-        pattern_match = self._pattern_match(query_lower)
-        if pattern_match and pattern_match["confidence"] > 0.8:
-            return NetworkIntent(
-                intent_type=pattern_match["intent_type"],
-                confidence=pattern_match["confidence"],
-                parameters=pattern_match["parameters"],
-                raw_query=query,
-                explanation=f"Pattern matched: {pattern_match['pattern']}"
-            )
-
-        # Fall back to LLM for complex queries
+        # Use LLM for all intent parsing
         if self.llm:
             return await self._llm_parse(query, context)
 
-        # Default to unknown if no LLM available
+        # Fallback if no LLM available
         return NetworkIntent(
             intent_type=IntentType.UNKNOWN,
             confidence=0.0,
             parameters={},
             raw_query=query,
-            explanation="No LLM available for complex query parsing"
+            explanation="No LLM available for query parsing"
         )
-
-    def _pattern_match(self, query: str) -> Optional[Dict[str, Any]]:
-        """
-        Fast pattern matching for common queries.
-
-        Returns dict with intent_type, confidence, parameters, and pattern.
-        """
-        for intent_type, patterns in self.patterns.items():
-            for pattern in patterns:
-                match = re.search(pattern, query)
-                if match:
-                    parameters = {}
-
-                    # Extract parameters from regex groups
-                    if match.groups():
-                        if intent_type == IntentType.QUERY_ROUTE:
-                            parameters["destination"] = match.group(1)
-                        elif intent_type == IntentType.DIAGNOSTIC_PING:
-                            parameters["target"] = match.group(1)
-                            # Check for source IP (second capture group)
-                            if len(match.groups()) >= 2 and match.group(2):
-                                parameters["source"] = match.group(2)
-                        elif intent_type == IntentType.DIAGNOSTIC_TRACEROUTE:
-                            parameters["target"] = match.group(1)
-                            # Check for source IP (second capture group)
-                            if len(match.groups()) >= 2 and match.group(2):
-                                parameters["source"] = match.group(2)
-
-                    return {
-                        "intent_type": intent_type,
-                        "confidence": 0.9,
-                        "parameters": parameters,
-                        "pattern": pattern
-                    }
-
-        return None
 
     async def _llm_parse(self, query: str, context: Optional[Dict[str, Any]] = None) -> NetworkIntent:
         """
-        Use LLM to parse complex queries into intents.
-
-        Sends structured prompt to LLM asking it to classify the intent.
+        Use LLM to parse queries into intents.
         """
-        # Build prompt for LLM
         prompt = self._build_intent_prompt(query, context)
 
-        # Query LLM
-        response = await self.llm.query(prompt, temperature=0.3, max_tokens=500)
-
-        # Parse LLM response
         try:
+            response = await self.llm.query(prompt, temperature=0.3, max_tokens=500)
             intent_data = self._parse_llm_response(response)
+
+            # Extract any IP addresses or other parameters from the query
+            parameters = intent_data.get("parameters", {})
+            parameters = self._extract_parameters(query, intent_data.get("intent_type", "unknown"), parameters)
+
             return NetworkIntent(
                 intent_type=IntentType(intent_data["intent_type"]),
-                confidence=intent_data["confidence"],
-                parameters=intent_data.get("parameters", {}),
+                confidence=intent_data.get("confidence", 0.9),
+                parameters=parameters,
                 raw_query=query,
-                explanation=intent_data.get("explanation", "LLM-based parsing")
+                explanation=intent_data.get("explanation", "LLM interpretation")
             )
         except Exception as e:
-            # Fall back to unknown on parse error
             return NetworkIntent(
                 intent_type=IntentType.UNKNOWN,
                 confidence=0.0,
@@ -420,54 +156,98 @@ class IntentParser:
                 explanation=f"LLM parsing error: {e}"
             )
 
+    def _extract_parameters(self, query: str, intent_type: str, existing_params: Dict) -> Dict[str, Any]:
+        """
+        Extract structured parameters (like IP addresses) from the query.
+        This is post-processing after LLM classification, not intent detection.
+        """
+        params = existing_params.copy()
+
+        # Extract IP addresses for relevant intents
+        ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+        ips = re.findall(ip_pattern, query)
+
+        if ips:
+            if intent_type in ['diagnostic_ping', 'diagnostic_traceroute', 'query_route']:
+                if 'target' not in params:
+                    params['target'] = ips[0]
+                if len(ips) > 1 and 'source' not in params:
+                    params['source'] = ips[1]
+            elif intent_type == 'query_route':
+                if 'destination' not in params:
+                    params['destination'] = ips[0]
+
+        # Extract email addresses for email intent
+        if intent_type == 'send_email':
+            email_pattern = r'[\w\.-]+@[\w\.-]+\.\w+'
+            emails = re.findall(email_pattern, query)
+            if emails and 'recipient' not in params:
+                params['recipient'] = emails[0]
+
+        return params
+
     def _build_intent_prompt(self, query: str, context: Optional[Dict[str, Any]] = None) -> str:
         """Build prompt for LLM intent classification"""
-        intent_types = [it.value for it in IntentType]
 
-        prompt_parts = [
-            "Classify the following network query into one of these intent types:",
-            "",
-            "Intent Types:",
-        ]
-
-        # List all intent types with descriptions
+        # All supported intent types with descriptions
         intent_descriptions = {
-            "query_status": "User wants to know the general status/state",
-            "query_neighbor": "User wants to see OSPF/BGP neighbors",
-            "query_route": "User wants to know the route to a destination",
-            "query_lsa": "User wants to see OSPF LSAs",
-            "query_bgp_peer": "User wants BGP peer information",
-            "query_rib": "User wants to see the routing table",
-            "analyze_topology": "User wants topology analysis",
-            "analyze_path": "User wants path analysis/explanation",
-            "detect_anomaly": "User wants to detect issues/problems",
-            "explain_decision": "User wants explanation of routing decision",
-            "action_adjust_metric": "User wants to change OSPF cost/metric",
-            "action_inject_route": "User wants to advertise a new route",
-            "action_modify_preference": "User wants to change route preferences",
-            "action_graceful_shutdown": "User wants to gracefully shutdown protocols",
-            "coordinate_consensus": "Multi-agent coordination",
-            "gossip_state": "Multi-agent state sharing",
-            "unknown": "Query doesn't match known patterns"
+            "query_status": "General status inquiry about the agent or network",
+            "query_neighbor": "Questions about OSPF neighbors or adjacencies",
+            "query_route": "Questions about how to reach a specific destination",
+            "query_lsa": "Questions about OSPF LSAs or link-state database",
+            "query_bgp_peer": "Questions about BGP peers, sessions, or AS numbers",
+            "query_rib": "Questions about the routing table, routes, or prefixes",
+            "query_router_id": "Questions about the router ID",
+            "query_interface": "Questions about interfaces or ports",
+            "query_statistics": "Questions about counters, statistics, or message counts",
+            "query_protocol_status": "Questions about whether protocols are running",
+            "query_capabilities": "Questions about negotiated capabilities",
+            "query_fib": "Questions about the forwarding table",
+            "query_changes": "Questions about recent network changes",
+            "query_metrics": "Questions about OSPF costs, BGP metrics, etc.",
+            "analyze_topology": "Requests to analyze or describe the network topology",
+            "analyze_path": "Requests to explain traffic paths or routing decisions",
+            "detect_anomaly": "Requests to find issues, problems, or anomalies",
+            "explain_decision": "Requests to explain why a route was chosen",
+            "analyze_health": "Questions about network or agent health",
+            "action_adjust_metric": "Requests to change OSPF cost or routing metrics",
+            "action_inject_route": "Requests to advertise or inject routes",
+            "action_modify_preference": "Requests to change route preferences",
+            "action_graceful_shutdown": "Requests to shut down protocols gracefully",
+            "diagnostic_ping": "Requests to ping an IP address",
+            "diagnostic_traceroute": "Requests to traceroute to an IP address",
+            "send_email": "Requests to send email, reports, or notifications",
+            "coordinate_consensus": "Multi-agent coordination requests",
+            "gossip_state": "Multi-agent state sharing requests",
+            "unknown": "Query that doesn't fit any category"
         }
 
+        prompt = f"""You are a network agent assistant. Classify the user's query into the most appropriate intent type.
+
+USER QUERY: "{query}"
+
+AVAILABLE INTENT TYPES:
+"""
         for intent, desc in intent_descriptions.items():
-            prompt_parts.append(f"- {intent}: {desc}")
+            prompt += f"- {intent}: {desc}\n"
 
-        prompt_parts.extend([
-            "",
-            f"Query: \"{query}\"",
-            "",
-            "Respond with JSON:",
-            "{",
-            '  "intent_type": "...",',
-            '  "confidence": 0.0-1.0,',
-            '  "parameters": {...},',
-            '  "explanation": "why you chose this intent"',
-            "}"
-        ])
+        prompt += """
+Analyze the user's query and respond with JSON:
+{
+  "intent_type": "<one of the intent types above>",
+  "confidence": <0.0 to 1.0>,
+  "parameters": {<any relevant parameters extracted from the query>},
+  "explanation": "<brief explanation of why you chose this intent>"
+}
 
-        return "\n".join(prompt_parts)
+Important:
+- Choose the most specific intent that matches
+- For email/report requests, use "send_email"
+- For general questions about state or status, use "query_status"
+- Extract any IP addresses, email addresses, or other parameters
+- Respond ONLY with valid JSON, no other text
+"""
+        return prompt
 
     def _parse_llm_response(self, response: str) -> Dict[str, Any]:
         """Parse JSON response from LLM"""

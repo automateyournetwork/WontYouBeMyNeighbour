@@ -25,8 +25,8 @@ let wizardState = {
         },
         docker_ipv6: {
             enabled: true,
-            subnet: 'fd00:docker:1::/64',
-            gateway: 'fd00:docker:1::1'
+            subnet: 'fd00:d0c:1::/64',
+            gateway: 'fd00:d0c:1::1'
         }
     }
 };
@@ -42,11 +42,14 @@ let currentAgentInterfaces = [];
 
 // Interface counters by type
 let interfaceCounters = {
-    eth: 1,   // Start at 1 since eth0 is default
-    lo: 1,    // Start at 1 since lo0 is default
-    vlan: 0,
-    tun: 0,
-    sub: 0    // Sub-interface counter
+    eth: 1,       // Start at 1 since eth0 is default
+    lo: 1,        // Start at 1 since lo0 is default
+    bond: 0,      // Bond/LACP interfaces
+    vlan: 0,      // VLAN SVIs
+    vxlan: 0,     // VXLAN VTEPs
+    gre: 0,       // GRE tunnels
+    tun: 0,       // Generic tunnels
+    bridge: 0     // Bridge interfaces
 };
 
 // Initialize
@@ -56,7 +59,45 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadDefaultMcps();
     await loadAgentTemplates();
     initializeProtocolSelection();
+    initializeNetworkNameDisplay();
 });
+
+// Initialize network name display in header
+function initializeNetworkNameDisplay() {
+    const networkNameInput = document.getElementById('network-name');
+    const networkNameBadge = document.getElementById('network-name-badge');
+
+    if (networkNameInput && networkNameBadge) {
+        // Update on input change
+        networkNameInput.addEventListener('input', () => {
+            updateNetworkNameBadge();
+        });
+
+        // Update on blur (when user leaves the field)
+        networkNameInput.addEventListener('blur', () => {
+            updateNetworkNameBadge();
+        });
+
+        // Show initial value if present
+        updateNetworkNameBadge();
+    }
+}
+
+// Update the network name badge in the header
+function updateNetworkNameBadge() {
+    const networkNameInput = document.getElementById('network-name');
+    const networkNameBadge = document.getElementById('network-name-badge');
+
+    if (networkNameInput && networkNameBadge) {
+        const name = networkNameInput.value.trim();
+        if (name) {
+            networkNameBadge.textContent = `Network: ${name}`;
+            networkNameBadge.style.display = 'inline-block';
+        } else {
+            networkNameBadge.style.display = 'none';
+        }
+    }
+}
 
 // Import Network Template
 async function importNetworkTemplate() {
@@ -246,10 +287,10 @@ function updateDockerNetworkFields() {
 
     if (ipVersion === 'ipv6') {
         // IPv6 defaults
-        subnetInput.value = 'fd00:docker:1::/64';
-        subnetInput.placeholder = 'e.g., fd00:docker:1::/64';
-        gatewayInput.value = 'fd00:docker:1::1';
-        gatewayInput.placeholder = 'e.g., fd00:docker:1::1';
+        subnetInput.value = 'fd00:d0c:1::/64';
+        subnetInput.placeholder = 'e.g., fd00:d0c:1::/64';
+        gatewayInput.value = 'fd00:d0c:1::1';
+        gatewayInput.placeholder = 'e.g., fd00:d0c:1::1';
         wizardState.network_foundation.docker_ipv6.enabled = true;
     } else {
         // IPv4 defaults
@@ -321,10 +362,10 @@ let mcpConfigurations = {};
 let customMcps = [];
 
 // Mandatory MCP types (always included, can't be deselected)
-const MANDATORY_MCP_TYPES = ['gait', 'pyats', 'rfc', 'markmap'];
+const MANDATORY_MCP_TYPES = ['gait', 'pyats', 'rfc', 'markmap', 'prometheus', 'grafana'];
 
 // Optional MCP types (can be enabled/disabled)
-const OPTIONAL_MCP_TYPES = ['servicenow', 'netbox', 'slack', 'github'];
+const OPTIONAL_MCP_TYPES = ['servicenow', 'netbox', 'slack', 'github', 'smtp'];
 
 function renderMcpGrid() {
     console.log('renderMcpGrid called, defaultMcps:', defaultMcps.length);
@@ -562,18 +603,91 @@ function openMcpConfig(mcpId) {
     if (configFields.length === 0) {
         fieldsContainer.innerHTML = '<p style="color: #4ade80;">This MCP does not require additional configuration.</p>';
     } else {
-        fieldsContainer.innerHTML = configFields.map(field => `
-            <div class="form-group" style="margin-bottom: 15px;">
-                <label for="mcp-field-${field.id}">${field.label}${field.required ? ' *' : ''}</label>
-                <input type="${field.type}"
-                       id="mcp-field-${field.id}"
-                       placeholder="${field.placeholder || ''}"
-                       value="${savedConfig[field.id] || ''}"
-                       ${field.required ? 'required' : ''}
-                       style="width: 100%; padding: 10px; background: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 6px; color: #eee;">
-                ${field.hint ? `<div class="hint" style="font-size: 0.8rem; color: #666; margin-top: 4px;">${field.hint}</div>` : ''}
-            </div>
-        `).join('');
+        fieldsContainer.innerHTML = configFields.map(field => {
+            // Handle separator type - visual divider with label
+            if (field.type === 'separator') {
+                return `
+                    <div style="margin: 20px 0 15px 0; padding-top: 15px; border-top: 1px solid #2a2a4e;">
+                        <h4 style="color: #00d9ff; font-size: 0.9rem; margin: 0;">${field.label || ''}</h4>
+                    </div>
+                `;
+            }
+            // Handle checkbox type
+            if (field.type === 'checkbox') {
+                const isChecked = savedConfig[field.id] !== undefined
+                    ? savedConfig[field.id]
+                    : (field.default !== undefined ? field.default : false);
+                return `
+                    <div class="form-group" style="margin-bottom: 15px;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox"
+                                   id="mcp-field-${field.id}"
+                                   ${isChecked ? 'checked' : ''}
+                                   onchange="toggleDependentFields('${field.id}')"
+                                   style="width: auto; margin-right: 10px; transform: scale(1.2);">
+                            <span>${field.label}</span>
+                        </label>
+                        ${field.hint ? `<div class="hint" style="font-size: 0.8rem; color: #666; margin-top: 4px;">${field.hint}</div>` : ''}
+                    </div>
+                `;
+            }
+            // Handle select type - dropdown menu
+            if (field.type === 'select') {
+                const options = field.options || [];
+                const currentValue = savedConfig[field.id] || field.default || '';
+                const dependsOn = field.depends_on ? `data-depends-on="${field.depends_on}"` : '';
+                return `
+                    <div class="form-group mcp-dependent-field" ${dependsOn} style="margin-bottom: 15px;">
+                        <label for="mcp-field-${field.id}">${field.label}${field.required ? ' *' : ''}</label>
+                        <select id="mcp-field-${field.id}"
+                                ${field.required ? 'required' : ''}
+                                style="width: 100%; padding: 10px; background: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 6px; color: #eee;">
+                            ${options.map(opt => `<option value="${opt}" ${opt === currentValue ? 'selected' : ''}>${opt}</option>`).join('')}
+                        </select>
+                        ${field.hint ? `<div class="hint" style="font-size: 0.8rem; color: #666; margin-top: 4px;">${field.hint}</div>` : ''}
+                    </div>
+                `;
+            }
+            // Handle number type
+            if (field.type === 'number') {
+                const dependsOn = field.depends_on ? `data-depends-on="${field.depends_on}"` : '';
+                return `
+                    <div class="form-group mcp-dependent-field" ${dependsOn} style="margin-bottom: 15px;">
+                        <label for="mcp-field-${field.id}">${field.label}${field.required ? ' *' : ''}</label>
+                        <input type="number"
+                               id="mcp-field-${field.id}"
+                               placeholder="${field.placeholder || ''}"
+                               value="${savedConfig[field.id] || field.placeholder || ''}"
+                               ${field.required ? 'required' : ''}
+                               style="width: 100%; padding: 10px; background: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 6px; color: #eee;">
+                        ${field.hint ? `<div class="hint" style="font-size: 0.8rem; color: #666; margin-top: 4px;">${field.hint}</div>` : ''}
+                    </div>
+                `;
+            }
+            // Default: text, password, email, url types
+            // Check if this is a credential field that needs emphasis
+            const isCredentialField = field.type === 'password' || field.id.includes('username') || field.id.includes('email');
+            const hintStyle = isCredentialField
+                ? 'font-size: 0.8rem; color: #f59e0b; margin-top: 4px; padding: 6px 8px; background: rgba(245, 158, 11, 0.1); border-radius: 4px; border-left: 3px solid #f59e0b;'
+                : 'font-size: 0.8rem; color: #666; margin-top: 4px;';
+            const dependsOn = field.depends_on ? `data-depends-on="${field.depends_on}"` : '';
+            const defaultValue = savedConfig[field.id] || field.default || '';
+            return `
+                <div class="form-group mcp-dependent-field" ${dependsOn} style="margin-bottom: 15px;">
+                    <label for="mcp-field-${field.id}">${field.label}${field.required ? ' *' : ''}</label>
+                    <input type="${field.type}"
+                           id="mcp-field-${field.id}"
+                           placeholder="${field.placeholder || ''}"
+                           value="${defaultValue}"
+                           ${field.required ? 'required' : ''}
+                           style="width: 100%; padding: 10px; background: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 6px; color: #eee;">
+                    ${field.hint ? `<div class="hint" style="${hintStyle}">${field.hint}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+
+        // Initialize dependent field visibility
+        initializeDependentFields();
     }
 
     // Show modal
@@ -583,6 +697,35 @@ function openMcpConfig(mcpId) {
 function closeMcpModal() {
     document.getElementById('mcp-config-modal').style.display = 'none';
     currentMcpConfig = null;
+}
+
+// Toggle visibility of fields that depend on a checkbox
+function toggleDependentFields(checkboxId) {
+    const checkbox = document.getElementById(`mcp-field-${checkboxId}`);
+    if (!checkbox) return;
+
+    const isChecked = checkbox.checked;
+    const dependentFields = document.querySelectorAll(`[data-depends-on="${checkboxId}"]`);
+
+    dependentFields.forEach(field => {
+        if (isChecked) {
+            field.style.display = 'block';
+            field.style.opacity = '1';
+        } else {
+            field.style.display = 'none';
+            field.style.opacity = '0';
+        }
+    });
+}
+
+// Initialize dependent field visibility on modal open
+function initializeDependentFields() {
+    // Find all checkboxes that have dependent fields
+    const checkboxes = document.querySelectorAll('[id^="mcp-field-"][type="checkbox"]');
+    checkboxes.forEach(checkbox => {
+        const fieldId = checkbox.id.replace('mcp-field-', '');
+        toggleDependentFields(fieldId);
+    });
 }
 
 function saveMcpConfig() {
@@ -596,14 +739,48 @@ function saveMcpConfig() {
     let hasError = false;
 
     for (const field of configFields) {
+        // Skip separator fields - they are just visual dividers
+        if (field.type === 'separator') {
+            continue;
+        }
+
         const input = document.getElementById(`mcp-field-${field.id}`);
+
+        // Handle checkbox type differently
+        if (field.type === 'checkbox') {
+            config[field.id] = input?.checked || false;
+            continue;
+        }
+
+        // Check if this field is hidden (depends on unchecked checkbox)
+        if (field.depends_on) {
+            const dependsCheckbox = document.getElementById(`mcp-field-${field.depends_on}`);
+            if (dependsCheckbox && !dependsCheckbox.checked) {
+                // Field is hidden, skip validation but still save any value
+                const value = input?.value?.trim() || field.default || '';
+                if (value) {
+                    config[field.id] = value;
+                }
+                continue;
+            }
+        }
+
+        // Handle select type
+        if (field.type === 'select') {
+            const value = input?.value || field.default || '';
+            if (value) {
+                config[field.id] = value;
+            }
+            continue;
+        }
+
         const value = input?.value?.trim() || '';
 
         if (field.required && !value) {
             input.style.borderColor = '#ef4444';
             hasError = true;
         } else {
-            input.style.borderColor = '#2a2a4e';
+            if (input) input.style.borderColor = '#2a2a4e';
             if (value) {
                 config[field.id] = value;
             }
@@ -665,7 +842,232 @@ function showAgentTab(tab) {
     document.getElementById('agent-tab-new').style.display = tab === 'new' ? 'block' : 'none';
     document.getElementById('agent-tab-template').style.display = tab === 'template' ? 'block' : 'none';
     document.getElementById('agent-tab-nl').style.display = tab === 'nl' ? 'block' : 'none';
+    document.getElementById('agent-tab-netbox').style.display = tab === 'netbox' ? 'block' : 'none';
     document.getElementById('agent-tab-bulk').style.display = tab === 'bulk' ? 'block' : 'none';
+}
+
+// ========== NetBox Import Functions ==========
+
+// Store loaded devices and current preview
+let netboxDevices = [];
+let netboxImportConfig = null;
+
+async function testNetBoxConnection() {
+    const url = document.getElementById('netbox-import-url').value.trim();
+    const token = document.getElementById('netbox-import-token').value.trim();
+    const statusDiv = document.getElementById('netbox-connection-status');
+
+    if (!url || !token) {
+        statusDiv.innerHTML = '<span style="color: #ef4444;">Please enter both URL and API token</span>';
+        return;
+    }
+
+    statusDiv.innerHTML = '<span style="color: #888;"><span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px;"></span>Testing connection...</span>';
+
+    try {
+        const response = await fetch('/api/wizard/mcps/netbox/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ netbox_url: url, api_token: token })
+        });
+        const result = await response.json();
+
+        if (result.connected) {
+            statusDiv.innerHTML = `<span style="color: #4ade80;">✓ Connected to NetBox ${result.netbox_version || ''}</span>`;
+        } else {
+            statusDiv.innerHTML = `<span style="color: #ef4444;">✗ Connection failed: ${result.error || 'Unknown error'}</span>`;
+        }
+    } catch (e) {
+        statusDiv.innerHTML = `<span style="color: #ef4444;">✗ Error: ${e.message}</span>`;
+    }
+}
+
+async function loadNetBoxDevices() {
+    const url = document.getElementById('netbox-import-url').value.trim();
+    const token = document.getElementById('netbox-import-token').value.trim();
+    const statusDiv = document.getElementById('netbox-connection-status');
+
+    if (!url || !token) {
+        statusDiv.innerHTML = '<span style="color: #ef4444;">Please enter both URL and API token</span>';
+        return;
+    }
+
+    statusDiv.innerHTML = '<span style="color: #888;"><span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px;"></span>Loading devices...</span>';
+
+    try {
+        // Load devices
+        const devicesResponse = await fetch(`/api/wizard/mcps/netbox/devices?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}`);
+        const devicesResult = await devicesResponse.json();
+
+        if (devicesResult.status !== 'ok') {
+            statusDiv.innerHTML = `<span style="color: #ef4444;">✗ Error: ${devicesResult.error}</span>`;
+            return;
+        }
+
+        netboxDevices = devicesResult.devices;
+
+        // Load sites for filter
+        const sitesResponse = await fetch(`/api/wizard/mcps/netbox/sites?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}`);
+        const sitesResult = await sitesResponse.json();
+        populateSiteFilter(sitesResult.sites || []);
+
+        // Load roles for filter
+        const rolesResponse = await fetch(`/api/wizard/mcps/netbox/device-roles?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}`);
+        const rolesResult = await rolesResponse.json();
+        populateRoleFilter(rolesResult.roles || []);
+
+        // Show devices section
+        document.getElementById('netbox-devices-section').style.display = 'block';
+        renderNetBoxDevices(netboxDevices);
+
+        statusDiv.innerHTML = `<span style="color: #4ade80;">✓ Loaded ${netboxDevices.length} devices</span>`;
+    } catch (e) {
+        statusDiv.innerHTML = `<span style="color: #ef4444;">✗ Error: ${e.message}</span>`;
+    }
+}
+
+function populateSiteFilter(sites) {
+    const select = document.getElementById('netbox-filter-site');
+    select.innerHTML = '<option value="">All Sites</option>' +
+        sites.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
+}
+
+function populateRoleFilter(roles) {
+    const select = document.getElementById('netbox-filter-role');
+    select.innerHTML = '<option value="">All Roles</option>' +
+        roles.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
+}
+
+function filterNetBoxDevices() {
+    const siteFilter = document.getElementById('netbox-filter-site').value;
+    const roleFilter = document.getElementById('netbox-filter-role').value;
+
+    let filtered = netboxDevices;
+    if (siteFilter) {
+        filtered = filtered.filter(d => d.site === siteFilter);
+    }
+    if (roleFilter) {
+        filtered = filtered.filter(d => d.role === roleFilter);
+    }
+
+    renderNetBoxDevices(filtered);
+}
+
+function renderNetBoxDevices(devices) {
+    const tbody = document.getElementById('netbox-devices-list');
+
+    if (devices.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="padding: 20px; text-align: center; color: #888;">No devices found</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = devices.map(d => `
+        <tr style="border-bottom: 1px solid #2a2a4e;">
+            <td style="padding: 10px;">
+                <strong style="color: #06b6d4;">${d.name}</strong>
+                <div style="font-size: 0.8rem; color: #888;">${d.device_type} (${d.manufacturer})</div>
+            </td>
+            <td style="padding: 10px;">${d.site || '-'}</td>
+            <td style="padding: 10px;">${d.role || '-'}</td>
+            <td style="padding: 10px; font-family: monospace;">${d.primary_ip || '-'}</td>
+            <td style="padding: 10px; text-align: center;">
+                <button class="btn btn-secondary" onclick="previewNetBoxDevice(${d.id})" style="padding: 5px 15px;">Import</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+async function previewNetBoxDevice(deviceId) {
+    const url = document.getElementById('netbox-import-url').value.trim();
+    const token = document.getElementById('netbox-import-token').value.trim();
+    const statusDiv = document.getElementById('netbox-connection-status');
+
+    statusDiv.innerHTML = '<span style="color: #888;"><span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px;"></span>Fetching device details...</span>';
+
+    try {
+        const response = await fetch(`/api/wizard/mcps/netbox/devices/${deviceId}/import?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}`);
+        const result = await response.json();
+
+        if (result.status !== 'ok') {
+            statusDiv.innerHTML = `<span style="color: #ef4444;">✗ Error: ${result.error}</span>`;
+            return;
+        }
+
+        netboxImportConfig = result.agent_config;
+        statusDiv.innerHTML = `<span style="color: #4ade80;">✓ ${result.message}</span>`;
+
+        // Populate preview
+        document.getElementById('netbox-preview-name').value = netboxImportConfig.name || '';
+        document.getElementById('netbox-preview-router-id').value = netboxImportConfig.router_id || '';
+        document.getElementById('netbox-preview-site').value = netboxImportConfig.site || '';
+        document.getElementById('netbox-preview-role').value = netboxImportConfig.role || '';
+
+        // Interfaces
+        const ifaces = netboxImportConfig.interfaces || [];
+        document.getElementById('netbox-preview-if-count').textContent = ifaces.length;
+        document.getElementById('netbox-preview-interfaces').innerHTML = ifaces.map(i => {
+            const ips = (i.ip_addresses || []).map(ip => ip.address).join(', ');
+            return `<div style="padding: 4px 0; border-bottom: 1px solid #2a2a4e;">${i.name}${ips ? ': ' + ips : ''}</div>`;
+        }).join('') || '<span style="color: #888;">No interfaces</span>';
+
+        // Protocols
+        const protocols = netboxImportConfig.protocols || [];
+        document.getElementById('netbox-preview-protocols').innerHTML = protocols.map(p =>
+            `<span style="background: #2a2a4e; padding: 4px 12px; border-radius: 4px;">${p.type.toUpperCase()}</span>`
+        ).join('') || '<span style="color: #888;">No protocols suggested</span>';
+
+        // Show preview
+        document.getElementById('netbox-import-preview').style.display = 'block';
+
+    } catch (e) {
+        statusDiv.innerHTML = `<span style="color: #ef4444;">✗ Error: ${e.message}</span>`;
+    }
+}
+
+function clearNetBoxPreview() {
+    document.getElementById('netbox-import-preview').style.display = 'none';
+    netboxImportConfig = null;
+}
+
+function importNetBoxDevice() {
+    if (!netboxImportConfig) {
+        showAlert('No device selected for import', 'error');
+        return;
+    }
+
+    // Generate agent ID from device name
+    const agentId = netboxImportConfig.name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
+
+    // Build agent object compatible with wizard state
+    const agent = {
+        id: agentId,
+        name: netboxImportConfig.name,
+        router_id: netboxImportConfig.router_id || '',
+        interfaces: (netboxImportConfig.interfaces || []).map(i => ({
+            n: i.name,
+            t: i.type || 'ethernet',
+            ip: (i.ip_addresses && i.ip_addresses[0]) ? i.ip_addresses[0].address : '',
+            e: i.enabled !== false
+        })),
+        protocols: (netboxImportConfig.protocols || []).map(p => ({
+            t: p.type,
+            ...p
+        })),
+        // Store NetBox reference
+        netbox: {
+            id: netboxImportConfig.netbox_id,
+            url: netboxImportConfig.netbox_url,
+            site: netboxImportConfig.site
+        }
+    };
+
+    // Add to wizard state
+    wizardState.agents.push(agent);
+    renderAgentList();
+
+    // Clear and hide preview
+    clearNetBoxPreview();
+    showAlert(`Imported agent "${agent.name}" from NetBox`, 'success');
 }
 
 function updateProtocolConfig() {
@@ -1345,42 +1747,142 @@ function hideAddInterfaceForm() {
 
 function updateInterfaceName() {
     const ifType = document.getElementById('if-type').value;
-    const subParentGroup = document.getElementById('sub-interface-parent-group');
-    const subVlanGroup = document.getElementById('sub-interface-vlan-group');
 
-    if (ifType === 'sub') {
-        // Show sub-interface configuration
-        subParentGroup.style.display = 'block';
-        subVlanGroup.style.display = 'block';
+    // Get all optional field groups
+    const parentGroup = document.getElementById('parent-interface-group');
+    const bondSelectGroup = document.getElementById('bond-select-group');
+    const lacpModeGroup = document.getElementById('lacp-mode-group');
+    const vlanIdGroup = document.getElementById('vlan-id-group');
+    const subifIndexGroup = document.getElementById('subif-index-group');
+    const interfaceModeGroup = document.getElementById('interface-mode-group');
+    const allowedVlansGroup = document.getElementById('allowed-vlans-group');
+    const parentHint = document.getElementById('parent-hint');
 
-        // Populate parent interface dropdown with available interfaces
-        const parentSelect = document.getElementById('sub-parent');
+    // Hide all optional groups by default
+    [parentGroup, bondSelectGroup, lacpModeGroup, vlanIdGroup, subifIndexGroup, interfaceModeGroup, allowedVlansGroup].forEach(g => {
+        if (g) g.style.display = 'none';
+    });
+
+    // Populate parent interface dropdown
+    const parentSelect = document.getElementById('parent-interface');
+    if (parentSelect) {
         parentSelect.innerHTML = '<option value="eth0">eth0 (default)</option>';
-
-        // Add configured ethernet interfaces
         currentAgentInterfaces.forEach(iface => {
-            if (iface.t === 'eth') {
+            if (iface.t === 'eth' || iface.t === 'bond') {
                 parentSelect.innerHTML += `<option value="${iface.n}">${iface.n}</option>`;
             }
         });
+    }
 
-        // Generate sub-interface name
-        updateSubInterfaceName();
-    } else {
-        // Hide sub-interface configuration
-        subParentGroup.style.display = 'none';
-        subVlanGroup.style.display = 'none';
+    // Populate bond dropdown
+    const bondSelect = document.getElementById('bond-select');
+    if (bondSelect) {
+        bondSelect.innerHTML = '<option value="">-- Select Bond --</option>';
+        currentAgentInterfaces.forEach(iface => {
+            if (iface.t === 'bond') {
+                bondSelect.innerHTML += `<option value="${iface.n}">${iface.n}</option>`;
+            }
+        });
+    }
 
-        // Generate normal interface name
-        const counter = interfaceCounters[ifType];
-        document.getElementById('if-name').value = `${ifType}${counter}`;
+    // Configure fields based on interface type
+    switch (ifType) {
+        case 'eth':
+        case 'lo':
+            // Simple interfaces - just counter-based naming
+            const counter = interfaceCounters[ifType] || 0;
+            document.getElementById('if-name').value = `${ifType}${counter}`;
+            break;
+
+        case 'bond':
+            // Bond interface
+            if (lacpModeGroup) lacpModeGroup.style.display = 'block';
+            const bondCounter = interfaceCounters['bond'] || 0;
+            document.getElementById('if-name').value = `bond${bondCounter}`;
+            break;
+
+        case 'bond-member':
+            // Bond member - select parent and bond to join
+            if (parentGroup) {
+                parentGroup.style.display = 'block';
+                if (parentHint) parentHint.textContent = 'Physical interface to add to bond';
+            }
+            if (bondSelectGroup) bondSelectGroup.style.display = 'block';
+            document.getElementById('if-name').value = '(member)';
+            break;
+
+        case 'sub-l2':
+            // L2 subinterface with VLAN tag
+            if (parentGroup) {
+                parentGroup.style.display = 'block';
+                if (parentHint) parentHint.textContent = 'Parent interface (e.g., eth0.100)';
+            }
+            if (vlanIdGroup) vlanIdGroup.style.display = 'block';
+            updateSubInterfaceName();
+            break;
+
+        case 'sub-l2-trunk':
+            // L2 trunk subinterface
+            if (parentGroup) {
+                parentGroup.style.display = 'block';
+                if (parentHint) parentHint.textContent = 'Parent interface for trunk';
+            }
+            if (vlanIdGroup) vlanIdGroup.style.display = 'block';
+            if (allowedVlansGroup) allowedVlansGroup.style.display = 'block';
+            updateSubInterfaceName();
+            break;
+
+        case 'sub-l3':
+            // L3 routed subinterface
+            if (parentGroup) {
+                parentGroup.style.display = 'block';
+                if (parentHint) parentHint.textContent = 'Parent L3 interface (e.g., eth0:0)';
+            }
+            if (subifIndexGroup) subifIndexGroup.style.display = 'block';
+            updateL3SubInterfaceName();
+            break;
+
+        case 'vxlan':
+            const vxlanCounter = interfaceCounters['vxlan'] || 0;
+            document.getElementById('if-name').value = `vxlan${vxlanCounter}`;
+            break;
+
+        case 'gre':
+            const greCounter = interfaceCounters['gre'] || 0;
+            document.getElementById('if-name').value = `gre${greCounter}`;
+            break;
+
+        case 'tun':
+            const tunCounter = interfaceCounters['tun'] || 0;
+            document.getElementById('if-name').value = `tun${tunCounter}`;
+            break;
+
+        case 'vlan':
+            if (vlanIdGroup) vlanIdGroup.style.display = 'block';
+            const vlanId = document.getElementById('sub-vlan')?.value || '100';
+            document.getElementById('if-name').value = `vlan${vlanId}`;
+            break;
+
+        case 'bridge':
+            const bridgeCounter = interfaceCounters['bridge'] || 0;
+            document.getElementById('if-name').value = `br${bridgeCounter}`;
+            break;
+
+        default:
+            document.getElementById('if-name').value = ifType + '0';
     }
 }
 
 function updateSubInterfaceName() {
-    const parent = document.getElementById('sub-parent').value;
-    const vlanId = document.getElementById('sub-vlan').value || '100';
+    const parent = document.getElementById('parent-interface')?.value || 'eth0';
+    const vlanId = document.getElementById('sub-vlan')?.value || '100';
     document.getElementById('if-name').value = `${parent}.${vlanId}`;
+}
+
+function updateL3SubInterfaceName() {
+    const parent = document.getElementById('parent-interface')?.value || 'eth0';
+    const subifIndex = document.getElementById('subif-index')?.value || '0';
+    document.getElementById('if-name').value = `${parent}:${subifIndex}`;
 }
 
 function addInterfaceToAgent() {
@@ -1404,16 +1906,90 @@ function addInterfaceToAgent() {
         interfaceConfig.description = ifDescription;
     }
 
-    // Handle sub-interface specific fields
-    if (ifType === 'sub') {
-        const parentIf = document.getElementById('sub-parent').value;
-        const vlanId = parseInt(document.getElementById('sub-vlan').value) || 100;
-        interfaceConfig.parent = parentIf;
-        interfaceConfig.vlan_id = vlanId;
-        // Don't increment counter for sub-interfaces since name is based on parent.vlan
-    } else {
-        // Increment counter for this type
-        interfaceCounters[ifType]++;
+    // Handle type-specific fields
+    switch (ifType) {
+        case 'bond':
+            // LACP Bond interface
+            const lacpMode = document.getElementById('lacp-mode')?.value || 'active';
+            interfaceConfig.lacp_mode = lacpMode;
+            interfaceConfig.members = [];
+            if (!interfaceCounters['bond']) interfaceCounters['bond'] = 0;
+            interfaceCounters['bond']++;
+            break;
+
+        case 'bond-member':
+            // Adding an interface to a bond
+            const parentIf = document.getElementById('parent-interface')?.value;
+            const bondIf = document.getElementById('bond-select')?.value;
+            if (!bondIf) {
+                showAlert('Please select a bond interface to join', 'error');
+                return;
+            }
+            // Find the bond and add this member
+            const bond = currentAgentInterfaces.find(i => i.n === bondIf && i.t === 'bond');
+            if (bond) {
+                bond.members = bond.members || [];
+                bond.members.push(parentIf);
+                showAlert(`Added ${parentIf} to ${bondIf}`, 'success');
+                hideAddInterfaceForm();
+                renderConfiguredInterfaces();
+                return; // Don't add as separate interface
+            }
+            break;
+
+        case 'sub-l2':
+            // L2 802.1Q subinterface
+            const l2Parent = document.getElementById('parent-interface')?.value || 'eth0';
+            const l2VlanId = parseInt(document.getElementById('sub-vlan')?.value) || 100;
+            interfaceConfig.parent = l2Parent;
+            interfaceConfig.vlan_id = l2VlanId;
+            interfaceConfig.encapsulation = 'dot1q';
+            interfaceConfig.mode = 'access';
+            break;
+
+        case 'sub-l2-trunk':
+            // L2 trunk subinterface
+            const trunkParent = document.getElementById('parent-interface')?.value || 'eth0';
+            const trunkVlanId = parseInt(document.getElementById('sub-vlan')?.value) || 100;
+            const allowedVlans = document.getElementById('allowed-vlans')?.value || '';
+            interfaceConfig.parent = trunkParent;
+            interfaceConfig.vlan_id = trunkVlanId;
+            interfaceConfig.encapsulation = 'dot1q';
+            interfaceConfig.mode = 'trunk';
+            interfaceConfig.allowed_vlans = allowedVlans;
+            break;
+
+        case 'sub-l3':
+            // L3 routed subinterface
+            const l3Parent = document.getElementById('parent-interface')?.value || 'eth0';
+            const subifIndex = parseInt(document.getElementById('subif-index')?.value) || 0;
+            interfaceConfig.parent = l3Parent;
+            interfaceConfig.subif_index = subifIndex;
+            interfaceConfig.encapsulation = 'none';
+            interfaceConfig.mode = 'routed';
+            break;
+
+        case 'vlan':
+            // VLAN SVI
+            const sviVlanId = parseInt(document.getElementById('sub-vlan')?.value) || 100;
+            interfaceConfig.vlan_id = sviVlanId;
+            if (!interfaceCounters['vlan']) interfaceCounters['vlan'] = 0;
+            interfaceCounters['vlan']++;
+            break;
+
+        case 'vxlan':
+        case 'gre':
+        case 'tun':
+        case 'bridge':
+            // Increment counters for these types
+            if (!interfaceCounters[ifType]) interfaceCounters[ifType] = 0;
+            interfaceCounters[ifType]++;
+            break;
+
+        default:
+            // Standard interfaces (eth, lo)
+            if (!interfaceCounters[ifType]) interfaceCounters[ifType] = 0;
+            interfaceCounters[ifType]++;
     }
 
     // Add to list
@@ -1443,14 +2019,12 @@ function renderConfiguredInterfaces() {
         </div>
         ${currentAgentInterfaces.map((iface, index) => {
             const addressDisplay = iface.a && iface.a.length > 0 ? iface.a.join(', ') : 'No IP';
-            let typeDisplay = iface.t;
-            if (iface.t === 'sub') {
-                typeDisplay = `sub-if (parent: ${iface.parent}, VLAN: ${iface.vlan_id})`;
-            }
+            let typeDisplay = getInterfaceTypeDisplay(iface);
+            let typeColor = getInterfaceTypeColor(iface.t);
             return `
                 <div class="agent-item" style="margin-bottom: 10px;">
                     <div class="agent-info">
-                        <h4 style="color: #00d9ff;">${iface.n}</h4>
+                        <h4 style="color: ${typeColor};">${iface.n}</h4>
                         <span>Type: ${typeDisplay} | IP: ${addressDisplay} | MTU: ${iface.mtu}${iface.description ? ' | ' + iface.description : ''}</span>
                     </div>
                     <div class="agent-actions">
@@ -1462,10 +2036,55 @@ function renderConfiguredInterfaces() {
     `;
 }
 
+function getInterfaceTypeDisplay(iface) {
+    switch (iface.t) {
+        case 'eth': return 'Ethernet';
+        case 'lo': return 'Loopback';
+        case 'bond':
+            const members = iface.members?.length || 0;
+            return `Bond/LACP (${iface.lacp_mode}, ${members} members)`;
+        case 'sub-l2':
+            return `L2 Subif (parent: ${iface.parent}, VLAN: ${iface.vlan_id})`;
+        case 'sub-l2-trunk':
+            return `L2 Trunk (parent: ${iface.parent}, native: ${iface.vlan_id}, allowed: ${iface.allowed_vlans || 'all'})`;
+        case 'sub-l3':
+            return `L3 Routed Subif (parent: ${iface.parent}:${iface.subif_index})`;
+        case 'vlan':
+            return `VLAN SVI (VLAN ${iface.vlan_id})`;
+        case 'vxlan':
+            return 'VXLAN VTEP';
+        case 'gre':
+            return 'GRE Tunnel';
+        case 'tun':
+            return 'Tunnel';
+        case 'bridge':
+            return 'Bridge';
+        default:
+            return iface.t;
+    }
+}
+
+function getInterfaceTypeColor(type) {
+    const colors = {
+        'eth': '#00d9ff',
+        'lo': '#4ade80',
+        'bond': '#a855f7',
+        'sub-l2': '#f97316',
+        'sub-l2-trunk': '#f97316',
+        'sub-l3': '#ec4899',
+        'vlan': '#22d3ee',
+        'vxlan': '#fbbf24',
+        'gre': '#06b6d4',
+        'tun': '#06b6d4',
+        'bridge': '#14b8a6'
+    };
+    return colors[type] || '#00d9ff';
+}
+
 function clearAgentInterfaces() {
     currentAgentInterfaces = [];
     // Reset counters (keeping eth0 and lo0 as defaults)
-    interfaceCounters = { eth: 1, lo: 1, vlan: 0, tun: 0 };
+    interfaceCounters = { eth: 1, lo: 1, bond: 0, vlan: 0, vxlan: 0, gre: 0, tun: 0, bridge: 0 };
     renderConfiguredInterfaces();
 }
 
@@ -2343,8 +2962,8 @@ async function nextStep(currentStep) {
                 },
                 docker_ipv6: {
                     enabled: isDockerIpv6,
-                    subnet: isDockerIpv6 ? document.getElementById('subnet').value : 'fd00:docker:1::/64',
-                    gateway: isDockerIpv6 ? document.getElementById('gateway').value : 'fd00:docker:1::1'
+                    subnet: isDockerIpv6 ? document.getElementById('subnet').value : 'fd00:d0c:1::/64',
+                    gateway: isDockerIpv6 ? document.getElementById('gateway').value : 'fd00:d0c:1::1'
                 }
             };
 
@@ -2389,6 +3008,9 @@ function goToStep(step) {
     // Show correct step content
     document.querySelectorAll('.wizard-step').forEach(s => s.classList.remove('active'));
     document.getElementById(`step-${step}`).classList.add('active');
+
+    // Update network name badge (ensure it shows on all steps)
+    updateNetworkNameBadge();
 
     // Update preview on last step (now step 5)
     if (step === 5) {

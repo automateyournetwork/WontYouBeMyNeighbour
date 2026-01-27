@@ -7,6 +7,8 @@ Provides:
 - Health checking
 - Load balancing
 - IPv6 Neighbor Discovery for ASI overlay
+- LLDP (Link Layer Discovery Protocol) for Layer 2 neighbor discovery
+- LACP (Link Aggregation Control Protocol) for interface bundling
 """
 
 from .registry import (
@@ -45,6 +47,37 @@ from .neighbor_discovery import (
     get_discovered_neighbors
 )
 
+from .lldp import (
+    LLDPDaemon,
+    LLDPConfig,
+    LLDPNeighbor,
+    LLDPCapability,
+    LLDPChassisIDSubtype,
+    LLDPPortIDSubtype,
+    LLDPManagementAddress,
+    get_lldp_daemon,
+    start_lldp,
+    stop_lldp,
+    get_lldp_neighbors,
+    get_lldp_statistics
+)
+
+from .lacp import (
+    LACPManager,
+    LACPMode,
+    LACPState,
+    LACPPortState,
+    LoadBalanceAlgorithm,
+    LinkAggregationGroup,
+    LACPMemberPort,
+    LACPPartnerInfo,
+    get_lacp_manager,
+    start_lacp,
+    stop_lacp,
+    get_lag_list,
+    get_lacp_statistics
+)
+
 __all__ = [
     # Registry
     "Service",
@@ -73,5 +106,32 @@ __all__ = [
     "get_neighbor_discovery",
     "start_neighbor_discovery",
     "stop_neighbor_discovery",
-    "get_discovered_neighbors"
+    "get_discovered_neighbors",
+    # LLDP (Link Layer Discovery Protocol)
+    "LLDPDaemon",
+    "LLDPConfig",
+    "LLDPNeighbor",
+    "LLDPCapability",
+    "LLDPChassisIDSubtype",
+    "LLDPPortIDSubtype",
+    "LLDPManagementAddress",
+    "get_lldp_daemon",
+    "start_lldp",
+    "stop_lldp",
+    "get_lldp_neighbors",
+    "get_lldp_statistics",
+    # LACP (Link Aggregation Control Protocol)
+    "LACPManager",
+    "LACPMode",
+    "LACPState",
+    "LACPPortState",
+    "LoadBalanceAlgorithm",
+    "LinkAggregationGroup",
+    "LACPMemberPort",
+    "LACPPartnerInfo",
+    "get_lacp_manager",
+    "start_lacp",
+    "stop_lacp",
+    "get_lag_list",
+    "get_lacp_statistics"
 ]

@@ -53,7 +53,7 @@ class NetworkInfo:
     subnet: Optional[str] = None
     gateway: Optional[str] = None
     # IPv6 dual-stack support (3-layer architecture)
-    subnet6: Optional[str] = None  # IPv6 subnet (e.g., "fd00:docker:1::/64")
+    subnet6: Optional[str] = None  # IPv6 subnet (e.g., "fd00:d0c:1::/64")
     gateway6: Optional[str] = None  # IPv6 gateway
     ipv6_enabled: bool = False
     containers: List[str] = field(default_factory=list)
@@ -171,7 +171,7 @@ class DockerManager:
             name: Network name
             subnet: IPv4 CIDR subnet (e.g., "172.20.0.0/16")
             gateway: IPv4 Gateway IP
-            subnet6: IPv6 CIDR subnet (e.g., "fd00:docker:1::/64")
+            subnet6: IPv6 CIDR subnet (e.g., "fd00:d0c:1::/64")
             gateway6: IPv6 Gateway
             enable_ipv6: Enable IPv6 on the network (required for dual-stack)
             driver: Network driver (bridge, overlay, etc.)

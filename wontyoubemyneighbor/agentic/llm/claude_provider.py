@@ -20,15 +20,15 @@ from .interface import BaseLLMProvider, ConversationMessage
 class ClaudeProvider(BaseLLMProvider):
     """Anthropic Claude provider implementation"""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-20250514"):
         super().__init__(api_key, model)
         # Try multiple valid model versions in order of preference
-        # The API will use the first available one
+        # Latest models first: Sonnet 4 (default), Opus 4.5 (most capable), then older fallbacks
         self.model_fallbacks = [
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307"
+            "claude-sonnet-4-20250514",      # Claude Sonnet 4 - great balance (default)
+            "claude-opus-4-5-20251101",       # Claude Opus 4.5 - most capable
+            "claude-3-5-sonnet-20241022",     # Claude 3.5 Sonnet (legacy fallback)
+            "claude-3-5-haiku-20241022",      # Claude 3.5 Haiku (fast fallback)
         ]
         self.model = model or self.model_fallbacks[0]
         self.client = None

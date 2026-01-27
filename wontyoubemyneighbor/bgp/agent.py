@@ -824,6 +824,43 @@ class BGPAgent:
 
         return stats
 
+    @property
+    def stats(self) -> Dict:
+        """
+        Get aggregated message statistics from all BGP sessions.
+        Used by Prometheus metrics collector.
+
+        Returns:
+            Dictionary with aggregated message counters
+        """
+        aggregated = {
+            'open_sent': 0,
+            'open_recv': 0,
+            'update_sent': 0,
+            'update_recv': 0,
+            'keepalive_sent': 0,
+            'keepalive_recv': 0,
+            'notification_sent': 0,
+            'notification_recv': 0,
+            'messages_sent': 0,
+            'messages_received': 0
+        }
+
+        for session in self.sessions.values():
+            session_stats = session.stats
+            aggregated['open_sent'] += session_stats.get('open_sent', 0)
+            aggregated['open_recv'] += session_stats.get('open_recv', 0)
+            aggregated['update_sent'] += session_stats.get('update_sent', 0)
+            aggregated['update_recv'] += session_stats.get('update_recv', 0)
+            aggregated['keepalive_sent'] += session_stats.get('keepalive_sent', 0)
+            aggregated['keepalive_recv'] += session_stats.get('keepalive_recv', 0)
+            aggregated['notification_sent'] += session_stats.get('notification_sent', 0)
+            aggregated['notification_recv'] += session_stats.get('notification_recv', 0)
+            aggregated['messages_sent'] += session_stats.get('messages_sent', 0)
+            aggregated['messages_received'] += session_stats.get('messages_received', 0)
+
+        return aggregated
+
     def get_peer_status(self, peer_ip: str) -> Optional[Dict]:
         """
         Get status of specific peer
