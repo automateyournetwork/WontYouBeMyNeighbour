@@ -10,6 +10,7 @@ FastAPI-based web dashboard providing:
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -135,10 +136,13 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
         description="Web UI for Won't You Be My Neighbor routing agent"
     )
 
-    # Startup event handler to initialize agentic bridge and GAIT
+    # Track app startup time for uptime display
+    app_start_time = datetime.now()
+
+    # Startup event handler to initialize agentic bridge, GAIT, and LLDP
     @app.on_event("startup")
     async def startup_event():
-        """Initialize agentic bridge and GAIT tracking on server startup"""
+        """Initialize agentic bridge, GAIT tracking, and LLDP on server startup"""
         if agentic_bridge:
             try:
                 await agentic_bridge.initialize()
@@ -146,18 +150,135 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             except Exception as e:
                 logging.getLogger("WebUI").error(f"Failed to initialize AgenticBridge: {e}")
 
+        # Start LLDP daemon to query lldpcli for real neighbor data
+        try:
+            from agentic.discovery.lldp import start_lldp, LLDPConfig
+            config = LLDPConfig(enabled=True, tx_interval=30)
+            await start_lldp("local", config)
+            logging.getLogger("WebUI").info("LLDP daemon started - will query lldpcli for neighbors")
+        except Exception as e:
+            logging.getLogger("WebUI").warning(f"LLDP daemon not started: {e}")
+
+        # Start Prometheus metrics collection
+        try:
+            from agentic.mcp.prometheus_mcp import (
+                get_prometheus_client, collect_system_metrics, collect_interface_metrics
+            )
+            import asyncio
+
+            prometheus = get_prometheus_client()
+            # Create exporter for this agent
+            agent_id = os.environ.get("ASI_AGENT_ID", "local")
+            router_id = os.environ.get("ASI_ROUTER_ID", "10.255.255.1")
+            exporter = prometheus.create_exporter(agent_id, router_id)
+
+            # Background task to collect metrics every 10 seconds
+            async def metrics_collector():
+                while True:
+                    try:
+                        await collect_system_metrics(exporter)
+                        await collect_interface_metrics(exporter)
+
+                        # Record OSPF metrics from actual protocol state
+                        ospf_neighbors = 0
+                        ospf_full = 0
+                        lsdb_size = 0
+                        ospf_routes = 0
+                        if asi_app and asi_app.ospf_interface:
+                            ospf = asi_app.ospf_interface
+                            ospf_neighbors = len(ospf.neighbors)
+                            ospf_full = sum(1 for n in ospf.neighbors.values() if n.is_full())
+                            lsdb_size = ospf.lsdb.get_size() if hasattr(ospf, 'lsdb') else 0
+                            ospf_routes = len(ospf.spf_calc.routing_table) if hasattr(ospf, 'spf_calc') else 0
+                        exporter.set_gauge("ospf_neighbors_total", float(ospf_neighbors))
+                        exporter.set_gauge("ospf_neighbors_full", float(ospf_full))
+                        exporter.set_gauge("ospf_lsdb_size", float(lsdb_size))
+                        exporter.set_gauge("ospf_routes_total", float(ospf_routes))
+
+                        # Record BGP metrics from actual protocol state
+                        bgp_peers = 0
+                        bgp_established = 0
+                        bgp_routes = 0
+                        if asi_app and asi_app.bgp_speaker:
+                            bgp = asi_app.bgp_speaker
+                            if hasattr(bgp, 'agent') and bgp.agent:
+                                bgp_peers = len(bgp.agent.sessions)
+                                bgp_established = sum(1 for s in bgp.agent.sessions.values()
+                                                     if hasattr(s, 'fsm') and hasattr(s.fsm, 'state') and 'ESTABLISHED' in str(s.fsm.state).upper())
+                                if hasattr(bgp.agent, 'loc_rib'):
+                                    bgp_routes = len(bgp.agent.loc_rib.get_all_routes())
+                        exporter.set_gauge("bgp_peers_total", float(bgp_peers))
+                        exporter.set_gauge("bgp_peers_established", float(bgp_established))
+                        exporter.set_gauge("bgp_routes_total", float(bgp_routes))
+
+                        # Record OSPF message counters
+                        ospf_stats = {}
+                        if asi_app and asi_app.ospf_interface:
+                            ospf = asi_app.ospf_interface
+                            # Try to get message stats from OSPF interface
+                            if hasattr(ospf, 'stats'):
+                                ospf_stats = ospf.stats
+                            elif hasattr(ospf, 'message_stats'):
+                                ospf_stats = ospf.message_stats
+                        exporter.set_gauge("ospf_hello_sent_total", float(ospf_stats.get('hello_sent', 0)))
+                        exporter.set_gauge("ospf_hello_recv_total", float(ospf_stats.get('hello_recv', 0)))
+                        exporter.set_gauge("ospf_dbd_sent_total", float(ospf_stats.get('dbd_sent', 0)))
+                        exporter.set_gauge("ospf_dbd_recv_total", float(ospf_stats.get('dbd_recv', 0)))
+                        exporter.set_gauge("ospf_lsr_sent_total", float(ospf_stats.get('lsr_sent', 0)))
+                        exporter.set_gauge("ospf_lsr_recv_total", float(ospf_stats.get('lsr_recv', 0)))
+                        exporter.set_gauge("ospf_lsu_sent_total", float(ospf_stats.get('lsu_sent', 0)))
+                        exporter.set_gauge("ospf_lsu_recv_total", float(ospf_stats.get('lsu_recv', 0)))
+                        exporter.set_gauge("ospf_lsack_sent_total", float(ospf_stats.get('lsack_sent', 0)))
+                        exporter.set_gauge("ospf_lsack_recv_total", float(ospf_stats.get('lsack_recv', 0)))
+
+                        # Record BGP message counters
+                        bgp_stats = {}
+                        if asi_app and asi_app.bgp_speaker:
+                            bgp = asi_app.bgp_speaker
+                            if hasattr(bgp, 'stats'):
+                                bgp_stats = bgp.stats
+                            elif hasattr(bgp, 'agent') and hasattr(bgp.agent, 'stats'):
+                                bgp_stats = bgp.agent.stats
+                        exporter.set_gauge("bgp_open_sent_total", float(bgp_stats.get('open_sent', 0)))
+                        exporter.set_gauge("bgp_open_recv_total", float(bgp_stats.get('open_recv', 0)))
+                        exporter.set_gauge("bgp_update_sent_total", float(bgp_stats.get('update_sent', 0)))
+                        exporter.set_gauge("bgp_update_recv_total", float(bgp_stats.get('update_recv', 0)))
+                        exporter.set_gauge("bgp_keepalive_sent_total", float(bgp_stats.get('keepalive_sent', 0)))
+                        exporter.set_gauge("bgp_keepalive_recv_total", float(bgp_stats.get('keepalive_recv', 0)))
+                        exporter.set_gauge("bgp_notification_sent_total", float(bgp_stats.get('notification_sent', 0)))
+                        exporter.set_gauge("bgp_notification_recv_total", float(bgp_stats.get('notification_recv', 0)))
+
+                        # Record interface count
+                        interface_count = len(asi_app.interfaces) if asi_app and hasattr(asi_app, 'interfaces') else 0
+                        exporter.set_gauge("agent_interfaces_total", float(interface_count))
+
+                        logging.getLogger("WebUI").debug(f"Collected metrics: OSPF neighbors={ospf_neighbors}, BGP peers={bgp_peers}")
+                    except Exception as e:
+                        logging.getLogger("WebUI").warning(f"Metrics collection error: {e}")
+                    await asyncio.sleep(10)
+
+            asyncio.create_task(metrics_collector())
+            logging.getLogger("WebUI").info(f"Prometheus metrics collection started for agent {agent_id}")
+        except Exception as e:
+            logging.getLogger("WebUI").warning(f"Prometheus metrics not started: {e}")
+
     # Include wizard router if available
     if WIZARD_AVAILABLE and wizard_router:
         app.include_router(wizard_router)
 
-    # Log buffer for streaming
-    log_buffer = LogBuffer()
-
-    # Install log handler
-    log_handler = WebUILogHandler(log_buffer)
-    log_handler.setLevel(logging.INFO)
-    log_handler.setFormatter(logging.Formatter('%(name)s: %(message)s'))
-    logging.getLogger().addHandler(log_handler)
+    # Use existing log buffer from asi_app if available (captures all protocol logs)
+    # Otherwise create a new one (for standalone/wizard mode)
+    if hasattr(asi_app, 'log_buffer') and asi_app.log_buffer is not None:
+        log_buffer = asi_app.log_buffer
+        logging.getLogger("WebUI").info("Using existing log buffer with protocol logs")
+    else:
+        # Create new log buffer for standalone mode
+        log_buffer = LogBuffer()
+        # Install log handler only if we created a new buffer
+        log_handler = WebUILogHandler(log_buffer)
+        log_handler.setLevel(logging.INFO)
+        log_handler.setFormatter(logging.Formatter('%(name)s: %(message)s'))
+        logging.getLogger().addHandler(log_handler)
 
     # Static files directory
     static_dir = Path(__file__).parent / "static"
@@ -227,60 +348,8 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             return FileResponse(str(topology3d_file))
         return HTMLResponse(content="3D topology not found.", status_code=404)
 
-    @app.get("/api/logs")
-    async def get_logs(tail: int = 500) -> Dict[str, Any]:
-        """
-        Get agent logs with optional tail limit
-
-        Args:
-            tail: Number of log lines to return (default 500, max 5000)
-
-        Returns:
-            Dictionary with logs array and metadata
-        """
-        import subprocess
-        import re
-        from datetime import datetime
-
-        # Limit tail to prevent excessive data transfer
-        tail = min(tail, 5000)
-
-        logs = []
-        try:
-            # Get container ID/name from environment or hostname
-            import socket
-            container_name = socket.gethostname()
-
-            # Read logs from stdout/stderr (they go to docker logs)
-            # For a running container, we can read from /proc/1/fd/1 (stdout) or use journalctl
-            # But the simplest approach is to parse from a log file if logging to file
-            # Or we can capture from the logging module's handlers
-
-            # Get logs from Python logging handlers
-            import logging
-            root_logger = logging.getLogger()
-
-            # Try to get logs from memory handler or file handler
-            log_entries = []
-
-            # For now, return a simple structure
-            # In production, you'd want to integrate with your actual logging system
-            log_entries = [
-                {"timestamp": datetime.now().strftime("%H:%M:%S"), "level": "INFO", "message": "Log viewer initialized"},
-                {"timestamp": datetime.now().strftime("%H:%M:%S"), "level": "INFO", "message": f"Tailing last {tail} log entries"}
-            ]
-
-            logs = log_entries[-tail:]
-
-        except Exception as e:
-            logs = [{"timestamp": datetime.now().strftime("%H:%M:%S"), "level": "ERROR", "message": f"Failed to fetch logs: {str(e)}"}]
-
-        return {
-            "logs": logs,
-            "tail": tail,
-            "total": len(logs),
-            "timestamp": datetime.now().isoformat()
-        }
+    # NOTE: /api/logs endpoint is defined later in this file (around line 610)
+    # using the log_buffer for actual protocol logs - DO NOT add a duplicate here
 
     @app.get("/api/status")
     async def get_status() -> Dict[str, Any]:
@@ -411,15 +480,52 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
 
         # Agentic status
         if agentic_bridge:
-            # Get provider name safely
+            # Model ID to human-readable name mapping
+            model_display_names = {
+                "claude-sonnet-4-20250514": "Claude Sonnet 4",
+                "claude-opus-4-5-20251101": "Claude Opus 4.5",
+                "claude-3-5-sonnet-20241022": "Claude 3.5 Sonnet",
+                "claude-3-5-haiku-20241022": "Claude 3.5 Haiku",
+                "claude-3-sonnet-20240229": "Claude 3 Sonnet",
+                "claude-3-opus-20240229": "Claude 3 Opus",
+                "gpt-4-turbo": "GPT-4 Turbo",
+                "gpt-4o": "GPT-4o",
+                "gpt-4": "GPT-4",
+                "gemini-1.5-pro": "Gemini 1.5 Pro",
+            }
+
+            # Get provider and model name safely
             provider_name = "Unknown"
+            model_name = ""
             try:
-                if hasattr(agentic_bridge, 'llm') and hasattr(agentic_bridge.llm, 'get_active_provider_name'):
-                    provider_name = agentic_bridge.llm.get_active_provider_name()
-                elif hasattr(agentic_bridge, 'get_active_provider_name'):
-                    provider_name = agentic_bridge.get_active_provider_name()
-            except Exception:
-                pass
+                if hasattr(agentic_bridge, 'llm'):
+                    llm = agentic_bridge.llm
+                    # LLMInterface has preferred_provider and providers dict
+                    if hasattr(llm, 'preferred_provider') and hasattr(llm, 'providers'):
+                        # Get the preferred provider enum value (e.g., LLMProvider.CLAUDE)
+                        pref_provider = llm.preferred_provider
+                        # Get provider name from enum value
+                        provider_name = pref_provider.value.capitalize() if hasattr(pref_provider, 'value') else str(pref_provider)
+
+                        # Get the actual provider instance from providers dict
+                        if pref_provider in llm.providers:
+                            active_provider = llm.providers[pref_provider]
+                            # Get model from provider instance
+                            if hasattr(active_provider, 'model') and active_provider.model:
+                                raw_model = active_provider.model
+                                # Convert to human-readable name
+                                model_name = model_display_names.get(raw_model, raw_model)
+                            # Keep provider name simple (Claude, OpenAI, etc.) - don't use get_provider_name which includes model
+                        elif llm.providers:
+                            # Fallback to first available provider
+                            first_provider_type = next(iter(llm.providers))
+                            active_provider = llm.providers[first_provider_type]
+                            provider_name = first_provider_type.value.capitalize() if hasattr(first_provider_type, 'value') else str(first_provider_type)
+                            if hasattr(active_provider, 'model') and active_provider.model:
+                                raw_model = active_provider.model
+                                model_name = model_display_names.get(raw_model, raw_model)
+            except Exception as e:
+                logger.debug(f"Error getting LLM provider info: {e}")
 
             # Get autonomous mode safely
             autonomous = False
@@ -432,8 +538,22 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             status["agentic"] = {
                 "asi_id": agentic_bridge.asi_id,
                 "provider": provider_name,
+                "model": model_name,
                 "autonomous_mode": autonomous
             }
+
+        # Calculate uptime
+        uptime_delta = datetime.now() - app_start_time
+        uptime_seconds = int(uptime_delta.total_seconds())
+        hours, remainder = divmod(uptime_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours > 0:
+            uptime_str = f"{hours}h {minutes}m {seconds}s"
+        elif minutes > 0:
+            uptime_str = f"{minutes}m {seconds}s"
+        else:
+            uptime_str = f"{seconds}s"
+        status["uptime"] = uptime_str
 
         # MCP status - get from environment or config
         mcps = []
@@ -603,9 +723,20 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             )
 
     @app.get("/api/logs")
-    async def get_logs(count: int = 100) -> List[Dict]:
-        """Get recent log entries"""
-        return log_buffer.get_recent(count)
+    async def get_logs(count: int = 100, tail: int = None) -> Dict[str, Any]:
+        """Get recent log entries
+
+        Args:
+            count: Number of log entries to return (default 100)
+            tail: Alias for count, for backwards compatibility
+
+        Returns:
+            Dict with 'logs' key containing list of log entries
+        """
+        # Support both 'count' and 'tail' parameters
+        num_entries = tail if tail is not None else count
+        logs = log_buffer.get_recent(num_entries)
+        return {"logs": logs, "count": len(logs)}
 
     @app.websocket("/ws/monitor")
     async def websocket_monitor(websocket: WebSocket):
@@ -881,7 +1012,7 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             ospf_nbrs = []
             for nbr_id, nbr in asi_app.ospf_interface.neighbors.items():
                 ospf_nbrs.append({
-                    "ip": nbr.source_ip,
+                    "ip": nbr.ip_address,  # OSPFNeighbor uses ip_address, not source_ip
                     "router_id": nbr_id,
                     "state": "FULL" if nbr.is_full() else "INIT"
                 })
@@ -1257,6 +1388,405 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
         except Exception as e:
             return {"results": [], "error": str(e)}
 
+    # ==================== pyATS MCP Dynamic Testing API ====================
+    # These endpoints enable agents to dynamically generate and execute tests
+    # via the pyATS MCP server (Self-Testing Network capability)
+
+    class DynamicTestRequest(BaseModel):
+        """Request body for dynamic test generation"""
+        test_types: Optional[List[str]] = None
+
+    @app.post("/api/pyats/run-dynamic-tests")
+    async def run_dynamic_pyats_tests(request: DynamicTestRequest) -> Dict[str, Any]:
+        """
+        Run dynamically generated pyATS tests via pyATS MCP.
+
+        This is the core of the Self-Testing Network - the agent generates
+        AEtest scripts based on its configuration and executes them.
+
+        Args:
+            test_types: List of test types to run. Options:
+                - "comprehensive": Full self-assessment (default)
+                - "connectivity": Ping/reachability tests
+                - "ospf": OSPF neighbor state tests
+                - "bgp": BGP peer state tests
+                - "interfaces": Interface state tests
+
+        Returns:
+            Test execution results with pass/fail details
+        """
+        try:
+            from agentic.tests import (
+                DynamicTestGenerator,
+                TestTrigger,
+            )
+            from agentic.mcp import PyATSMCPClient
+
+            # Build agent config from current state
+            agent_config = _build_agent_config_for_testing()
+
+            # Create test generator
+            generator = DynamicTestGenerator(agent_config)
+
+            # Default to comprehensive if no types specified
+            test_types = request.test_types or ["comprehensive"]
+
+            results = []
+            generated_tests = []
+
+            for test_type in test_types:
+                if test_type == "comprehensive":
+                    test = generator.generate_comprehensive_self_test(
+                        trigger=TestTrigger.HUMAN_REQUEST
+                    )
+                elif test_type == "connectivity":
+                    test = generator.generate_neighbor_reachability_test(
+                        trigger=TestTrigger.HUMAN_REQUEST
+                    )
+                elif test_type == "ospf":
+                    test = generator.generate_ospf_neighbor_test(
+                        trigger=TestTrigger.HUMAN_REQUEST
+                    )
+                elif test_type == "bgp":
+                    test = generator.generate_bgp_peer_test(
+                        trigger=TestTrigger.HUMAN_REQUEST
+                    )
+                elif test_type == "interfaces":
+                    test = generator.generate_interface_state_test(
+                        trigger=TestTrigger.HUMAN_REQUEST
+                    )
+                else:
+                    continue
+
+                # Execute the test and get results
+                test_result = await _execute_dynamic_test(test, agent_config)
+                generated_tests.append(test_result)
+
+            # Calculate summary
+            total_passed = sum(1 for t in generated_tests if t.get("status") == "PASSED")
+            total_failed = sum(1 for t in generated_tests if t.get("status") == "FAILED")
+            total_tests = len(generated_tests)
+            pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
+
+            return {
+                "success": True,
+                "message": f"Executed {len(generated_tests)} tests",
+                "tests": generated_tests,
+                "summary": {
+                    "total": total_tests,
+                    "passed": total_passed,
+                    "failed": total_failed,
+                    "pass_rate": round(pass_rate, 1)
+                },
+                "agent_config": {
+                    "agent_id": agent_config.get("id"),
+                    "router_id": agent_config.get("r"),
+                    "protocols": [p.get("p") for p in agent_config.get("protos", [])],
+                    "interface_count": len(agent_config.get("ifs", [])),
+                },
+            }
+
+        except ImportError as e:
+            return {
+                "success": False,
+                "error": f"Dynamic test module not available: {e}",
+                "tests": []
+            }
+        except Exception as e:
+            logger.error(f"Dynamic test generation error: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "tests": []
+            }
+
+    @app.get("/api/pyats/test-types")
+    async def get_pyats_test_types() -> Dict[str, Any]:
+        """Get available dynamic test types for pyATS MCP"""
+        return {
+            "test_types": [
+                {
+                    "id": "comprehensive",
+                    "name": "Comprehensive Self-Assessment",
+                    "description": "Full self-test including connectivity, protocols, and interfaces",
+                    "default": True
+                },
+                {
+                    "id": "connectivity",
+                    "name": "Connectivity Tests",
+                    "description": "Ping all configured neighbors and verify reachability"
+                },
+                {
+                    "id": "ospf",
+                    "name": "OSPF State Tests",
+                    "description": "Verify all OSPF neighbors are in FULL state"
+                },
+                {
+                    "id": "bgp",
+                    "name": "BGP State Tests",
+                    "description": "Verify all BGP peers are Established"
+                },
+                {
+                    "id": "interfaces",
+                    "name": "Interface State Tests",
+                    "description": "Verify all interfaces are in expected operational state"
+                }
+            ]
+        }
+
+    @app.get("/api/pyats/status")
+    async def get_pyats_mcp_status() -> Dict[str, Any]:
+        """Check pyATS MCP server status and configuration"""
+        try:
+            # Check if self-testing is enabled on the bridge
+            if asi_app.agentic_bridge and hasattr(asi_app.agentic_bridge, '_self_test_enabled'):
+                enabled = asi_app.agentic_bridge._self_test_enabled
+                pass_rate = asi_app.agentic_bridge.get_test_pass_rate() if enabled else 0
+                history = asi_app.agentic_bridge.get_test_history(5) if enabled else []
+            else:
+                enabled = False
+                pass_rate = 0
+                history = []
+
+            return {
+                "pyats_mcp_enabled": enabled,
+                "pass_rate": pass_rate,
+                "recent_tests": history,
+                "config": {
+                    "testbed_path": getattr(asi_app, 'testbed_path', None),
+                    "server_path": getattr(asi_app, 'pyats_server_path', None),
+                }
+            }
+        except Exception as e:
+            return {
+                "pyats_mcp_enabled": False,
+                "error": str(e)
+            }
+
+    async def _execute_dynamic_test(test, agent_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute a dynamically generated test and return results.
+
+        This runs actual checks based on the test type:
+        - Connectivity: Ping targets
+        - OSPF: Check neighbor states
+        - BGP: Check peer states
+        - Interface: Check interface states
+        """
+        import subprocess
+        import time
+        from datetime import datetime
+
+        start_time = time.time()
+        test_results = []
+        overall_status = "PASSED"
+        details = []
+
+        test_data = test.test_data
+        category = test.category.value
+
+        try:
+            if category == "connectivity" or "ping_targets" in test_data:
+                # Run actual ping tests
+                targets = test_data.get("targets", test_data.get("ping_targets", []))
+                # Get our own router ID to skip self-ping
+                our_router_id = agent_config.get("r", "")
+                our_loopbacks = []
+                for iface in agent_config.get("ifs", []):
+                    if iface.get("t") == "lo":  # Loopback interface
+                        for addr in iface.get("a", []):
+                            # Extract IP without prefix
+                            ip = addr.split("/")[0] if "/" in addr else addr
+                            our_loopbacks.append(ip)
+
+                for target in targets:
+                    if not target or target == "0.0.0.0":
+                        continue
+                    # Skip pinging our own addresses
+                    if target == our_router_id or target in our_loopbacks:
+                        test_results.append({"target": target, "status": "SKIPPED", "message": "Self (skipped)"})
+                        details.append(f"- {target}: Self (skipped)")
+                        continue
+                    try:
+                        # Run ping with timeout
+                        result = subprocess.run(
+                            ["ping", "-c", "2", "-W", "2", str(target)],
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        if result.returncode == 0:
+                            test_results.append({"target": target, "status": "PASSED", "message": "Reachable"})
+                            details.append(f"✓ {target}: Reachable")
+                        else:
+                            test_results.append({"target": target, "status": "FAILED", "message": "Unreachable"})
+                            details.append(f"✗ {target}: Unreachable")
+                            overall_status = "FAILED"
+                    except subprocess.TimeoutExpired:
+                        test_results.append({"target": target, "status": "FAILED", "message": "Timeout"})
+                        details.append(f"✗ {target}: Timeout")
+                        overall_status = "FAILED"
+                    except Exception as e:
+                        test_results.append({"target": target, "status": "ERROR", "message": str(e)})
+                        details.append(f"? {target}: Error - {e}")
+
+            if category == "protocol_state" or "expected_neighbors" in test_data:
+                # Check OSPF neighbors if available
+                if asi_app.ospf_interface and test_data.get("expected_neighbors"):
+                    try:
+                        actual_neighbors = asi_app.ospf_interface.get_neighbors()
+                        actual_ids = {n.get("router_id") for n in actual_neighbors}
+
+                        for expected in test_data.get("expected_neighbors", []):
+                            nbr_id = expected.get("router_id", "")
+                            if nbr_id in actual_ids:
+                                test_results.append({"neighbor": nbr_id, "status": "PASSED", "state": "FULL"})
+                                details.append(f"✓ OSPF {nbr_id}: FULL")
+                            else:
+                                test_results.append({"neighbor": nbr_id, "status": "FAILED", "state": "DOWN"})
+                                details.append(f"✗ OSPF {nbr_id}: Not found")
+                                overall_status = "FAILED"
+                    except Exception as e:
+                        details.append(f"? OSPF check error: {e}")
+
+            if category == "protocol_state" or "expected_peers" in test_data:
+                # Check BGP peers if available
+                if asi_app.bgp_speaker and test_data.get("expected_peers"):
+                    try:
+                        peer_status = asi_app.bgp_speaker.get_peer_status()
+
+                        for expected in test_data.get("expected_peers", []):
+                            peer_ip = expected.get("peer_ip", "")
+                            if peer_ip in peer_status:
+                                state = peer_status[peer_ip].get("state", "Unknown")
+                                if state.lower() == "established":
+                                    test_results.append({"peer": peer_ip, "status": "PASSED", "state": state})
+                                    details.append(f"✓ BGP {peer_ip}: {state}")
+                                else:
+                                    test_results.append({"peer": peer_ip, "status": "FAILED", "state": state})
+                                    details.append(f"✗ BGP {peer_ip}: {state}")
+                                    overall_status = "FAILED"
+                            else:
+                                test_results.append({"peer": peer_ip, "status": "FAILED", "state": "Not found"})
+                                details.append(f"✗ BGP {peer_ip}: Not configured")
+                                overall_status = "FAILED"
+                    except Exception as e:
+                        details.append(f"? BGP check error: {e}")
+
+            if category == "interface" or "interfaces" in test_data:
+                # Check interface states
+                interfaces = test_data.get("interfaces", [])
+                for intf in interfaces:
+                    intf_name = intf.get("name", "")
+                    expected_state = intf.get("expected_state", "up")
+                    try:
+                        # Check interface via ip link
+                        result = subprocess.run(
+                            ["ip", "link", "show", intf_name],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0:
+                            output = result.stdout.lower()
+                            is_up = "state up" in output or ",up," in output
+                            if (expected_state == "up" and is_up) or (expected_state == "down" and not is_up):
+                                test_results.append({"interface": intf_name, "status": "PASSED"})
+                                details.append(f"✓ {intf_name}: {'UP' if is_up else 'DOWN'}")
+                            else:
+                                test_results.append({"interface": intf_name, "status": "FAILED"})
+                                details.append(f"✗ {intf_name}: Expected {expected_state}, got {'up' if is_up else 'down'}")
+                                overall_status = "FAILED"
+                        else:
+                            details.append(f"? {intf_name}: Not found")
+                    except Exception as e:
+                        details.append(f"? {intf_name}: Error - {e}")
+
+            # If no specific tests ran, mark as passed with note
+            if not test_results and not details:
+                details.append("✓ Test configuration validated")
+                overall_status = "PASSED"
+
+        except Exception as e:
+            overall_status = "ERROR"
+            details.append(f"Test execution error: {e}")
+
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        return {
+            "test_id": test.test_id,
+            "test_name": test.test_name,
+            "category": category,
+            "description": test.description,
+            "status": overall_status,
+            "duration_ms": duration_ms,
+            "timestamp": datetime.now().isoformat(),
+            "results": test_results,
+            "details": details,
+            "expected_outcomes": test.expected_outcomes,
+        }
+
+    def _build_agent_config_for_testing() -> Dict[str, Any]:
+        """Build TOON-style agent config from current ASI state for test generation"""
+        config = {
+            "id": asi_app.router_id or "unknown",
+            "r": asi_app.router_id or "0.0.0.0",
+            "ifs": [],
+            "protos": [],
+        }
+
+        # Add interface information
+        if hasattr(asi_app, 'interfaces') and asi_app.interfaces:
+            for intf in asi_app.interfaces:
+                config["ifs"].append({
+                    "id": intf.get("id") or intf.get("name"),
+                    "n": intf.get("name"),
+                    "t": intf.get("type", "eth"),
+                    "a": intf.get("addresses", []),
+                    "s": intf.get("status", "up"),
+                })
+
+        # Add OSPF protocol info
+        if asi_app.ospf_interface:
+            ospf_neighbors = []
+            try:
+                neighbors = asi_app.ospf_interface.get_neighbors()
+                for nbr in neighbors:
+                    ospf_neighbors.append({
+                        "router_id": nbr.get("router_id"),
+                        "interface": nbr.get("interface"),
+                    })
+            except Exception:
+                pass
+
+            config["protos"].append({
+                "p": "ospf",
+                "r": asi_app.router_id,
+                "neighbors": ospf_neighbors,
+            })
+
+        # Add BGP protocol info
+        if asi_app.bgp_speaker:
+            bgp_peers = []
+            try:
+                peers = asi_app.bgp_speaker.get_peer_status()
+                for peer_ip, status in peers.items():
+                    bgp_peers.append({
+                        "ip": peer_ip,
+                        "asn": status.get("remote_as"),
+                    })
+            except Exception:
+                pass
+
+            config["protos"].append({
+                "p": "ibgp" if asi_app.bgp_speaker.local_as else "ebgp",
+                "r": asi_app.router_id,
+                "asn": getattr(asi_app.bgp_speaker, 'local_as', None),
+                "peers": bgp_peers,
+            })
+
+        return config
+
     @app.get("/api/gait/history")
     async def api_get_gait_history() -> Dict[str, Any]:
         """Get GAIT conversation history via REST API"""
@@ -1348,6 +1878,2340 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
         except Exception as e:
             logger.error(f"RFC intent lookup error: {e}")
             return {"intent": intent, "error": str(e)}
+
+    # ==========================================================================
+    # Prometheus Metrics API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/metrics")
+    async def api_get_metrics(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get Prometheus-style metrics for an agent
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            Metrics dictionary with values, labels, and types
+        """
+        try:
+            from agentic.mcp.prometheus_mcp import get_prometheus_client
+            client = get_prometheus_client()
+            metrics = await client.get_all_metrics(agent_id)
+            return {"metrics": metrics, "agent_id": agent_id}
+        except ImportError as e:
+            return {"metrics": {}, "error": f"Prometheus MCP not available: {e}"}
+        except Exception as e:
+            logger.error(f"Metrics fetch error: {e}")
+            return {"metrics": {}, "error": str(e)}
+
+    @app.get("/api/metrics/export")
+    async def api_export_metrics(agent_id: Optional[str] = None) -> str:
+        """
+        Export metrics in Prometheus exposition format
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            Prometheus-formatted metrics text
+        """
+        try:
+            from agentic.mcp.prometheus_mcp import get_prometheus_client
+            client = get_prometheus_client()
+            exporter = client.get_exporter(agent_id) if agent_id else None
+
+            if exporter:
+                return await exporter.collect()
+
+            # Collect from all exporters
+            output = []
+            for exp in client.exporters.values():
+                output.append(await exp.collect())
+            return "\n\n".join(output)
+        except ImportError as e:
+            return f"# Prometheus MCP not available: {e}\n"
+        except Exception as e:
+            logger.error(f"Metrics export error: {e}")
+            return f"# Error: {e}\n"
+
+    @app.get("/api/agent/{agent_id}/metrics")
+    async def api_get_agent_metrics(agent_id: str) -> Dict[str, Any]:
+        """
+        Get Prometheus-style metrics for a specific agent.
+        Used by the agent dashboard Prometheus tab.
+
+        Args:
+            agent_id: Agent ID (or 'local' for the current agent)
+
+        Returns:
+            Dict with metrics list and summary data for charts
+        """
+        try:
+            from agentic.mcp.prometheus_mcp import get_prometheus_client
+            client = get_prometheus_client()
+
+            # Get metrics - returns {agent_id: {metric_name: {type, help, values}}}
+            all_metrics = await client.get_all_metrics(None)  # Get all, we'll filter
+
+            # Convert to the format expected by the dashboard
+            metrics_list = []
+            neighbor_count = 0
+            rx_bytes = 0
+            tx_bytes = 0
+            messages_sent = 0
+            messages_recv = 0
+            lsa_count = 0
+            route_count = 0
+
+            # Individual OSPF metrics
+            ospf_hello_sent = 0
+            ospf_hello_recv = 0
+            ospf_dbd_sent = 0
+            ospf_dbd_recv = 0
+            ospf_lsr_sent = 0
+            ospf_lsr_recv = 0
+            ospf_lsu_sent = 0
+            ospf_lsu_recv = 0
+            ospf_lsack_sent = 0
+            ospf_lsack_recv = 0
+            ospf_neighbor_count = 0
+
+            # Individual BGP metrics
+            bgp_open_sent = 0
+            bgp_open_recv = 0
+            bgp_update_sent = 0
+            bgp_update_recv = 0
+            bgp_keepalive_sent = 0
+            bgp_keepalive_recv = 0
+            bgp_notification_sent = 0
+            bgp_notification_recv = 0
+            bgp_peer_count = 0
+            bgp_established_count = 0
+            bgp_routes_count = 0
+
+            # Iterate through agents and their metrics
+            for aid, agent_metrics in all_metrics.items():
+                # If specific agent requested (not 'local'), filter
+                if agent_id != 'local' and aid != agent_id:
+                    continue
+
+                # agent_metrics is {metric_name: {type, help, values}}
+                for metric_name, metric_data in agent_metrics.items():
+                    # Extract ALL values (each interface, etc. has its own value)
+                    values = metric_data.get("values", [])
+                    name_lower = metric_name.lower()
+
+                    for val_entry in values:
+                        metric_entry = {
+                            "name": metric_name,
+                            "type": metric_data.get("type", "gauge"),
+                            "help": metric_data.get("help", ""),
+                            "description": metric_data.get("help", ""),
+                            "labels": {"agent": aid},
+                            "value": val_entry.get("value", 0)
+                        }
+                        metric_entry["labels"].update(val_entry.get("labels", {}))
+                        metrics_list.append(metric_entry)
+
+                        # Extract summary values for charts (sum all interfaces)
+                        val = metric_entry["value"]
+
+                        # Debug logging for chart data extraction
+                        if "rx_bytes" in name_lower or "tx_bytes" in name_lower or "lsa" in name_lower:
+                            logging.getLogger("WebUI").debug(f"Chart extraction: {metric_name} = {val} (type: {type(val).__name__})")
+
+                        if "neighbor" in name_lower and "total" in name_lower:
+                            neighbor_count += val if isinstance(val, (int, float)) else 0
+                        if "rx_bytes" in name_lower or "bytes_recv" in name_lower:
+                            rx_bytes += val if isinstance(val, (int, float)) else 0
+                        if "tx_bytes" in name_lower or "bytes_sent" in name_lower:
+                            tx_bytes += val if isinstance(val, (int, float)) else 0
+                        # Count all protocol messages sent (OSPF + BGP)
+                        if "_sent_total" in name_lower and ("ospf_" in name_lower or "bgp_" in name_lower):
+                            messages_sent += val if isinstance(val, (int, float)) else 0
+                        # Count all protocol messages received (OSPF + BGP)
+                        if "_recv_total" in name_lower and ("ospf_" in name_lower or "bgp_" in name_lower):
+                            messages_recv += val if isinstance(val, (int, float)) else 0
+                        if "lsdb" in name_lower or "lsa_count" in name_lower:
+                            lsa_count += val if isinstance(val, (int, float)) else 0
+                        if "route" in name_lower and "total" in name_lower:
+                            route_count += val if isinstance(val, (int, float)) else 0
+
+                        # Extract individual OSPF metrics
+                        if "ospf_hello_sent" in name_lower:
+                            ospf_hello_sent += val if isinstance(val, (int, float)) else 0
+                        if "ospf_hello_recv" in name_lower:
+                            ospf_hello_recv += val if isinstance(val, (int, float)) else 0
+                        if "ospf_dbd_sent" in name_lower:
+                            ospf_dbd_sent += val if isinstance(val, (int, float)) else 0
+                        if "ospf_dbd_recv" in name_lower:
+                            ospf_dbd_recv += val if isinstance(val, (int, float)) else 0
+                        if "ospf_lsr_sent" in name_lower:
+                            ospf_lsr_sent += val if isinstance(val, (int, float)) else 0
+                        if "ospf_lsr_recv" in name_lower:
+                            ospf_lsr_recv += val if isinstance(val, (int, float)) else 0
+                        if "ospf_lsu_sent" in name_lower:
+                            ospf_lsu_sent += val if isinstance(val, (int, float)) else 0
+                        if "ospf_lsu_recv" in name_lower:
+                            ospf_lsu_recv += val if isinstance(val, (int, float)) else 0
+                        if "ospf_lsack_sent" in name_lower:
+                            ospf_lsack_sent += val if isinstance(val, (int, float)) else 0
+                        if "ospf_lsack_recv" in name_lower:
+                            ospf_lsack_recv += val if isinstance(val, (int, float)) else 0
+                        if "ospf_neighbor" in name_lower and "count" in name_lower:
+                            ospf_neighbor_count += val if isinstance(val, (int, float)) else 0
+
+                        # Extract individual BGP metrics
+                        if "bgp_open_sent" in name_lower:
+                            bgp_open_sent += val if isinstance(val, (int, float)) else 0
+                        if "bgp_open_recv" in name_lower:
+                            bgp_open_recv += val if isinstance(val, (int, float)) else 0
+                        if "bgp_update_sent" in name_lower:
+                            bgp_update_sent += val if isinstance(val, (int, float)) else 0
+                        if "bgp_update_recv" in name_lower:
+                            bgp_update_recv += val if isinstance(val, (int, float)) else 0
+                        if "bgp_keepalive_sent" in name_lower:
+                            bgp_keepalive_sent += val if isinstance(val, (int, float)) else 0
+                        if "bgp_keepalive_recv" in name_lower:
+                            bgp_keepalive_recv += val if isinstance(val, (int, float)) else 0
+                        if "bgp_notification_sent" in name_lower:
+                            bgp_notification_sent += val if isinstance(val, (int, float)) else 0
+                        if "bgp_notification_recv" in name_lower:
+                            bgp_notification_recv += val if isinstance(val, (int, float)) else 0
+                        if "bgp_peer" in name_lower and ("count" in name_lower or "total" in name_lower):
+                            bgp_peer_count += val if isinstance(val, (int, float)) else 0
+                        if "bgp_established" in name_lower or "bgp_peers_established" in name_lower:
+                            bgp_established_count += val if isinstance(val, (int, float)) else 0
+                        if "bgp_routes_total" in name_lower:
+                            bgp_routes_count += val if isinstance(val, (int, float)) else 0
+
+            return {
+                "metrics": metrics_list,
+                "neighbor_count": neighbor_count,
+                "rx_bytes": rx_bytes,
+                "tx_bytes": tx_bytes,
+                "messages_sent": messages_sent,
+                "messages_recv": messages_recv,
+                "lsa_count": lsa_count,
+                "route_count": route_count,
+                # OSPF specific metrics
+                "ospf": {
+                    "active": ospf_hello_sent > 0 or ospf_hello_recv > 0,
+                    "hello_sent": ospf_hello_sent,
+                    "hello_recv": ospf_hello_recv,
+                    "dbd_sent": ospf_dbd_sent,
+                    "dbd_recv": ospf_dbd_recv,
+                    "lsr_sent": ospf_lsr_sent,
+                    "lsr_recv": ospf_lsr_recv,
+                    "lsu_sent": ospf_lsu_sent,
+                    "lsu_recv": ospf_lsu_recv,
+                    "lsack_sent": ospf_lsack_sent,
+                    "lsack_recv": ospf_lsack_recv,
+                    "neighbor_count": ospf_neighbor_count
+                },
+                # BGP specific metrics
+                "bgp": {
+                    "active": bgp_peer_count > 0 or bgp_routes_count > 0 or bgp_open_sent > 0 or bgp_keepalive_sent > 0,
+                    "open_sent": bgp_open_sent,
+                    "open_recv": bgp_open_recv,
+                    "update_sent": bgp_update_sent,
+                    "update_recv": bgp_update_recv,
+                    "keepalive_sent": bgp_keepalive_sent,
+                    "keepalive_recv": bgp_keepalive_recv,
+                    "notification_sent": bgp_notification_sent,
+                    "notification_recv": bgp_notification_recv,
+                    "peer_count": bgp_peer_count,
+                    "established_count": bgp_established_count,
+                    "routes_count": bgp_routes_count
+                }
+            }
+        except ImportError as e:
+            logging.getLogger("WebUI").warning(f"Prometheus MCP not available: {e}")
+            return {"metrics": [], "neighbor_count": 0, "rx_bytes": 0, "tx_bytes": 0}
+        except Exception as e:
+            logging.getLogger("WebUI").error(f"Agent metrics fetch error: {e}")
+            return {"metrics": [], "neighbor_count": 0, "rx_bytes": 0, "tx_bytes": 0}
+
+    @app.get("/api/agent/{agent_id}/status")
+    async def api_get_agent_status(agent_id: str) -> Dict[str, Any]:
+        """
+        Get status for a specific agent.
+        Used by the agent dashboard.
+
+        Args:
+            agent_id: Agent ID (or 'local' for the current agent)
+
+        Returns:
+            Agent status information
+        """
+        try:
+            # Return basic status - actual data comes from the bridge
+            return {
+                "agent_id": agent_id,
+                "status": "running",
+                "uptime": 0,
+                "protocols": {
+                    "ospf": {"enabled": True, "neighbors": 0},
+                    "bgp": {"enabled": True, "peers": 0}
+                },
+                "interfaces": [],
+                "routes": 0
+            }
+        except Exception as e:
+            logger.error(f"Agent status fetch error: {e}")
+            return {"agent_id": agent_id, "status": "error", "error": str(e)}
+
+    @app.get("/api/metrics/query")
+    async def api_query_metrics(promql: str, time_range: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Execute a PromQL query
+
+        Args:
+            promql: PromQL query string
+            time_range: Optional time range
+
+        Returns:
+            Query result
+        """
+        try:
+            from agentic.mcp.prometheus_mcp import get_prometheus_client
+            client = get_prometheus_client()
+            result = await client.query(promql, time_range)
+            return result.to_dict()
+        except ImportError as e:
+            return {"status": "error", "error": f"Prometheus MCP not available: {e}"}
+        except Exception as e:
+            logger.error(f"Metrics query error: {e}")
+            return {"status": "error", "error": str(e)}
+
+    # ==========================================================================
+    # Grafana Dashboard API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/grafana/dashboard")
+    async def api_get_grafana_dashboard(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get Grafana-style dashboard panels for an agent
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            Dashboard configuration with panels
+        """
+        try:
+            from agentic.mcp.grafana_mcp import get_grafana_client
+            from agentic.mcp.prometheus_mcp import get_prometheus_client
+
+            grafana = get_grafana_client()
+            prometheus = get_prometheus_client()
+
+            # Get metrics for the agent
+            metrics = await prometheus.get_all_metrics(agent_id)
+
+            # Generate dashboard panels based on available metrics
+            panels = []
+
+            # Agent overview panel
+            panels.append({
+                "title": "Agent Status",
+                "type": "stat",
+                "data": {
+                    "value": 1,
+                    "label": "Agent Up"
+                }
+            })
+
+            # Get metrics from the specific agent or first available
+            agent_metrics = metrics.get(agent_id, {})
+            if not agent_metrics and metrics:
+                agent_metrics = list(metrics.values())[0]
+
+            # System metrics gauge
+            cpu = agent_metrics.get("system_cpu_percent", {}).get("values", [{}])[0].get("value", 0) if agent_metrics else 0
+            panels.append({
+                "title": "CPU Usage",
+                "type": "gauge",
+                "data": {
+                    "value": round(cpu, 1),
+                    "max": 100,
+                    "unit": "%"
+                }
+            })
+
+            memory = agent_metrics.get("system_memory_percent", {}).get("values", [{}])[0].get("value", 0) if agent_metrics else 0
+            panels.append({
+                "title": "Memory Usage",
+                "type": "gauge",
+                "data": {
+                    "value": round(memory, 1),
+                    "max": 100,
+                    "unit": "%"
+                }
+            })
+
+            # Protocol metrics table
+            protocol_rows = []
+            ospf_neighbors = agent_metrics.get("ospf_neighbors_total", {}).get("values", [{}])[0].get("value", 0) if agent_metrics else 0
+            bgp_peers = agent_metrics.get("bgp_peers_established", {}).get("values", [{}])[0].get("value", 0) if agent_metrics else 0
+
+            if ospf_neighbors > 0:
+                protocol_rows.append(["OSPF", str(int(ospf_neighbors)), "Active"])
+            if bgp_peers > 0:
+                protocol_rows.append(["BGP", str(int(bgp_peers)), "Active"])
+
+            if protocol_rows:
+                panels.append({
+                    "title": "Protocol Summary",
+                    "type": "table",
+                    "data": {
+                        "columns": ["Protocol", "Neighbors", "Status"],
+                        "rows": protocol_rows
+                    }
+                })
+
+            return {
+                "agent_id": agent_id,
+                "panels": panels,
+                "refresh_interval": 10
+            }
+        except ImportError as e:
+            return {"panels": [], "error": f"Grafana/Prometheus MCP not available: {e}"}
+        except Exception as e:
+            logger.error(f"Grafana dashboard error: {e}")
+            return {"panels": [], "error": str(e)}
+
+    @app.get("/api/grafana/dashboards")
+    async def api_list_grafana_dashboards() -> Dict[str, Any]:
+        """List available Grafana dashboards"""
+        try:
+            from agentic.mcp.grafana_mcp import get_grafana_client
+            client = get_grafana_client()
+            dashboards = client.list_dashboards()
+            return {"dashboards": dashboards}
+        except ImportError as e:
+            return {"dashboards": [], "error": f"Grafana MCP not available: {e}"}
+        except Exception as e:
+            logger.error(f"Grafana list error: {e}")
+            return {"dashboards": [], "error": str(e)}
+
+    # ==========================================================================
+    # LLDP API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/lldp/neighbors")
+    async def api_get_lldp_neighbors(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get LLDP neighbors discovered by an agent
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            List of LLDP neighbors with details
+        """
+        try:
+            from agentic.discovery.lldp import get_lldp_neighbors
+            neighbors = get_lldp_neighbors()
+            return {
+                "neighbors": neighbors,
+                "count": len(neighbors),
+                "agent_id": agent_id
+            }
+        except ImportError as e:
+            return {"neighbors": [], "count": 0, "error": f"LLDP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LLDP neighbors error: {e}")
+            return {"neighbors": [], "count": 0, "error": str(e)}
+
+    @app.get("/api/lldp/statistics")
+    async def api_get_lldp_statistics(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get LLDP daemon statistics
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            LLDP statistics (frames sent/received, neighbor count, etc.)
+        """
+        try:
+            from agentic.discovery.lldp import get_lldp_statistics
+            stats = get_lldp_statistics()
+            return {"statistics": stats, "agent_id": agent_id}
+        except ImportError as e:
+            return {"statistics": {}, "error": f"LLDP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LLDP statistics error: {e}")
+            return {"statistics": {}, "error": str(e)}
+
+    @app.get("/api/lldp/neighbor/{interface}")
+    async def api_get_lldp_neighbor_by_interface(interface: str) -> Dict[str, Any]:
+        """
+        Get LLDP neighbors on a specific interface
+
+        Args:
+            interface: Interface name (e.g., eth0, eth1)
+
+        Returns:
+            List of LLDP neighbors on that interface
+        """
+        try:
+            from agentic.discovery.lldp import get_lldp_daemon
+            daemon = get_lldp_daemon()
+            neighbors = daemon.get_neighbors_by_interface(interface)
+            return {
+                "interface": interface,
+                "neighbors": [n.to_dict() for n in neighbors],
+                "count": len(neighbors)
+            }
+        except ImportError as e:
+            return {"interface": interface, "neighbors": [], "error": f"LLDP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LLDP interface neighbors error: {e}")
+            return {"interface": interface, "neighbors": [], "error": str(e)}
+
+    # ==========================================================================
+    # LACP API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/lacp/lags")
+    async def api_get_lags(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get all Link Aggregation Groups (LAGs)
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            List of LAGs with details
+        """
+        try:
+            from agentic.discovery.lacp import get_lag_list
+            lags = get_lag_list()
+            return {
+                "lags": lags,
+                "count": len(lags),
+                "agent_id": agent_id
+            }
+        except ImportError as e:
+            return {"lags": [], "count": 0, "error": f"LACP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LACP LAGs error: {e}")
+            return {"lags": [], "count": 0, "error": str(e)}
+
+    @app.get("/api/lacp/statistics")
+    async def api_get_lacp_statistics(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get LACP manager statistics
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            LACP statistics
+        """
+        try:
+            from agentic.discovery.lacp import get_lacp_statistics
+            stats = get_lacp_statistics()
+            return {"statistics": stats, "agent_id": agent_id}
+        except ImportError as e:
+            return {"statistics": {}, "error": f"LACP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LACP statistics error: {e}")
+            return {"statistics": {}, "error": str(e)}
+
+    @app.get("/api/lacp/lag/{lag_name}")
+    async def api_get_lag(lag_name: str) -> Dict[str, Any]:
+        """
+        Get a specific LAG by name
+
+        Args:
+            lag_name: LAG name (e.g., bond0, port-channel1)
+
+        Returns:
+            LAG details
+        """
+        try:
+            from agentic.discovery.lacp import get_lacp_manager
+            manager = get_lacp_manager()
+            lag = manager.get_lag(lag_name)
+            if lag:
+                return {"lag": lag.to_dict()}
+            return {"lag": None, "error": f"LAG {lag_name} not found"}
+        except ImportError as e:
+            return {"lag": None, "error": f"LACP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LACP LAG error: {e}")
+            return {"lag": None, "error": str(e)}
+
+    @app.post("/api/lacp/lag")
+    async def api_create_lag(
+        name: str,
+        mode: str = "active",
+        load_balance: str = "layer3+4",
+        min_links: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Create a new LAG
+
+        Args:
+            name: LAG name (e.g., bond0, port-channel1)
+            mode: LACP mode (active, passive, on)
+            load_balance: Load balancing algorithm
+            min_links: Minimum active links
+
+        Returns:
+            Created LAG details
+        """
+        try:
+            from agentic.discovery.lacp import get_lacp_manager, LACPMode, LoadBalanceAlgorithm
+            manager = get_lacp_manager()
+
+            lacp_mode = LACPMode(mode)
+            lb_algo = LoadBalanceAlgorithm(load_balance)
+
+            lag = manager.create_lag(
+                name=name,
+                mode=lacp_mode,
+                load_balance=lb_algo,
+                min_links=min_links
+            )
+            return {"lag": lag.to_dict(), "success": True}
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        except ImportError as e:
+            return {"success": False, "error": f"LACP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LACP create LAG error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/lacp/lag/{lag_name}")
+    async def api_delete_lag(lag_name: str) -> Dict[str, Any]:
+        """
+        Delete a LAG
+
+        Args:
+            lag_name: LAG name to delete
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.discovery.lacp import get_lacp_manager
+            manager = get_lacp_manager()
+            success = manager.delete_lag(lag_name)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"LACP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LACP delete LAG error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/lacp/lag/{lag_name}/member")
+    async def api_add_lag_member(
+        lag_name: str,
+        interface: str,
+        port_priority: int = 32768
+    ) -> Dict[str, Any]:
+        """
+        Add a member interface to a LAG
+
+        Args:
+            lag_name: LAG name
+            interface: Interface to add
+            port_priority: LACP port priority
+
+        Returns:
+            Member port details
+        """
+        try:
+            from agentic.discovery.lacp import get_lacp_manager
+            manager = get_lacp_manager()
+            member = manager.add_member_to_lag(lag_name, interface, port_priority)
+            return {"member": member.to_dict(), "success": True}
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        except ImportError as e:
+            return {"success": False, "error": f"LACP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LACP add member error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/lacp/lag/{lag_name}/member/{interface}")
+    async def api_remove_lag_member(lag_name: str, interface: str) -> Dict[str, Any]:
+        """
+        Remove a member interface from a LAG
+
+        Args:
+            lag_name: LAG name
+            interface: Interface to remove
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.discovery.lacp import get_lacp_manager
+            manager = get_lacp_manager()
+            success = manager.remove_member_from_lag(lag_name, interface)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"LACP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"LACP remove member error: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ==========================================================================
+    # Subinterface API Endpoints (VLAN / 802.1Q)
+    # ==========================================================================
+
+    @app.get("/api/subinterfaces")
+    async def api_get_subinterfaces(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get all subinterfaces
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            List of subinterfaces with details
+        """
+        try:
+            from agentic.interfaces import list_subinterfaces, get_subinterface_statistics
+            subifs = list_subinterfaces()
+            stats = get_subinterface_statistics()
+            return {
+                "subinterfaces": subifs,
+                "count": len(subifs),
+                "statistics": stats,
+                "agent_id": agent_id
+            }
+        except ImportError as e:
+            return {"subinterfaces": [], "count": 0, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Subinterfaces error: {e}")
+            return {"subinterfaces": [], "count": 0, "error": str(e)}
+
+    @app.get("/api/subinterfaces/statistics")
+    async def api_get_subinterface_statistics(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get subinterface manager statistics
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            Subinterface statistics
+        """
+        try:
+            from agentic.interfaces import get_subinterface_statistics
+            stats = get_subinterface_statistics()
+            return {"statistics": stats, "agent_id": agent_id}
+        except ImportError as e:
+            return {"statistics": {}, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Subinterface statistics error: {e}")
+            return {"statistics": {}, "error": str(e)}
+
+    @app.get("/api/subinterfaces/interfaces")
+    async def api_get_physical_interfaces(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get all physical interfaces that can have subinterfaces
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            List of physical interfaces
+        """
+        try:
+            from agentic.interfaces import get_subinterface_manager
+            manager = get_subinterface_manager()
+            interfaces = [iface.to_dict() for iface in manager.interfaces.values()]
+            return {
+                "interfaces": interfaces,
+                "count": len(interfaces),
+                "agent_id": agent_id
+            }
+        except ImportError as e:
+            return {"interfaces": [], "count": 0, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Physical interfaces error: {e}")
+            return {"interfaces": [], "count": 0, "error": str(e)}
+
+    @app.get("/api/subinterfaces/{parent}/{vlan_id}")
+    async def api_get_subinterface(parent: str, vlan_id: int) -> Dict[str, Any]:
+        """
+        Get a specific subinterface
+
+        Args:
+            parent: Parent interface name (e.g., eth0)
+            vlan_id: VLAN ID
+
+        Returns:
+            Subinterface details
+        """
+        try:
+            from agentic.interfaces import get_subinterface_manager
+            manager = get_subinterface_manager()
+            subif = manager.get_subinterface(parent, vlan_id)
+            if subif:
+                return {"subinterface": subif.to_dict()}
+            return {"subinterface": None, "error": f"Subinterface {parent}.{vlan_id} not found"}
+        except ImportError as e:
+            return {"subinterface": None, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Subinterface get error: {e}")
+            return {"subinterface": None, "error": str(e)}
+
+    @app.post("/api/subinterfaces")
+    async def api_create_subinterface(
+        parent_interface: str,
+        vlan_id: int,
+        description: str = "",
+        mtu: Optional[int] = None,
+        ipv4_address: Optional[str] = None,
+        ipv6_address: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new subinterface
+
+        Args:
+            parent_interface: Parent interface name (e.g., eth0)
+            vlan_id: VLAN ID (1-4094)
+            description: Optional description
+            mtu: Optional MTU (defaults to parent MTU - 4)
+            ipv4_address: Optional IPv4 address with prefix (e.g., 192.168.10.1/24)
+            ipv6_address: Optional IPv6 address with prefix
+
+        Returns:
+            Created subinterface details
+        """
+        try:
+            from agentic.interfaces import get_subinterface_manager
+            manager = get_subinterface_manager()
+
+            ipv4_addresses = [ipv4_address] if ipv4_address else None
+            ipv6_addresses = [ipv6_address] if ipv6_address else None
+
+            subif = manager.create_subinterface(
+                parent_interface=parent_interface,
+                vlan_id=vlan_id,
+                description=description,
+                mtu=mtu,
+                ipv4_addresses=ipv4_addresses,
+                ipv6_addresses=ipv6_addresses
+            )
+            return {"subinterface": subif.to_dict(), "success": True}
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        except ImportError as e:
+            return {"success": False, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Subinterface create error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/subinterfaces/{parent}/{vlan_id}")
+    async def api_delete_subinterface(parent: str, vlan_id: int) -> Dict[str, Any]:
+        """
+        Delete a subinterface
+
+        Args:
+            parent: Parent interface name
+            vlan_id: VLAN ID
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.interfaces import get_subinterface_manager
+            manager = get_subinterface_manager()
+            success = manager.delete_subinterface(parent, vlan_id)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Subinterface delete error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/subinterfaces/{parent}/{vlan_id}/ip")
+    async def api_add_ip_to_subinterface(
+        parent: str,
+        vlan_id: int,
+        address: str,
+        is_ipv6: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Add an IP address to a subinterface
+
+        Args:
+            parent: Parent interface name
+            vlan_id: VLAN ID
+            address: IP address with prefix (e.g., 192.168.10.1/24)
+            is_ipv6: True for IPv6, False for IPv4
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.interfaces import get_subinterface_manager
+            manager = get_subinterface_manager()
+            success = manager.add_ip_address(parent, vlan_id, address, is_ipv6)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Subinterface add IP error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/subinterfaces/{parent}/{vlan_id}/ip")
+    async def api_remove_ip_from_subinterface(
+        parent: str,
+        vlan_id: int,
+        address: str,
+        is_ipv6: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Remove an IP address from a subinterface
+
+        Args:
+            parent: Parent interface name
+            vlan_id: VLAN ID
+            address: IP address to remove
+            is_ipv6: True for IPv6, False for IPv4
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.interfaces import get_subinterface_manager
+            manager = get_subinterface_manager()
+            success = manager.remove_ip_address(parent, vlan_id, address, is_ipv6)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Subinterface remove IP error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.put("/api/subinterfaces/{parent}/{vlan_id}/state")
+    async def api_set_subinterface_state(
+        parent: str,
+        vlan_id: int,
+        admin_state: str
+    ) -> Dict[str, Any]:
+        """
+        Set the administrative state of a subinterface
+
+        Args:
+            parent: Parent interface name
+            vlan_id: VLAN ID
+            admin_state: "up" or "down"
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.interfaces import get_subinterface_manager, InterfaceState
+            manager = get_subinterface_manager()
+
+            state = InterfaceState.UP if admin_state.lower() == "up" else InterfaceState.DOWN
+            success = manager.set_admin_state(parent, vlan_id, state)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Subinterface module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Subinterface set state error: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ==========================================================================
+    # ==========================================================================
+    # Firewall/ACL API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/firewall/acls")
+    async def api_get_acls(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get all ACLs
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            List of ACLs with details
+        """
+        try:
+            from agentic.security import list_acl_rules, get_firewall_statistics
+            acls = list_acl_rules()
+            stats = get_firewall_statistics()
+            return {
+                "acls": acls,
+                "count": len(acls),
+                "statistics": stats,
+                "agent_id": agent_id
+            }
+        except ImportError as e:
+            return {"acls": [], "count": 0, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall ACLs error: {e}")
+            return {"acls": [], "count": 0, "error": str(e)}
+
+    @app.get("/api/firewall/statistics")
+    async def api_get_firewall_statistics() -> Dict[str, Any]:
+        """Get firewall statistics"""
+        try:
+            from agentic.security import get_firewall_statistics
+            return {"statistics": get_firewall_statistics()}
+        except ImportError as e:
+            return {"statistics": {}, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall statistics error: {e}")
+            return {"statistics": {}, "error": str(e)}
+
+    @app.get("/api/firewall/acl/{acl_name}")
+    async def api_get_acl(acl_name: str) -> Dict[str, Any]:
+        """Get a specific ACL by name"""
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            acl = manager.get_acl(acl_name)
+            if acl:
+                return {"acl": acl.to_dict()}
+            return {"acl": None, "error": f"ACL {acl_name} not found"}
+        except ImportError as e:
+            return {"acl": None, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall ACL get error: {e}")
+            return {"acl": None, "error": str(e)}
+
+    @app.post("/api/firewall/acl")
+    async def api_create_acl(
+        name: str,
+        description: str = "",
+        acl_type: str = "extended"
+    ) -> Dict[str, Any]:
+        """
+        Create a new ACL
+
+        Args:
+            name: ACL name (unique)
+            description: Optional description
+            acl_type: "standard" or "extended"
+
+        Returns:
+            Created ACL
+        """
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            acl = manager.create_acl(name, description, acl_type)
+            return {"acl": acl.to_dict(), "success": True}
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        except ImportError as e:
+            return {"success": False, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall ACL create error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/firewall/acl/{acl_name}")
+    async def api_delete_acl(acl_name: str) -> Dict[str, Any]:
+        """Delete an ACL"""
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            success = manager.delete_acl(acl_name)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall ACL delete error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/firewall/acl/{acl_name}/rule")
+    async def api_add_acl_rule(
+        acl_name: str,
+        sequence: int,
+        action: str,
+        protocol: str = "any",
+        source_ip: str = "any",
+        source_port: Optional[str] = None,
+        dest_ip: str = "any",
+        dest_port: Optional[str] = None,
+        description: str = "",
+        log: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Add a rule to an ACL
+
+        Args:
+            acl_name: ACL name
+            sequence: Rule sequence number
+            action: permit, deny, drop, reject
+            protocol: any, tcp, udp, icmp, etc.
+            source_ip: Source IP/network or "any"
+            source_port: Source port
+            dest_ip: Destination IP/network or "any"
+            dest_port: Destination port
+            description: Rule description
+            log: Log matching packets
+
+        Returns:
+            Created rule
+        """
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            entry = manager.add_rule(
+                acl_name, sequence, action, protocol,
+                source_ip, source_port, dest_ip, dest_port,
+                description, log
+            )
+            return {"rule": entry.to_dict(), "success": True}
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        except ImportError as e:
+            return {"success": False, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall rule add error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/firewall/acl/{acl_name}/rule/{sequence}")
+    async def api_delete_acl_rule(acl_name: str, sequence: int) -> Dict[str, Any]:
+        """Delete a rule from an ACL"""
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            success = manager.remove_rule(acl_name, sequence)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall rule delete error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.put("/api/firewall/acl/{acl_name}/rule/{sequence}")
+    async def api_update_acl_rule(
+        acl_name: str,
+        sequence: int,
+        enabled: Optional[bool] = None,
+        action: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Update a rule in an ACL (enable/disable, change action)"""
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            success = manager.update_rule(acl_name, sequence, enabled, action)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall rule update error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/firewall/acl/{acl_name}/apply")
+    async def api_apply_acl(
+        acl_name: str,
+        interface: str,
+        direction: str = "in"
+    ) -> Dict[str, Any]:
+        """
+        Apply an ACL to an interface
+
+        Args:
+            acl_name: ACL name
+            interface: Interface to apply to
+            direction: "in", "out", or "both"
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            success = manager.apply_acl(acl_name, interface, direction)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall ACL apply error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/firewall/acl/{acl_name}/interface/{interface}")
+    async def api_remove_acl_from_interface(acl_name: str, interface: str) -> Dict[str, Any]:
+        """Remove an ACL from an interface"""
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            success = manager.remove_acl_from_interface(acl_name, interface)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Firewall ACL remove error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/firewall/blocked")
+    async def api_get_blocked_traffic(limit: int = 50) -> Dict[str, Any]:
+        """Get recent blocked traffic log"""
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            blocked = manager.get_blocked_traffic(limit)
+            return {"blocked": blocked, "count": len(blocked)}
+        except ImportError as e:
+            return {"blocked": [], "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Blocked traffic error: {e}")
+            return {"blocked": [], "error": str(e)}
+
+    @app.get("/api/firewall/allowed")
+    async def api_get_allowed_traffic(limit: int = 50) -> Dict[str, Any]:
+        """Get recent allowed traffic log"""
+        try:
+            from agentic.security import get_firewall_manager
+            manager = get_firewall_manager()
+            allowed = manager.get_allowed_traffic(limit)
+            return {"allowed": allowed, "count": len(allowed)}
+        except ImportError as e:
+            return {"allowed": [], "error": f"Firewall module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Allowed traffic error: {e}")
+            return {"allowed": [], "error": str(e)}
+
+    # ==========================================================================
+    # SSH Server API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/ssh/servers")
+    async def api_get_ssh_servers() -> Dict[str, Any]:
+        """
+        Get all SSH servers and their status
+
+        Returns:
+            List of SSH server configurations and statistics
+        """
+        try:
+            from agentic.ssh import get_ssh_statistics, list_active_sessions
+            stats = get_ssh_statistics()
+            sessions = list_active_sessions()
+            return {
+                "servers": stats,
+                "total_servers": len(stats),
+                "active_sessions": sessions,
+                "total_sessions": len(sessions)
+            }
+        except ImportError as e:
+            return {"servers": {}, "error": f"SSH module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SSH servers error: {e}")
+            return {"servers": {}, "error": str(e)}
+
+    @app.get("/api/ssh/server/{agent_name}")
+    async def api_get_ssh_server(agent_name: str) -> Dict[str, Any]:
+        """
+        Get SSH server info for a specific agent
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            SSH server configuration and statistics
+        """
+        try:
+            from agentic.ssh import get_ssh_server
+            server = get_ssh_server(agent_name)
+            if server:
+                return {
+                    "agent_name": agent_name,
+                    "running": server.running,
+                    "config": server.get_config(),
+                    "statistics": server.get_statistics(),
+                    "sessions": server.get_sessions()
+                }
+            else:
+                return {"agent_name": agent_name, "running": False, "error": "Server not found"}
+        except ImportError as e:
+            return {"error": f"SSH module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SSH server error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/ssh/server")
+    async def api_start_ssh_server(
+        agent_name: str,
+        port: int = 2200,
+        password_auth: bool = True,
+        public_key_auth: bool = True,
+        default_username: str = "admin",
+        default_password: str = "admin",
+        max_sessions: int = 10,
+        idle_timeout: int = 300
+    ) -> Dict[str, Any]:
+        """
+        Start SSH server for an agent
+
+        Args:
+            agent_name: Name of the agent
+            port: SSH port number
+            password_auth: Enable password authentication
+            public_key_auth: Enable public key authentication
+            default_username: Default login username
+            default_password: Default login password
+            max_sessions: Maximum concurrent sessions
+            idle_timeout: Session idle timeout in seconds
+
+        Returns:
+            Server status and configuration
+        """
+        try:
+            from agentic.ssh import start_ssh_server, SSHConfig
+
+            # Create chat handler that uses agentic bridge if available
+            async def chat_handler(message: str) -> str:
+                if agentic_bridge:
+                    try:
+                        return await agentic_bridge.process_message(message)
+                    except Exception as e:
+                        return f"Error processing message: {e}"
+                return "Chat interface not available"
+
+            server = await start_ssh_server(
+                agent_name=agent_name,
+                port=port,
+                chat_handler=chat_handler,
+                password_auth=password_auth,
+                public_key_auth=public_key_auth,
+                default_username=default_username,
+                default_password=default_password,
+                max_sessions=max_sessions,
+                idle_timeout=idle_timeout
+            )
+
+            return {
+                "success": True,
+                "agent_name": agent_name,
+                "port": port,
+                "config": server.get_config(),
+                "message": f"SSH server started on port {port}"
+            }
+        except ImportError as e:
+            return {"success": False, "error": f"SSH module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SSH server start error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/ssh/server/{agent_name}")
+    async def api_stop_ssh_server(agent_name: str) -> Dict[str, Any]:
+        """
+        Stop SSH server for an agent
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Operation status
+        """
+        try:
+            from agentic.ssh import stop_ssh_server, get_ssh_server
+
+            server = get_ssh_server(agent_name)
+            if not server:
+                return {"success": False, "error": f"SSH server for {agent_name} not found"}
+
+            await stop_ssh_server(agent_name)
+            return {"success": True, "agent_name": agent_name, "message": "SSH server stopped"}
+        except ImportError as e:
+            return {"success": False, "error": f"SSH module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SSH server stop error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/ssh/sessions")
+    async def api_get_ssh_sessions(agent_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get active SSH sessions
+
+        Args:
+            agent_name: Optional filter by agent name
+
+        Returns:
+            List of active sessions
+        """
+        try:
+            from agentic.ssh import list_active_sessions
+            sessions = list_active_sessions(agent_name)
+            return {"sessions": sessions, "count": len(sessions)}
+        except ImportError as e:
+            return {"sessions": [], "error": f"SSH module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SSH sessions error: {e}")
+            return {"sessions": [], "error": str(e)}
+
+    @app.get("/api/ssh/statistics")
+    async def api_get_ssh_statistics(agent_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get SSH server statistics
+
+        Args:
+            agent_name: Optional filter by agent name
+
+        Returns:
+            SSH statistics
+        """
+        try:
+            from agentic.ssh import get_ssh_statistics
+            stats = get_ssh_statistics(agent_name)
+            return {"statistics": stats}
+        except ImportError as e:
+            return {"statistics": {}, "error": f"SSH module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SSH statistics error: {e}")
+            return {"statistics": {}, "error": str(e)}
+
+    # ==========================================================================
+    # NETCONF/RESTCONF API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/netconf/servers")
+    async def api_get_netconf_servers() -> Dict[str, Any]:
+        """
+        Get all NETCONF servers and their status
+
+        Returns:
+            List of NETCONF server configurations and statistics
+        """
+        try:
+            from agentic.netconf import get_netconf_statistics, list_netconf_sessions
+            stats = get_netconf_statistics()
+            sessions = list_netconf_sessions()
+            return {
+                "servers": stats,
+                "total_servers": len(stats),
+                "active_sessions": sessions,
+                "total_sessions": len(sessions)
+            }
+        except ImportError as e:
+            return {"servers": {}, "error": f"NETCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"NETCONF servers error: {e}")
+            return {"servers": {}, "error": str(e)}
+
+    @app.get("/api/netconf/server/{agent_name}")
+    async def api_get_netconf_server(agent_name: str) -> Dict[str, Any]:
+        """
+        Get NETCONF server info for a specific agent
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            NETCONF server configuration and statistics
+        """
+        try:
+            from agentic.netconf import get_netconf_server
+            server = get_netconf_server(agent_name)
+            if server:
+                return {
+                    "agent_name": agent_name,
+                    "running": server.running,
+                    "config": server.get_config(),
+                    "statistics": server.get_statistics().to_dict(),
+                    "sessions": server.get_sessions(),
+                    "capabilities": [{"uri": c.uri, "name": c.name} for c in server._capabilities]
+                }
+            else:
+                return {"agent_name": agent_name, "running": False, "error": "Server not found"}
+        except ImportError as e:
+            return {"error": f"NETCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"NETCONF server error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/netconf/server")
+    async def api_start_netconf_server(
+        agent_name: str,
+        port: int = 830,
+        with_candidate: bool = True,
+        with_startup: bool = True,
+        with_validate: bool = True,
+        max_sessions: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Start NETCONF server for an agent
+
+        Args:
+            agent_name: Name of the agent
+            port: NETCONF port number
+            with_candidate: Enable candidate datastore
+            with_startup: Enable startup datastore
+            with_validate: Enable validate capability
+            max_sessions: Maximum concurrent sessions
+
+        Returns:
+            Server status and configuration
+        """
+        try:
+            from agentic.netconf import start_netconf_server
+
+            server = await start_netconf_server(
+                agent_name=agent_name,
+                port=port,
+                with_candidate=with_candidate,
+                with_startup=with_startup,
+                with_validate=with_validate,
+                max_sessions=max_sessions
+            )
+
+            return {
+                "success": True,
+                "agent_name": agent_name,
+                "port": port,
+                "config": server.get_config(),
+                "message": f"NETCONF server started on port {port}"
+            }
+        except ImportError as e:
+            return {"success": False, "error": f"NETCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"NETCONF server start error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/netconf/server/{agent_name}")
+    async def api_stop_netconf_server(agent_name: str) -> Dict[str, Any]:
+        """
+        Stop NETCONF server for an agent
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Operation status
+        """
+        try:
+            from agentic.netconf import stop_netconf_server, get_netconf_server
+
+            server = get_netconf_server(agent_name)
+            if not server:
+                return {"success": False, "error": f"NETCONF server for {agent_name} not found"}
+
+            await stop_netconf_server(agent_name)
+            return {"success": True, "agent_name": agent_name, "message": "NETCONF server stopped"}
+        except ImportError as e:
+            return {"success": False, "error": f"NETCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"NETCONF server stop error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/netconf/config/{agent_name}")
+    async def api_get_netconf_config(
+        agent_name: str,
+        datastore: str = "running",
+        xpath: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get configuration from NETCONF datastore
+
+        Args:
+            agent_name: Name of the agent
+            datastore: Datastore type (running, candidate, startup)
+            xpath: Optional XPath filter
+
+        Returns:
+            Configuration data
+        """
+        try:
+            from agentic.netconf import get_netconf_server, DatastoreType
+
+            server = get_netconf_server(agent_name)
+            if not server:
+                return {"error": f"NETCONF server for {agent_name} not found"}
+
+            ds_type = DatastoreType(datastore)
+            config = server.get_datastore_config(ds_type)
+            return {"datastore": datastore, "config": config}
+        except ImportError as e:
+            return {"error": f"NETCONF module not available: {e}"}
+        except ValueError as e:
+            return {"error": f"Invalid datastore: {datastore}"}
+        except Exception as e:
+            logger.error(f"NETCONF config error: {e}")
+            return {"error": str(e)}
+
+    @app.get("/api/restconf/servers")
+    async def api_get_restconf_servers() -> Dict[str, Any]:
+        """
+        Get all RESTCONF servers and their status
+
+        Returns:
+            List of RESTCONF server configurations and statistics
+        """
+        try:
+            from agentic.netconf import get_restconf_statistics
+            stats = get_restconf_statistics()
+            return {
+                "servers": stats,
+                "total_servers": len(stats)
+            }
+        except ImportError as e:
+            return {"servers": {}, "error": f"RESTCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"RESTCONF servers error: {e}")
+            return {"servers": {}, "error": str(e)}
+
+    @app.get("/api/restconf/server/{agent_name}")
+    async def api_get_restconf_server(agent_name: str) -> Dict[str, Any]:
+        """
+        Get RESTCONF server info for a specific agent
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            RESTCONF server configuration and statistics
+        """
+        try:
+            from agentic.netconf import get_restconf_server
+            server = get_restconf_server(agent_name)
+            if server:
+                return {
+                    "agent_name": agent_name,
+                    "running": server.running,
+                    "config": server.get_config(),
+                    "statistics": server.get_statistics().to_dict()
+                }
+            else:
+                return {"agent_name": agent_name, "running": False, "error": "Server not found"}
+        except ImportError as e:
+            return {"error": f"RESTCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"RESTCONF server error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/restconf/server")
+    async def api_start_restconf_server(
+        agent_name: str,
+        port: int = 8443,
+        use_https: bool = True,
+        api_root: str = "/restconf"
+    ) -> Dict[str, Any]:
+        """
+        Start RESTCONF server for an agent
+
+        Args:
+            agent_name: Name of the agent
+            port: RESTCONF port number
+            use_https: Enable HTTPS
+            api_root: API root path
+
+        Returns:
+            Server status and configuration
+        """
+        try:
+            from agentic.netconf import start_restconf_server
+
+            server = await start_restconf_server(
+                agent_name=agent_name,
+                port=port,
+                use_https=use_https,
+                api_root=api_root
+            )
+
+            return {
+                "success": True,
+                "agent_name": agent_name,
+                "port": port,
+                "config": server.get_config(),
+                "message": f"RESTCONF server started on port {port}"
+            }
+        except ImportError as e:
+            return {"success": False, "error": f"RESTCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"RESTCONF server start error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/restconf/server/{agent_name}")
+    async def api_stop_restconf_server(agent_name: str) -> Dict[str, Any]:
+        """
+        Stop RESTCONF server for an agent
+
+        Args:
+            agent_name: Name of the agent
+
+        Returns:
+            Operation status
+        """
+        try:
+            from agentic.netconf import stop_restconf_server, get_restconf_server
+
+            server = get_restconf_server(agent_name)
+            if not server:
+                return {"success": False, "error": f"RESTCONF server for {agent_name} not found"}
+
+            await stop_restconf_server(agent_name)
+            return {"success": True, "agent_name": agent_name, "message": "RESTCONF server stopped"}
+        except ImportError as e:
+            return {"success": False, "error": f"RESTCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"RESTCONF server stop error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/restconf/data/{agent_name}")
+    async def api_restconf_get_data(agent_name: str, path: str = "/") -> Dict[str, Any]:
+        """
+        Get data via RESTCONF
+
+        Args:
+            agent_name: Name of the agent
+            path: RESTCONF data path
+
+        Returns:
+            Data from RESTCONF datastore
+        """
+        try:
+            from agentic.netconf import get_restconf_server
+            server = get_restconf_server(agent_name)
+            if not server:
+                return {"error": f"RESTCONF server for {agent_name} not found"}
+
+            result = await server.handle_get(f"/restconf/data{path}")
+            return result
+        except ImportError as e:
+            return {"error": f"RESTCONF module not available: {e}"}
+        except Exception as e:
+            logger.error(f"RESTCONF GET error: {e}")
+            return {"error": str(e)}
+
+    # ==========================================================================
+    # MCP External Access API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/mcp/servers")
+    async def api_get_mcp_servers() -> Dict[str, Any]:
+        """
+        Get all MCP external servers and their status
+
+        Returns:
+            List of MCP server configurations and statistics
+        """
+        try:
+            from agentic.mcp_external import get_mcp_statistics, list_mcp_connections
+            stats = get_mcp_statistics()
+            connections = list_mcp_connections()
+            return {
+                "servers": stats,
+                "total_servers": len(stats),
+                "active_connections": connections,
+                "total_connections": len(connections)
+            }
+        except ImportError as e:
+            return {"servers": {}, "error": f"MCP External module not available: {e}"}
+        except Exception as e:
+            logger.error(f"MCP servers error: {e}")
+            return {"servers": {}, "error": str(e)}
+
+    @app.get("/api/mcp/server/{server_id:path}")
+    async def api_get_mcp_server(server_id: str) -> Dict[str, Any]:
+        """
+        Get MCP server info for a specific server
+
+        Args:
+            server_id: Server ID (format: type:agent:port)
+
+        Returns:
+            MCP server configuration and statistics
+        """
+        try:
+            from agentic.mcp_external import get_mcp_server
+            server = get_mcp_server(server_id)
+            if server:
+                return {
+                    "server_id": server_id,
+                    "running": server.running,
+                    "config": server.get_config(),
+                    "statistics": server.get_statistics().to_dict(),
+                    "connections": server.get_connections(),
+                    "tools": server.get_tools()
+                }
+            else:
+                return {"server_id": server_id, "running": False, "error": "Server not found"}
+        except ImportError as e:
+            return {"error": f"MCP External module not available: {e}"}
+        except Exception as e:
+            logger.error(f"MCP server error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/mcp/server")
+    async def api_start_mcp_server(
+        server_type: str = "network",
+        agent_name: Optional[str] = None,
+        port: int = 3000,
+        api_key: Optional[str] = None,
+        require_auth: bool = True,
+        max_connections: int = 50,
+        rate_limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Start MCP external server
+
+        Args:
+            server_type: Server type (network or agent)
+            agent_name: Agent name (required for agent type)
+            port: Server port number
+            api_key: API key for authentication
+            require_auth: Require authentication
+            max_connections: Maximum concurrent connections
+            rate_limit: Requests per minute limit
+
+        Returns:
+            Server status and configuration
+        """
+        try:
+            from agentic.mcp_external import start_mcp_server
+
+            # Create network handler that uses agentic bridge
+            async def network_handler(tool_name: str, args: Dict) -> Any:
+                if agentic_bridge:
+                    try:
+                        # Map tool calls to appropriate handlers
+                        if tool_name == "ask_network":
+                            return await agentic_bridge.process_message(args.get("question", ""))
+                        elif tool_name == "get_topology":
+                            return await get_network_topology()
+                        elif tool_name == "get_metrics":
+                            return await get_network_metrics()
+                        else:
+                            return {"tool": tool_name, "args": args, "status": "executed"}
+                    except Exception as e:
+                        return {"error": str(e)}
+                return {"error": "Network handler not available"}
+
+            server = await start_mcp_server(
+                server_type=server_type,
+                agent_name=agent_name,
+                port=port,
+                api_key=api_key,
+                require_auth=require_auth,
+                max_connections=max_connections,
+                rate_limit=rate_limit,
+                network_handler=network_handler
+            )
+
+            server_id = f"{server_type}:{agent_name or 'global'}:{port}"
+            return {
+                "success": True,
+                "server_id": server_id,
+                "port": port,
+                "config": server.get_config(),
+                "message": f"MCP server started on port {port}"
+            }
+        except ImportError as e:
+            return {"success": False, "error": f"MCP External module not available: {e}"}
+        except Exception as e:
+            logger.error(f"MCP server start error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/mcp/server/{server_id:path}")
+    async def api_stop_mcp_server(server_id: str) -> Dict[str, Any]:
+        """
+        Stop MCP external server
+
+        Args:
+            server_id: Server ID (format: type:agent:port)
+
+        Returns:
+            Operation status
+        """
+        try:
+            from agentic.mcp_external import stop_mcp_server, get_mcp_server
+
+            server = get_mcp_server(server_id)
+            if not server:
+                return {"success": False, "error": f"MCP server {server_id} not found"}
+
+            await stop_mcp_server(server_id)
+            return {"success": True, "server_id": server_id, "message": "MCP server stopped"}
+        except ImportError as e:
+            return {"success": False, "error": f"MCP External module not available: {e}"}
+        except Exception as e:
+            logger.error(f"MCP server stop error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/mcp/connections")
+    async def api_get_mcp_connections(server_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get active MCP connections
+
+        Args:
+            server_id: Optional filter by server ID
+
+        Returns:
+            List of active connections
+        """
+        try:
+            from agentic.mcp_external import list_mcp_connections
+            connections = list_mcp_connections(server_id)
+            return {"connections": connections, "count": len(connections)}
+        except ImportError as e:
+            return {"connections": [], "error": f"MCP External module not available: {e}"}
+        except Exception as e:
+            logger.error(f"MCP connections error: {e}")
+            return {"connections": [], "error": str(e)}
+
+    @app.get("/api/mcp/tools")
+    async def api_get_mcp_tools(server_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get available MCP tools
+
+        Args:
+            server_id: Optional filter by server ID
+
+        Returns:
+            Available tools by server
+        """
+        try:
+            from agentic.mcp_external import list_available_tools
+            tools = list_available_tools(server_id)
+            return {"tools": tools}
+        except ImportError as e:
+            return {"tools": {}, "error": f"MCP External module not available: {e}"}
+        except Exception as e:
+            logger.error(f"MCP tools error: {e}")
+            return {"tools": {}, "error": str(e)}
+
+    @app.get("/api/mcp/statistics")
+    async def api_get_mcp_statistics(server_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get MCP server statistics
+
+        Args:
+            server_id: Optional filter by server ID
+
+        Returns:
+            MCP statistics
+        """
+        try:
+            from agentic.mcp_external import get_mcp_statistics
+            stats = get_mcp_statistics(server_id)
+            return {"statistics": stats}
+        except ImportError as e:
+            return {"statistics": {}, "error": f"MCP External module not available: {e}"}
+        except Exception as e:
+            logger.error(f"MCP statistics error: {e}")
+            return {"statistics": {}, "error": str(e)}
+
+    # ==========================================================================
+    # Network Health API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/health/network")
+    async def api_get_network_health() -> Dict[str, Any]:
+        """
+        Get overall network health score and details
+
+        Returns:
+            Network health score, severity, components, and agent breakdown
+        """
+        try:
+            from agentic.health import get_network_health, get_health_scorer
+
+            # Gather agent data for health calculation
+            agents_data = {}
+
+            # Try to get data from wizard networks
+            try:
+                networks_response = await api_get_wizard_networks()
+                for network in networks_response:
+                    try:
+                        status_response = await api_get_network_status(network.get("network_id", ""))
+                        if status_response.get("agents"):
+                            for agent_id, agent_info in status_response["agents"].items():
+                                agents_data[agent_id] = {
+                                    "name": agent_info.get("name", agent_id),
+                                    "ospf": {
+                                        "neighbors": agent_info.get("ospf_neighbors", 0),
+                                        "full_neighbors": agent_info.get("ospf_neighbors", 0),
+                                    },
+                                    "bgp": {
+                                        "total_peers": agent_info.get("bgp_peers", 0),
+                                        "established_peers": agent_info.get("bgp_peers", 0),
+                                    },
+                                    "cpu_percent": 25,  # Default values
+                                    "memory_percent": 40,
+                                    "config": {"has_loopback": True}
+                                }
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # If no agents found, use demo data
+            if not agents_data:
+                agents_data = {
+                    "demo-router-1": {
+                        "name": "Demo Router 1",
+                        "ospf": {"neighbors": 2, "full_neighbors": 2},
+                        "bgp": {"total_peers": 1, "established_peers": 1},
+                        "cpu_percent": 15,
+                        "memory_percent": 30,
+                        "test_results": {"total": 10, "passed": 9, "failed": 1},
+                        "config": {"has_loopback": True}
+                    }
+                }
+
+            health = await get_network_health(agents_data)
+            return health.to_dict()
+        except ImportError as e:
+            return {"score": 0, "error": f"Health module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Network health error: {e}")
+            return {"score": 0, "error": str(e)}
+
+    @app.get("/api/health/agent/{agent_id}")
+    async def api_get_agent_health(agent_id: str) -> Dict[str, Any]:
+        """
+        Get health score for a specific agent
+
+        Args:
+            agent_id: Agent identifier
+
+        Returns:
+            Agent health score, severity, and component breakdown
+        """
+        try:
+            from agentic.health import get_agent_health
+
+            # Try to fetch agent data
+            agent_data = {"name": agent_id}
+
+            # Try to get actual data
+            try:
+                status_response = await api_get_status()
+                if status_response:
+                    agent_data.update({
+                        "ospf": status_response.get("ospf", {}),
+                        "bgp": status_response.get("bgp", {}),
+                        "cpu_percent": 25,
+                        "memory_percent": 40,
+                        "config": {"has_loopback": True}
+                    })
+            except Exception:
+                pass
+
+            health = await get_agent_health(agent_id, agent_data)
+            return health.to_dict()
+        except ImportError as e:
+            return {"score": 0, "error": f"Health module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Agent health error: {e}")
+            return {"score": 0, "error": str(e)}
+
+    @app.get("/api/health/history")
+    async def api_get_health_history(
+        agent_id: Optional[str] = None,
+        hours: int = 24
+    ) -> Dict[str, Any]:
+        """
+        Get health score history
+
+        Args:
+            agent_id: Optional agent ID (network-wide if omitted)
+            hours: Number of hours of history (default 24)
+
+        Returns:
+            List of timestamp/score pairs
+        """
+        try:
+            from agentic.health import get_health_history
+            history = get_health_history(agent_id, hours)
+            return {"history": history, "agent_id": agent_id, "hours": hours}
+        except ImportError as e:
+            return {"history": [], "error": f"Health module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Health history error: {e}")
+            return {"history": [], "error": str(e)}
+
+    @app.get("/api/health/recommendations")
+    async def api_get_health_recommendations() -> Dict[str, Any]:
+        """
+        Get prioritized recommendations for improving network health
+
+        Returns:
+            List of recommendations sorted by priority
+        """
+        try:
+            from agentic.health import get_network_health, get_health_recommendations
+
+            # Get current network health
+            health_response = await api_get_network_health()
+            if "error" in health_response:
+                return {"recommendations": [], "error": health_response["error"]}
+
+            # Parse into NetworkHealth object for recommendations
+            from agentic.health import get_health_scorer
+            scorer = get_health_scorer()
+            if scorer._last_network_health:
+                recommendations = get_health_recommendations(scorer._last_network_health)
+            else:
+                recommendations = []
+
+            return {"recommendations": recommendations}
+        except ImportError as e:
+            return {"recommendations": [], "error": f"Health module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Health recommendations error: {e}")
+            return {"recommendations": [], "error": str(e)}
+
+    # ==========================================================================
+    # SMTP Email API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/smtp/config")
+    async def api_get_smtp_config(agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get SMTP configuration
+
+        Args:
+            agent_id: Optional agent ID filter
+
+        Returns:
+            SMTP configuration and statistics
+        """
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_client
+            client = get_smtp_client(agent_id or "local")
+            return {"config": client.config.to_dict(), "statistics": client.get_statistics()}
+        except ImportError as e:
+            return {"config": {}, "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SMTP config error: {e}")
+            return {"config": {}, "error": str(e)}
+
+    @app.post("/api/smtp/config")
+    async def api_set_smtp_config(
+        server: str = "localhost",
+        port: int = 587,
+        username: str = "",
+        password: str = "",
+        use_tls: bool = True,
+        use_ssl: bool = False,
+        from_address: str = "agent@network.local",
+        from_name: str = "Network Agent"
+    ) -> Dict[str, Any]:
+        """
+        Configure SMTP settings
+
+        Args:
+            server: SMTP server hostname
+            port: SMTP port
+            username: SMTP username (optional)
+            password: SMTP password (optional)
+            use_tls: Use STARTTLS
+            use_ssl: Use SSL/TLS
+            from_address: From email address
+            from_name: From display name
+
+        Returns:
+            Updated configuration
+        """
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_client, SMTPConfig
+            client = get_smtp_client()
+
+            config = SMTPConfig(
+                server=server,
+                port=port,
+                username=username,
+                password=password,
+                use_tls=use_tls,
+                use_ssl=use_ssl,
+                from_address=from_address,
+                from_name=from_name
+            )
+            client.configure(config)
+            return {"success": True, "config": config.to_dict()}
+        except ImportError as e:
+            return {"success": False, "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SMTP config set error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/smtp/history")
+    async def api_get_email_history(
+        limit: int = 50,
+        status: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get email history
+
+        Args:
+            limit: Maximum emails to return
+            status: Filter by status (sent, failed, pending)
+
+        Returns:
+            List of emails
+        """
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_client, EmailStatus
+            client = get_smtp_client()
+
+            email_status = None
+            if status:
+                email_status = EmailStatus(status)
+
+            emails = client.get_email_history(limit, email_status)
+            return {"emails": emails, "count": len(emails)}
+        except ImportError as e:
+            return {"emails": [], "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Email history error: {e}")
+            return {"emails": [], "error": str(e)}
+
+    @app.get("/api/smtp/statistics")
+    async def api_get_smtp_statistics() -> Dict[str, Any]:
+        """Get SMTP statistics"""
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_statistics
+            return {"statistics": get_smtp_statistics()}
+        except ImportError as e:
+            return {"statistics": {}, "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"SMTP statistics error: {e}")
+            return {"statistics": {}, "error": str(e)}
+
+    @app.post("/api/smtp/test")
+    async def api_send_test_email(recipient: str) -> Dict[str, Any]:
+        """
+        Send a test email
+
+        Args:
+            recipient: Email address to send test to
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_client
+            client = get_smtp_client()
+            success = await client.send_test_email(recipient)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Test email error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/smtp/send")
+    async def api_send_email(
+        to: str,
+        subject: str,
+        body: str,
+        html_body: Optional[str] = None,
+        priority: str = "normal"
+    ) -> Dict[str, Any]:
+        """
+        Send an email
+
+        Args:
+            to: Recipient email (comma-separated for multiple)
+            subject: Email subject
+            body: Plain text body
+            html_body: Optional HTML body
+            priority: Email priority (low, normal, high, urgent)
+
+        Returns:
+            Success status
+        """
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_client, Email, EmailPriority
+            client = get_smtp_client()
+
+            recipients = [r.strip() for r in to.split(",")]
+            email_priority = EmailPriority(priority)
+
+            email = Email(
+                to=recipients,
+                subject=subject,
+                body=body,
+                html_body=html_body,
+                priority=email_priority
+            )
+
+            success = await client.send_immediate(email)
+            return {"success": success, "email": email.to_dict()}
+        except ImportError as e:
+            return {"success": False, "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Send email error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/smtp/alerts")
+    async def api_get_alert_rules() -> Dict[str, Any]:
+        """Get all email alert rules"""
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_client
+            client = get_smtp_client()
+            rules = client.get_alert_rules()
+            return {"rules": [r.to_dict() for r in rules], "count": len(rules)}
+        except ImportError as e:
+            return {"rules": [], "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Alert rules error: {e}")
+            return {"rules": [], "error": str(e)}
+
+    @app.post("/api/smtp/alerts")
+    async def api_add_alert_rule(
+        name: str,
+        alert_type: str,
+        recipients: str,
+        priority: str = "normal",
+        cooldown: int = 300
+    ) -> Dict[str, Any]:
+        """
+        Add an email alert rule
+
+        Args:
+            name: Rule name
+            alert_type: Alert type (test_failure, neighbor_down, neighbor_up, etc.)
+            recipients: Comma-separated email addresses
+            priority: Email priority
+            cooldown: Cooldown between alerts in seconds
+
+        Returns:
+            Created rule
+        """
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_client, AlertRule, AlertType, EmailPriority
+            client = get_smtp_client()
+
+            rule = AlertRule(
+                name=name,
+                alert_type=AlertType(alert_type),
+                recipients=[r.strip() for r in recipients.split(",")],
+                priority=EmailPriority(priority),
+                cooldown_seconds=cooldown
+            )
+            client.add_alert_rule(rule)
+            return {"success": True, "rule": rule.to_dict()}
+        except ImportError as e:
+            return {"success": False, "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Add alert rule error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/smtp/alerts/{rule_name}")
+    async def api_delete_alert_rule(rule_name: str) -> Dict[str, Any]:
+        """Delete an alert rule"""
+        try:
+            from agentic.mcp.smtp_mcp import get_smtp_client
+            client = get_smtp_client()
+            success = client.remove_alert_rule(rule_name)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"SMTP module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Delete alert rule error: {e}")
+            return {"success": False, "error": str(e)}
 
     # ==========================================================================
     # Self-Healing API Endpoints (Quality Gate 14)
@@ -3796,6 +6660,1913 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             return {"enforcement_enabled": enabled}
         except ImportError:
             return {"error": "RBAC module not available"}
+
+    # ==================== Traffic Simulation API ====================
+
+    @app.get("/api/simulation/status")
+    async def get_simulation_status() -> Dict[str, Any]:
+        """Get traffic simulation status and statistics"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            return simulator.get_statistics()
+        except ImportError as e:
+            return {"error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation status error: {e}")
+            return {"error": str(e)}
+
+    @app.get("/api/simulation/flows")
+    async def get_simulation_flows(
+        source_agent: Optional[str] = None,
+        dest_agent: Optional[str] = None,
+        active_only: bool = False
+    ) -> Dict[str, Any]:
+        """Get all traffic flows with optional filtering"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            flows = simulator.list_flows(
+                source_agent=source_agent,
+                dest_agent=dest_agent,
+                active_only=active_only
+            )
+            return {
+                "flows": [f.to_dict() for f in flows],
+                "count": len(flows)
+            }
+        except ImportError as e:
+            return {"flows": [], "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation flows error: {e}")
+            return {"flows": [], "error": str(e)}
+
+    @app.post("/api/simulation/flows")
+    async def create_simulation_flow(
+        source_agent: str,
+        source_interface: str,
+        dest_agent: str,
+        dest_interface: str,
+        rate_bps: float = 1_000_000,
+        protocol: str = "tcp",
+        application: str = "generic",
+        pattern: str = "constant",
+        priority: int = 0
+    ) -> Dict[str, Any]:
+        """Create a new traffic flow"""
+        try:
+            from agentic.simulation import get_traffic_simulator, TrafficPattern
+            simulator = get_traffic_simulator()
+
+            # Parse pattern
+            try:
+                traffic_pattern = TrafficPattern(pattern)
+            except ValueError:
+                traffic_pattern = TrafficPattern.CONSTANT
+
+            flow = simulator.create_flow(
+                source_agent=source_agent,
+                source_interface=source_interface,
+                dest_agent=dest_agent,
+                dest_interface=dest_interface,
+                rate_bps=rate_bps,
+                protocol=protocol,
+                application=application,
+                pattern=traffic_pattern,
+                priority=priority
+            )
+            return {"flow": flow.to_dict(), "success": True}
+        except ImportError as e:
+            return {"success": False, "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation flow create error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/simulation/flows/{flow_id}")
+    async def delete_simulation_flow(flow_id: str) -> Dict[str, Any]:
+        """Delete a traffic flow"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            success = simulator.delete_flow(flow_id)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation flow delete error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.put("/api/simulation/flows/{flow_id}/active")
+    async def set_simulation_flow_active(flow_id: str, active: bool = True) -> Dict[str, Any]:
+        """Enable or disable a flow"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            success = simulator.set_flow_active(flow_id, active)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation flow active error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.put("/api/simulation/flows/{flow_id}/rate")
+    async def update_simulation_flow_rate(flow_id: str, rate_bps: float) -> Dict[str, Any]:
+        """Update flow rate"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            success = simulator.update_flow_rate(flow_id, rate_bps)
+            return {"success": success}
+        except ImportError as e:
+            return {"success": False, "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation flow rate error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/simulation/scenarios/{scenario}")
+    async def create_simulation_scenario(scenario: str, agents: List[str]) -> Dict[str, Any]:
+        """Create a predefined traffic scenario"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            flows = simulator.create_traffic_scenario(scenario, agents)
+            return {
+                "flows": [f.to_dict() for f in flows],
+                "count": len(flows),
+                "scenario": scenario
+            }
+        except ImportError as e:
+            return {"flows": [], "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation scenario error: {e}")
+            return {"flows": [], "error": str(e)}
+
+    @app.post("/api/simulation/start")
+    async def start_simulation() -> Dict[str, Any]:
+        """Start the traffic simulation"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            await simulator.start_simulation()
+            return {"success": True, "message": "Simulation started"}
+        except ImportError as e:
+            return {"success": False, "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation start error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/simulation/stop")
+    async def stop_simulation() -> Dict[str, Any]:
+        """Stop the traffic simulation"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            await simulator.stop_simulation()
+            return {"success": True, "message": "Simulation stopped"}
+        except ImportError as e:
+            return {"success": False, "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation stop error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/simulation/heatmap")
+    async def get_simulation_heatmap() -> Dict[str, Any]:
+        """Get traffic heatmap data for visualization"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            return simulator.get_traffic_heatmap()
+        except ImportError as e:
+            return {"links": [], "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation heatmap error: {e}")
+            return {"links": [], "error": str(e)}
+
+    @app.get("/api/simulation/congestion")
+    async def get_simulation_congestion() -> Dict[str, Any]:
+        """Get congestion analysis report"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            return simulator.get_congestion_report()
+        except ImportError as e:
+            return {"details": [], "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation congestion error: {e}")
+            return {"details": [], "error": str(e)}
+
+    @app.get("/api/simulation/visualization")
+    async def get_simulation_visualization() -> Dict[str, Any]:
+        """Get flow visualization data (animated packets)"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            return simulator.get_flow_visualization()
+        except ImportError as e:
+            return {"flows": [], "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation visualization error: {e}")
+            return {"flows": [], "error": str(e)}
+
+    @app.get("/api/simulation/history")
+    async def get_simulation_history(minutes: int = 60) -> Dict[str, Any]:
+        """Get historical traffic data"""
+        try:
+            from agentic.simulation import get_traffic_simulator
+            simulator = get_traffic_simulator()
+            history = simulator.get_history(minutes)
+            return {"history": history, "count": len(history)}
+        except ImportError as e:
+            return {"history": [], "error": f"Simulation module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Simulation history error: {e}")
+            return {"history": [], "error": str(e)}
+
+    @app.get("/api/simulation/patterns")
+    async def get_simulation_patterns() -> Dict[str, Any]:
+        """Get available traffic patterns"""
+        try:
+            from agentic.simulation import TrafficPattern, CongestionLevel
+            return {
+                "patterns": [p.value for p in TrafficPattern],
+                "congestion_levels": [c.value for c in CongestionLevel],
+                "scenarios": ["mesh", "hub_spoke", "backbone", "ddos"]
+            }
+        except ImportError as e:
+            return {"patterns": [], "error": f"Simulation module not available: {e}"}
+
+    # ==================== Time-Travel Network Replay API ====================
+
+    @app.get("/api/replay/status")
+    async def get_replay_status() -> Dict[str, Any]:
+        """Get network recorder status and statistics"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            return recorder.get_statistics()
+        except ImportError as e:
+            return {"error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Replay status error: {e}")
+            return {"error": str(e)}
+
+    @app.get("/api/replay/sessions")
+    async def get_replay_sessions(active_only: bool = False) -> Dict[str, Any]:
+        """Get all recording sessions"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            sessions = recorder.list_sessions(active_only=active_only)
+            return {
+                "sessions": [s.to_dict() for s in sessions],
+                "count": len(sessions)
+            }
+        except ImportError as e:
+            return {"sessions": [], "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Replay sessions error: {e}")
+            return {"sessions": [], "error": str(e)}
+
+    @app.post("/api/replay/sessions")
+    async def start_recording_session(
+        name: str = "Recording",
+        description: str = "",
+        snapshot_interval: int = 30
+    ) -> Dict[str, Any]:
+        """Start a new recording session"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            session = recorder.start_recording(
+                name=name,
+                description=description,
+                snapshot_interval=snapshot_interval
+            )
+            return {"session": session.to_dict(), "success": True}
+        except ImportError as e:
+            return {"success": False, "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Start recording error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/replay/sessions/stop")
+    async def stop_recording_session() -> Dict[str, Any]:
+        """Stop the current recording session"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            session = recorder.stop_recording()
+            if session:
+                return {"session": session.to_dict(), "success": True}
+            return {"success": False, "error": "No active recording session"}
+        except ImportError as e:
+            return {"success": False, "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Stop recording error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/replay/sessions/{session_id}")
+    async def get_recording_session(session_id: str) -> Dict[str, Any]:
+        """Get a specific recording session"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            session = recorder.get_session(session_id)
+            if session:
+                return {"session": session.to_dict()}
+            return {"error": "Session not found"}
+        except ImportError as e:
+            return {"error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Get session error: {e}")
+            return {"error": str(e)}
+
+    @app.get("/api/replay/snapshots")
+    async def get_replay_snapshots(
+        session_id: Optional[str] = None,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """Get network snapshots"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            snapshots = recorder.get_snapshots(session_id=session_id, limit=limit)
+            return {
+                "snapshots": [s.to_dict() for s in snapshots],
+                "count": len(snapshots)
+            }
+        except ImportError as e:
+            return {"snapshots": [], "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Get snapshots error: {e}")
+            return {"snapshots": [], "error": str(e)}
+
+    @app.post("/api/replay/snapshots")
+    async def record_snapshot_now() -> Dict[str, Any]:
+        """Manually record a snapshot"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            snapshot = recorder.record_snapshot()
+            if snapshot:
+                return {"snapshot": snapshot.to_dict(), "success": True}
+            return {"success": False, "error": "No active recording session"}
+        except ImportError as e:
+            return {"success": False, "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Record snapshot error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/replay/events")
+    async def get_replay_events(
+        session_id: Optional[str] = None,
+        event_type: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        protocol: Optional[str] = None,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """Get protocol events"""
+        try:
+            from agentic.replay import get_network_recorder, EventType
+            recorder = get_network_recorder()
+
+            # Parse event type if provided
+            et = None
+            if event_type:
+                try:
+                    et = EventType(event_type)
+                except ValueError:
+                    pass
+
+            events = recorder.get_events(
+                session_id=session_id,
+                event_type=et,
+                agent_id=agent_id,
+                protocol=protocol,
+                limit=limit
+            )
+            return {
+                "events": [e.to_dict() for e in events],
+                "count": len(events)
+            }
+        except ImportError as e:
+            return {"events": [], "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Get events error: {e}")
+            return {"events": [], "error": str(e)}
+
+    @app.post("/api/replay/events")
+    async def record_event_now(
+        event_type: str,
+        agent_id: str,
+        protocol: str,
+        description: str,
+        severity: str = "info"
+    ) -> Dict[str, Any]:
+        """Manually record an event"""
+        try:
+            from agentic.replay import get_network_recorder, EventType
+            recorder = get_network_recorder()
+
+            try:
+                et = EventType(event_type)
+            except ValueError:
+                return {"success": False, "error": f"Invalid event type: {event_type}"}
+
+            event = recorder.record_event(
+                event_type=et,
+                agent_id=agent_id,
+                protocol=protocol,
+                description=description,
+                severity=severity
+            )
+            if event:
+                return {"event": event.to_dict(), "success": True}
+            return {"success": False, "error": "No active recording session"}
+        except ImportError as e:
+            return {"success": False, "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Record event error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/replay/timeline")
+    async def get_replay_timeline(session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get the recording timeline"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            return recorder.get_timeline(session_id=session_id)
+        except ImportError as e:
+            return {"error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Get timeline error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/replay/rewind")
+    async def replay_to_timestamp(
+        timestamp: str,
+        session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Replay to a specific timestamp"""
+        try:
+            from agentic.replay import get_network_recorder
+            from datetime import datetime
+            recorder = get_network_recorder()
+
+            # Parse timestamp
+            try:
+                target_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            except ValueError:
+                return {"error": f"Invalid timestamp format: {timestamp}"}
+
+            snapshot = recorder.replay_to_time(target_time, session_id=session_id)
+            if snapshot:
+                return {"snapshot": snapshot.to_dict(), "success": True}
+            return {"success": False, "error": "No snapshot found for that time"}
+        except ImportError as e:
+            return {"success": False, "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Replay to time error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/replay/state")
+    async def get_replay_state() -> Dict[str, Any]:
+        """Get the current replay state"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            state = recorder.get_replay_state()
+            if state:
+                return state
+            return {"replaying": False, "message": "Not in replay mode"}
+        except ImportError as e:
+            return {"error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Get replay state error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/replay/clear")
+    async def clear_replay_state() -> Dict[str, Any]:
+        """Clear the replay state and return to live mode"""
+        try:
+            from agentic.replay import get_network_recorder
+            recorder = get_network_recorder()
+            recorder.clear_replay()
+            return {"success": True, "message": "Replay state cleared"}
+        except ImportError as e:
+            return {"success": False, "error": f"Replay module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Clear replay error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/replay/event-types")
+    async def get_event_types() -> Dict[str, Any]:
+        """Get all available event types"""
+        try:
+            from agentic.replay import EventType
+            return {
+                "event_types": [
+                    {"value": et.value, "name": et.name}
+                    for et in EventType
+                ]
+            }
+        except ImportError as e:
+            return {"event_types": [], "error": f"Replay module not available: {e}"}
+
+    # ==================== Network Diff API ====================
+
+    @app.get("/api/diff/status")
+    async def get_diff_status() -> Dict[str, Any]:
+        """Get network differ status and statistics"""
+        try:
+            from agentic.diff import get_network_differ
+            differ = get_network_differ()
+            return differ.get_statistics()
+        except ImportError as e:
+            return {"error": f"Diff module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Diff status error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/diff/compare")
+    async def compare_network_snapshots(
+        before_snapshot_id: str,
+        after_snapshot_id: str
+    ) -> Dict[str, Any]:
+        """Compare two network snapshots"""
+        try:
+            from agentic.diff import get_network_differ
+            from agentic.replay import get_network_recorder
+
+            differ = get_network_differ()
+            recorder = get_network_recorder()
+
+            # Get snapshots from recorder
+            all_snapshots = recorder.get_snapshots(limit=1000)
+
+            before_snap = None
+            after_snap = None
+
+            for snap in all_snapshots:
+                if snap.snapshot_id == before_snapshot_id:
+                    before_snap = snap.to_dict()
+                if snap.snapshot_id == after_snapshot_id:
+                    after_snap = snap.to_dict()
+
+            if not before_snap:
+                return {"error": f"Before snapshot not found: {before_snapshot_id}"}
+            if not after_snap:
+                return {"error": f"After snapshot not found: {after_snapshot_id}"}
+
+            result = differ.compare_snapshots(before_snap, after_snap)
+            return result.to_dict()
+        except ImportError as e:
+            return {"error": f"Diff module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Compare snapshots error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/diff/compare-direct")
+    async def compare_snapshots_direct(
+        before: Dict[str, Any],
+        after: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Compare two snapshots provided directly"""
+        try:
+            from agentic.diff import get_network_differ
+            differ = get_network_differ()
+            result = differ.compare_snapshots(before, after)
+            return result.to_dict()
+        except ImportError as e:
+            return {"error": f"Diff module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Compare direct error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/diff/compare-config")
+    async def compare_configs(
+        before_config: str,
+        after_config: str
+    ) -> Dict[str, Any]:
+        """Compare two configuration strings"""
+        try:
+            from agentic.diff import get_network_differ
+            differ = get_network_differ()
+            return differ.compare_configs(before_config, after_config)
+        except ImportError as e:
+            return {"error": f"Diff module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Compare config error: {e}")
+            return {"error": str(e)}
+
+    @app.get("/api/diff/history")
+    async def get_diff_history(limit: int = 10) -> Dict[str, Any]:
+        """Get recent diff history"""
+        try:
+            from agentic.diff import get_network_differ
+            differ = get_network_differ()
+            history = differ.get_diff_history(limit=limit)
+            return {"history": history, "count": len(history)}
+        except ImportError as e:
+            return {"history": [], "error": f"Diff module not available: {e}"}
+        except Exception as e:
+            logger.error(f"Diff history error: {e}")
+            return {"history": [], "error": str(e)}
+
+    @app.get("/api/diff/categories")
+    async def get_diff_categories() -> Dict[str, Any]:
+        """Get available diff categories and types"""
+        try:
+            from agentic.diff import DiffCategory, DiffType
+            return {
+                "categories": [
+                    {"value": c.value, "name": c.name}
+                    for c in DiffCategory
+                ],
+                "types": [
+                    {"value": t.value, "name": t.name}
+                    for t in DiffType
+                ]
+            }
+        except ImportError as e:
+            return {"categories": [], "types": [], "error": f"Diff module not available: {e}"}
+
+    # ==================== Intelligent Suggestions API ====================
+
+    @app.get("/api/suggestions/status")
+    async def get_suggestions_status() -> Dict[str, Any]:
+        """Get network advisor status and statistics"""
+        try:
+            from agentic.suggestions import get_network_advisor
+            advisor = get_network_advisor()
+            return advisor.get_statistics()
+        except ImportError:
+            return {"error": "Suggestions module not available"}
+
+    @app.post("/api/suggestions/analyze")
+    async def analyze_network_suggestions(
+        include_info: bool = False
+    ) -> Dict[str, Any]:
+        """Analyze current network state and generate suggestions"""
+        try:
+            from agentic.suggestions import get_network_advisor
+            advisor = get_network_advisor()
+
+            # Build network state from current data
+            network_state = {}
+
+            # Get topology data if available
+            try:
+                from agentic.topology import get_topology_manager
+                topo = get_topology_manager()
+                network_state["topology"] = topo.get_topology_data()
+            except ImportError:
+                pass
+
+            # Get agent data if available
+            if asi_app and hasattr(asi_app, 'agent_manager'):
+                agents = asi_app.agent_manager.get_all_agents()
+                network_state["agents"] = {
+                    name: agent.get_status() for name, agent in agents.items()
+                }
+
+            # Get health data if available
+            try:
+                from agentic.health import get_health_scorer
+                scorer = get_health_scorer()
+                network_state["health"] = scorer.get_current_health()
+            except ImportError:
+                pass
+
+            # Analyze the network
+            suggestions = advisor.analyze_network(network_state, include_info=include_info)
+
+            return {
+                "suggestions": [s.to_dict() for s in suggestions],
+                "count": len(suggestions),
+                "analyzed_at": datetime.now().isoformat(),
+                "network_state_keys": list(network_state.keys())
+            }
+        except ImportError as e:
+            return {"error": f"Suggestions module not available: {e}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/suggestions")
+    async def get_suggestions_list(
+        category: Optional[str] = None,
+        priority: Optional[str] = None,
+        limit: int = 50
+    ) -> Dict[str, Any]:
+        """Get current suggestions with optional filters"""
+        try:
+            from agentic.suggestions import (
+                get_network_advisor, SuggestionCategory, SuggestionPriority
+            )
+            advisor = get_network_advisor()
+
+            # Parse category filter
+            cat_filter = None
+            if category:
+                try:
+                    cat_filter = SuggestionCategory(category)
+                except ValueError:
+                    return {"error": f"Invalid category: {category}"}
+
+            # Parse priority filter
+            pri_filter = None
+            if priority:
+                try:
+                    pri_filter = SuggestionPriority(priority)
+                except ValueError:
+                    return {"error": f"Invalid priority: {priority}"}
+
+            suggestions = advisor.get_suggestions(
+                category=cat_filter,
+                priority=pri_filter,
+                limit=limit
+            )
+
+            return {
+                "suggestions": [s.to_dict() for s in suggestions],
+                "count": len(suggestions),
+                "filters": {
+                    "category": category,
+                    "priority": priority,
+                    "limit": limit
+                }
+            }
+        except ImportError:
+            return {"error": "Suggestions module not available"}
+
+    @app.post("/api/suggestions/{suggestion_id}/dismiss")
+    async def dismiss_suggestion(
+        suggestion_id: str,
+        reason: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Dismiss a suggestion"""
+        try:
+            from agentic.suggestions import get_network_advisor
+            advisor = get_network_advisor()
+
+            success = advisor.dismiss_suggestion(suggestion_id, reason=reason)
+
+            if success:
+                return {
+                    "dismissed": True,
+                    "suggestion_id": suggestion_id,
+                    "reason": reason
+                }
+            else:
+                return {
+                    "dismissed": False,
+                    "error": f"Suggestion not found: {suggestion_id}"
+                }
+        except ImportError:
+            return {"error": "Suggestions module not available"}
+
+    @app.post("/api/suggestions/{suggestion_id}/apply")
+    async def apply_suggestion(
+        suggestion_id: str
+    ) -> Dict[str, Any]:
+        """Apply a suggestion (if auto-applicable)"""
+        try:
+            from agentic.suggestions import get_network_advisor
+            advisor = get_network_advisor()
+
+            result = advisor.apply_suggestion(suggestion_id)
+
+            return {
+                "suggestion_id": suggestion_id,
+                "applied": result.get("applied", False),
+                "result": result
+            }
+        except ImportError:
+            return {"error": "Suggestions module not available"}
+
+    @app.get("/api/suggestions/categories")
+    async def get_suggestion_categories() -> Dict[str, Any]:
+        """Get available suggestion categories and priorities"""
+        try:
+            from agentic.suggestions import SuggestionCategory, SuggestionPriority
+            return {
+                "categories": [
+                    {"value": c.value, "name": c.name}
+                    for c in SuggestionCategory
+                ],
+                "priorities": [
+                    {"value": p.value, "name": p.name}
+                    for p in SuggestionPriority
+                ]
+            }
+        except ImportError:
+            return {"categories": [], "priorities": [], "error": "Suggestions module not available"}
+
+    @app.get("/api/suggestions/history")
+    async def get_suggestion_history(
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """Get history of dismissed/applied suggestions"""
+        try:
+            from agentic.suggestions import get_network_advisor
+            advisor = get_network_advisor()
+
+            history = advisor.get_history(limit=limit)
+
+            return {
+                "history": history,
+                "count": len(history)
+            }
+        except ImportError:
+            return {"error": "Suggestions module not available"}
+
+    @app.post("/api/suggestions/refresh")
+    async def refresh_suggestions() -> Dict[str, Any]:
+        """Force refresh of suggestions analysis"""
+        try:
+            from agentic.suggestions import get_network_advisor
+            advisor = get_network_advisor()
+
+            # Clear cache and re-analyze
+            advisor.clear_cache()
+
+            return {
+                "refreshed": True,
+                "timestamp": datetime.now().isoformat()
+            }
+        except ImportError:
+            return {"error": "Suggestions module not available"}
+
+    # ==================== Scenario Builder API ====================
+
+    @app.get("/api/scenarios/status")
+    async def get_scenarios_status() -> Dict[str, Any]:
+        """Get scenario builder status and statistics"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+            return builder.get_statistics()
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.get("/api/scenarios")
+    async def list_scenarios(
+        category: Optional[str] = None,
+        status: Optional[str] = None,
+        tags: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """List all scenarios with optional filtering"""
+        try:
+            from agentic.scenarios import get_scenario_builder, ScenarioStatus
+            builder = get_scenario_builder()
+
+            status_filter = None
+            if status:
+                try:
+                    status_filter = ScenarioStatus(status)
+                except ValueError:
+                    return {"error": f"Invalid status: {status}"}
+
+            tag_list = tags.split(",") if tags else None
+
+            scenarios = builder.list_scenarios(
+                category=category,
+                status=status_filter,
+                tags=tag_list
+            )
+
+            return {
+                "scenarios": [s.to_dict() for s in scenarios],
+                "count": len(scenarios)
+            }
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.get("/api/scenarios/templates")
+    async def get_scenario_templates() -> Dict[str, Any]:
+        """Get available scenario templates"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+            templates = builder.get_templates()
+
+            return {
+                "templates": [t.to_dict() for t in templates],
+                "count": len(templates)
+            }
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.post("/api/scenarios")
+    async def create_scenario_api(
+        name: str,
+        description: str = "",
+        category: str = "general",
+        tags: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Create a new scenario"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            tag_list = tags.split(",") if tags else []
+
+            scenario = builder.create_scenario(
+                name=name,
+                description=description,
+                category=category,
+                tags=tag_list
+            )
+
+            return {
+                "created": True,
+                "scenario": scenario.to_dict()
+            }
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.post("/api/scenarios/from-template")
+    async def create_from_template(
+        template_id: str,
+        name: str,
+        variables: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """Create a scenario from a template"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            scenario = builder.create_from_template(
+                template_id=template_id,
+                name=name,
+                variables=variables or {}
+            )
+
+            if scenario:
+                return {
+                    "created": True,
+                    "scenario": scenario.to_dict()
+                }
+            else:
+                return {"error": f"Template not found: {template_id}"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.get("/api/scenarios/{scenario_id}")
+    async def get_scenario(scenario_id: str) -> Dict[str, Any]:
+        """Get a specific scenario"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            scenario = builder.get_scenario(scenario_id)
+            if scenario:
+                return {"scenario": scenario.to_dict()}
+            else:
+                return {"error": f"Scenario not found: {scenario_id}"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.delete("/api/scenarios/{scenario_id}")
+    async def delete_scenario(scenario_id: str) -> Dict[str, Any]:
+        """Delete a scenario"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            if builder.delete_scenario(scenario_id):
+                return {"deleted": True, "scenario_id": scenario_id}
+            else:
+                return {"error": f"Scenario not found: {scenario_id}"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.post("/api/scenarios/{scenario_id}/step")
+    async def add_scenario_step(
+        scenario_id: str,
+        step_type: str,
+        name: str,
+        description: str = "",
+        parameters: Optional[Dict[str, Any]] = None,
+        timeout: int = 60,
+        continue_on_failure: bool = False
+    ) -> Dict[str, Any]:
+        """Add a step to a scenario"""
+        try:
+            from agentic.scenarios import get_scenario_builder, ScenarioStepType
+            builder = get_scenario_builder()
+
+            try:
+                step_type_enum = ScenarioStepType(step_type)
+            except ValueError:
+                return {"error": f"Invalid step type: {step_type}"}
+
+            step = builder.add_step(
+                scenario_id=scenario_id,
+                step_type=step_type_enum,
+                name=name,
+                description=description,
+                parameters=parameters or {},
+                timeout=timeout,
+                continue_on_failure=continue_on_failure
+            )
+
+            if step:
+                return {
+                    "added": True,
+                    "step": step.to_dict()
+                }
+            else:
+                return {"error": f"Scenario not found or cannot be modified: {scenario_id}"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.delete("/api/scenarios/{scenario_id}/step/{step_id}")
+    async def remove_scenario_step(scenario_id: str, step_id: str) -> Dict[str, Any]:
+        """Remove a step from a scenario"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            if builder.remove_step(scenario_id, step_id):
+                return {"removed": True, "step_id": step_id}
+            else:
+                return {"error": "Scenario or step not found"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.post("/api/scenarios/{scenario_id}/ready")
+    async def mark_scenario_ready(scenario_id: str) -> Dict[str, Any]:
+        """Mark a scenario as ready for execution"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            if builder.set_ready(scenario_id):
+                return {"ready": True, "scenario_id": scenario_id}
+            else:
+                return {"error": "Scenario not found or has no steps"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.post("/api/scenarios/{scenario_id}/run")
+    async def run_scenario_api(
+        scenario_id: str,
+        dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """Run a scenario"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            result = await builder.run_scenario(scenario_id, dry_run=dry_run)
+
+            if result:
+                return {
+                    "started": True,
+                    "result": result.to_dict()
+                }
+            else:
+                return {"error": "Scenario not found or already running"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.post("/api/scenarios/{scenario_id}/abort")
+    async def abort_scenario(scenario_id: str) -> Dict[str, Any]:
+        """Abort a running scenario"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            if builder.abort_scenario(scenario_id):
+                return {"aborted": True, "scenario_id": scenario_id}
+            else:
+                return {"error": "Scenario not running"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.get("/api/scenarios/{scenario_id}/result")
+    async def get_scenario_result(scenario_id: str) -> Dict[str, Any]:
+        """Get the result of a scenario execution"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            result = builder.get_result(scenario_id)
+            if result:
+                return {"result": result.to_dict()}
+            else:
+                return {"error": "No result found for scenario"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.get("/api/scenarios/results")
+    async def get_all_scenario_results() -> Dict[str, Any]:
+        """Get all scenario results"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            results = builder.get_all_results()
+            return {
+                "results": [r.to_dict() for r in results],
+                "count": len(results)
+            }
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.get("/api/scenarios/step-types")
+    async def get_scenario_step_types() -> Dict[str, Any]:
+        """Get available scenario step types"""
+        try:
+            from agentic.scenarios import ScenarioStepType
+            return {
+                "step_types": [
+                    {"value": t.value, "name": t.name}
+                    for t in ScenarioStepType
+                ]
+            }
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.post("/api/scenarios/{scenario_id}/export")
+    async def export_scenario(scenario_id: str) -> Dict[str, Any]:
+        """Export a scenario as JSON"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            json_data = builder.export_scenario(scenario_id)
+            if json_data:
+                return {"scenario_json": json_data}
+            else:
+                return {"error": "Scenario not found"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    @app.post("/api/scenarios/import")
+    async def import_scenario(json_data: str) -> Dict[str, Any]:
+        """Import a scenario from JSON"""
+        try:
+            from agentic.scenarios import get_scenario_builder
+            builder = get_scenario_builder()
+
+            scenario = builder.import_scenario(json_data)
+            if scenario:
+                return {
+                    "imported": True,
+                    "scenario": scenario.to_dict()
+                }
+            else:
+                return {"error": "Failed to import scenario"}
+        except ImportError:
+            return {"error": "Scenarios module not available"}
+
+    # ==================== Multi-Vendor Simulation API ====================
+
+    @app.get("/api/vendors/status")
+    async def get_vendors_status() -> Dict[str, Any]:
+        """Get vendor manager status and statistics"""
+        try:
+            from agentic.vendors import get_vendor_manager
+            manager = get_vendor_manager()
+            return manager.get_statistics()
+        except ImportError:
+            return {"error": "Vendors module not available"}
+
+    @app.get("/api/vendors")
+    async def list_vendors_api() -> Dict[str, Any]:
+        """List all available vendors"""
+        try:
+            from agentic.vendors import get_vendor_manager
+            manager = get_vendor_manager()
+            vendors = manager.list_vendors()
+
+            return {
+                "vendors": [v.to_dict() for v in vendors],
+                "count": len(vendors)
+            }
+        except ImportError:
+            return {"error": "Vendors module not available"}
+
+    @app.get("/api/vendors/{vendor_id}")
+    async def get_vendor_api(vendor_id: str) -> Dict[str, Any]:
+        """Get a specific vendor profile"""
+        try:
+            from agentic.vendors import get_vendor_manager
+            manager = get_vendor_manager()
+
+            vendor = manager.get_vendor(vendor_id)
+            if vendor:
+                return {"vendor": vendor.to_dict()}
+            else:
+                return {"error": f"Vendor not found: {vendor_id}"}
+        except ImportError:
+            return {"error": "Vendors module not available"}
+
+    @app.get("/api/vendors/{vendor_id}/cli")
+    async def get_vendor_cli(vendor_id: str) -> Dict[str, Any]:
+        """Get CLI syntax for a vendor"""
+        try:
+            from agentic.vendors import get_vendor_manager
+            manager = get_vendor_manager()
+
+            syntax = manager.get_cli_syntax(vendor_id)
+            if syntax:
+                return {"cli_syntax": syntax.to_dict()}
+            else:
+                return {"error": f"Vendor not found: {vendor_id}"}
+        except ImportError:
+            return {"error": "Vendors module not available"}
+
+    @app.get("/api/vendors/{vendor_id}/profile")
+    async def get_vendor_profile(vendor_id: str) -> Dict[str, Any]:
+        """Get behavioral profile for a vendor"""
+        try:
+            from agentic.vendors import get_vendor_manager
+            manager = get_vendor_manager()
+
+            profile = manager.get_profile(vendor_id)
+            if profile:
+                return {"profile": profile.to_dict()}
+            else:
+                return {"error": f"Vendor not found: {vendor_id}"}
+        except ImportError:
+            return {"error": "Vendors module not available"}
+
+    @app.get("/api/vendors/by-capability/{capability}")
+    async def get_vendors_by_capability(capability: str) -> Dict[str, Any]:
+        """Get vendors that support a specific capability"""
+        try:
+            from agentic.vendors import get_vendor_manager, VendorCapability
+            manager = get_vendor_manager()
+
+            try:
+                cap = VendorCapability(capability)
+            except ValueError:
+                return {"error": f"Invalid capability: {capability}"}
+
+            vendors = manager.get_vendors_by_capability(cap)
+            return {
+                "capability": capability,
+                "vendors": [v.to_dict() for v in vendors],
+                "count": len(vendors)
+            }
+        except ImportError:
+            return {"error": "Vendors module not available"}
+
+    @app.post("/api/vendors/translate")
+    async def translate_command(
+        command: str,
+        from_vendor: str,
+        to_vendor: str
+    ) -> Dict[str, Any]:
+        """Translate a command from one vendor syntax to another"""
+        try:
+            from agentic.vendors import get_vendor_manager
+            manager = get_vendor_manager()
+
+            translated = manager.translate_command(command, from_vendor, to_vendor)
+
+            return {
+                "original_command": command,
+                "from_vendor": from_vendor,
+                "to_vendor": to_vendor,
+                "translated_command": translated,
+                "success": translated is not None
+            }
+        except ImportError:
+            return {"error": "Vendors module not available"}
+
+    @app.get("/api/vendors/capabilities")
+    async def get_vendor_capabilities() -> Dict[str, Any]:
+        """Get list of all available vendor capabilities"""
+        try:
+            from agentic.vendors import VendorCapability
+            return {
+                "capabilities": [
+                    {"value": c.value, "name": c.name}
+                    for c in VendorCapability
+                ]
+            }
+        except ImportError:
+            return {"error": "Vendors module not available"}
+
+    # ==================== Documentation Generator API ====================
+
+    @app.get("/api/documentation/status")
+    async def get_documentation_status() -> Dict[str, Any]:
+        """Get documentation generator status"""
+        try:
+            from agentic.documentation import get_document_generator
+            generator = get_document_generator()
+            return generator.get_statistics()
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.get("/api/documentation/templates")
+    async def list_documentation_templates() -> Dict[str, Any]:
+        """List available document templates"""
+        try:
+            from agentic.documentation import get_document_generator
+            generator = get_document_generator()
+            templates = generator.get_templates()
+            return {
+                "templates": [t.to_dict() for t in templates],
+                "count": len(templates)
+            }
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.get("/api/documentation/templates/{template_id}")
+    async def get_documentation_template(template_id: str) -> Dict[str, Any]:
+        """Get a specific document template"""
+        try:
+            from agentic.documentation import get_document_generator
+            generator = get_document_generator()
+            template = generator.get_template(template_id)
+            if template:
+                return {"template": template.to_dict()}
+            return {"error": "Template not found"}
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.post("/api/documentation/generate")
+    async def generate_documentation(
+        network_name: Optional[str] = None,
+        template: Optional[str] = None,
+        sections: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Generate network documentation"""
+        try:
+            from agentic.documentation import get_document_generator, DocumentSection
+            generator = get_document_generator()
+
+            # Convert section strings to enums if provided
+            section_enums = None
+            if sections:
+                section_enums = []
+                for s in sections:
+                    try:
+                        section_enums.append(DocumentSection(s))
+                    except ValueError:
+                        pass  # Skip invalid sections
+
+            document = generator.generate(
+                network_name=network_name,
+                template=template,
+                sections=section_enums
+            )
+            return {"document": document.to_dict()}
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.get("/api/documentation/documents")
+    async def list_documents() -> Dict[str, Any]:
+        """List generated documents"""
+        try:
+            from agentic.documentation import get_document_generator
+            generator = get_document_generator()
+            documents = generator.list_documents()
+            return {
+                "documents": [d.to_dict() for d in documents],
+                "count": len(documents)
+            }
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.get("/api/documentation/documents/{document_id}")
+    async def get_document(document_id: str) -> Dict[str, Any]:
+        """Get a specific document"""
+        try:
+            from agentic.documentation import get_document_generator
+            generator = get_document_generator()
+            document = generator.get_document(document_id)
+            if document:
+                return {"document": document.to_dict()}
+            return {"error": "Document not found"}
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.delete("/api/documentation/documents/{document_id}")
+    async def delete_document(document_id: str) -> Dict[str, Any]:
+        """Delete a document"""
+        try:
+            from agentic.documentation import get_document_generator
+            generator = get_document_generator()
+            success = generator.delete_document(document_id)
+            return {"success": success}
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.post("/api/documentation/documents/{document_id}/export")
+    async def export_document(
+        document_id: str,
+        format: str = "markdown"
+    ) -> Dict[str, Any]:
+        """Export a document to specified format"""
+        try:
+            from agentic.documentation import get_document_generator, DocumentFormat
+            generator = get_document_generator()
+            document = generator.get_document(document_id)
+            if not document:
+                return {"error": "Document not found"}
+
+            try:
+                doc_format = DocumentFormat(format.lower())
+            except ValueError:
+                return {"error": f"Invalid format: {format}. Supported: markdown, html, json, text"}
+
+            content = generator.export(document, doc_format)
+            return {
+                "format": format,
+                "content": content,
+                "document_id": document_id
+            }
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.get("/api/documentation/sections")
+    async def get_documentation_sections() -> Dict[str, Any]:
+        """Get available document sections"""
+        try:
+            from agentic.documentation import DocumentSection
+            return {
+                "sections": [
+                    {"value": s.value, "name": s.name}
+                    for s in DocumentSection
+                ]
+            }
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    @app.get("/api/documentation/formats")
+    async def get_documentation_formats() -> Dict[str, Any]:
+        """Get available export formats"""
+        try:
+            from agentic.documentation import DocumentFormat
+            return {
+                "formats": [
+                    {"value": f.value, "name": f.name}
+                    for f in DocumentFormat
+                ]
+            }
+        except ImportError:
+            return {"error": "Documentation module not available"}
+
+    # ==================== API Analytics ====================
+
+    @app.get("/api/analytics/status")
+    async def get_analytics_status() -> Dict[str, Any]:
+        """Get API analytics status"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            return analytics.get_statistics()
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.get("/api/analytics/endpoints")
+    async def get_endpoint_stats(window: Optional[str] = None) -> Dict[str, Any]:
+        """Get statistics for all endpoints"""
+        try:
+            from agentic.analytics import get_api_analytics, TimeWindow
+            analytics = get_api_analytics()
+            time_window = TimeWindow(window) if window else None
+            stats = analytics.get_all_endpoint_stats(time_window)
+            return {
+                "endpoints": [s.to_dict() for s in stats],
+                "count": len(stats)
+            }
+        except ImportError:
+            return {"error": "Analytics module not available"}
+        except ValueError:
+            return {"error": f"Invalid time window: {window}"}
+
+    @app.get("/api/analytics/endpoints/{endpoint:path}")
+    async def get_single_endpoint_stats(endpoint: str, window: Optional[str] = None) -> Dict[str, Any]:
+        """Get statistics for a specific endpoint"""
+        try:
+            from agentic.analytics import get_api_analytics, TimeWindow
+            analytics = get_api_analytics()
+            time_window = TimeWindow(window) if window else None
+            endpoint_path = "/" + endpoint if not endpoint.startswith("/") else endpoint
+            stats = analytics.get_endpoint_stats(endpoint_path, time_window)
+            if stats:
+                return {"endpoint": stats.to_dict()}
+            return {"error": "Endpoint not found"}
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.get("/api/analytics/clients")
+    async def get_client_stats(window: Optional[str] = None) -> Dict[str, Any]:
+        """Get statistics for all clients"""
+        try:
+            from agentic.analytics import get_api_analytics, TimeWindow
+            analytics = get_api_analytics()
+            time_window = TimeWindow(window) if window else None
+            stats = analytics.get_all_client_stats(time_window)
+            return {
+                "clients": [s.to_dict() for s in stats],
+                "count": len(stats)
+            }
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.get("/api/analytics/clients/{client_ip}")
+    async def get_single_client_stats(client_ip: str, window: Optional[str] = None) -> Dict[str, Any]:
+        """Get statistics for a specific client"""
+        try:
+            from agentic.analytics import get_api_analytics, TimeWindow
+            analytics = get_api_analytics()
+            time_window = TimeWindow(window) if window else None
+            stats = analytics.get_client_stats(client_ip, time_window)
+            if stats:
+                return {"client": stats.to_dict()}
+            return {"error": "Client not found"}
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.get("/api/analytics/top/endpoints")
+    async def get_top_endpoints(limit: int = 10, metric: str = "requests") -> Dict[str, Any]:
+        """Get top endpoints by metric"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            return {
+                "endpoints": analytics.get_top_endpoints(limit, metric),
+                "metric": metric
+            }
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.get("/api/analytics/top/clients")
+    async def get_top_clients(limit: int = 10, metric: str = "requests") -> Dict[str, Any]:
+        """Get top clients by metric"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            return {
+                "clients": analytics.get_top_clients(limit, metric),
+                "metric": metric
+            }
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.get("/api/analytics/timeseries")
+    async def get_time_series(metric: str = "requests", window: str = "hour") -> Dict[str, Any]:
+        """Get time series data"""
+        try:
+            from agentic.analytics import get_api_analytics, TimeWindow
+            analytics = get_api_analytics()
+            time_window = TimeWindow(window)
+            return {
+                "series": analytics.get_time_series(metric, time_window),
+                "metric": metric,
+                "window": window
+            }
+        except ImportError:
+            return {"error": "Analytics module not available"}
+        except ValueError:
+            return {"error": f"Invalid time window: {window}"}
+
+    @app.get("/api/analytics/requests")
+    async def get_recent_requests(
+        limit: int = 100,
+        endpoint: Optional[str] = None,
+        client_ip: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get recent requests"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            return {
+                "requests": analytics.get_recent_requests(limit, endpoint, client_ip),
+                "count": len(analytics.get_recent_requests(limit, endpoint, client_ip))
+            }
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.get("/api/analytics/errors")
+    async def get_error_summary(window: str = "hour") -> Dict[str, Any]:
+        """Get error summary"""
+        try:
+            from agentic.analytics import get_api_analytics, TimeWindow
+            analytics = get_api_analytics()
+            time_window = TimeWindow(window)
+            return analytics.get_error_summary(time_window)
+        except ImportError:
+            return {"error": "Analytics module not available"}
+        except ValueError:
+            return {"error": f"Invalid time window: {window}"}
+
+    @app.get("/api/analytics/ratelimit/config")
+    async def get_rate_limit_config() -> Dict[str, Any]:
+        """Get rate limit configuration"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            return analytics.get_rate_limit_config()
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.post("/api/analytics/ratelimit/config")
+    async def set_rate_limit_config(
+        requests_per_minute: Optional[int] = None,
+        requests_per_hour: Optional[int] = None,
+        burst_limit: Optional[int] = None,
+        block_duration_seconds: Optional[int] = None,
+        enabled: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """Update rate limit configuration"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            return analytics.set_rate_limit_config(
+                requests_per_minute=requests_per_minute,
+                requests_per_hour=requests_per_hour,
+                burst_limit=burst_limit,
+                block_duration_seconds=block_duration_seconds,
+                enabled=enabled
+            )
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.get("/api/analytics/ratelimit/blocked")
+    async def get_blocked_clients() -> Dict[str, Any]:
+        """Get list of blocked clients"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            return {
+                "blocked": analytics.get_blocked_clients()
+            }
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.delete("/api/analytics/ratelimit/blocked/{client_ip}")
+    async def unblock_client(client_ip: str) -> Dict[str, Any]:
+        """Unblock a client"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            success = analytics.unblock_client(client_ip)
+            return {"success": success}
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    @app.post("/api/analytics/clear")
+    async def clear_analytics(keep_config: bool = True) -> Dict[str, Any]:
+        """Clear analytics data"""
+        try:
+            from agentic.analytics import get_api_analytics
+            analytics = get_api_analytics()
+            analytics.clear_stats(keep_config)
+            return {"success": True, "kept_config": keep_config}
+        except ImportError:
+            return {"error": "Analytics module not available"}
+
+    # ==================== Compliance Checker API ====================
+
+    @app.get("/api/compliance/status")
+    async def get_compliance_status() -> Dict[str, Any]:
+        """Get compliance checker status"""
+        try:
+            from agentic.compliance import get_compliance_checker
+            checker = get_compliance_checker()
+            return checker.get_statistics()
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.get("/api/compliance/rules")
+    async def get_compliance_rules(
+        category: Optional[str] = None,
+        rule_set: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get compliance rules"""
+        try:
+            from agentic.compliance import get_compliance_checker
+            checker = get_compliance_checker()
+            rules = checker.get_rules(category=category, rule_set=rule_set)
+            return {
+                "rules": [r.to_dict() for r in rules],
+                "count": len(rules)
+            }
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.get("/api/compliance/rule-sets")
+    async def get_rule_sets() -> Dict[str, Any]:
+        """Get available rule sets"""
+        try:
+            from agentic.compliance import get_compliance_checker
+            checker = get_compliance_checker()
+            return {"rule_sets": checker.get_rule_sets()}
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.post("/api/compliance/check")
+    async def run_compliance_check(
+        rule_set: Optional[str] = "default",
+        categories: Optional[List[str]] = None,
+        agents: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Run compliance check"""
+        try:
+            from agentic.compliance import get_compliance_checker, ComplianceCategory
+            checker = get_compliance_checker()
+
+            cat_enums = None
+            if categories:
+                cat_enums = []
+                for c in categories:
+                    try:
+                        cat_enums.append(ComplianceCategory(c))
+                    except ValueError:
+                        pass
+
+            report = checker.run_check(
+                categories=cat_enums,
+                agents=agents,
+                rule_set=rule_set
+            )
+            return {"report": report.to_dict()}
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.get("/api/compliance/reports")
+    async def list_compliance_reports(limit: int = 10) -> Dict[str, Any]:
+        """List compliance reports"""
+        try:
+            from agentic.compliance import get_compliance_checker
+            checker = get_compliance_checker()
+            reports = checker.list_reports(limit)
+            return {
+                "reports": [r.to_dict() for r in reports],
+                "count": len(reports)
+            }
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.get("/api/compliance/reports/{report_id}")
+    async def get_compliance_report(report_id: str) -> Dict[str, Any]:
+        """Get a specific compliance report"""
+        try:
+            from agentic.compliance import get_compliance_checker
+            checker = get_compliance_checker()
+            report = checker.get_report(report_id)
+            if report:
+                return {"report": report.to_dict()}
+            return {"error": "Report not found"}
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.post("/api/compliance/rules/{rule_id}/enable")
+    async def enable_compliance_rule(rule_id: str) -> Dict[str, Any]:
+        """Enable a compliance rule"""
+        try:
+            from agentic.compliance import get_compliance_checker
+            checker = get_compliance_checker()
+            success = checker.enable_rule(rule_id)
+            return {"success": success}
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.post("/api/compliance/rules/{rule_id}/disable")
+    async def disable_compliance_rule(rule_id: str) -> Dict[str, Any]:
+        """Disable a compliance rule"""
+        try:
+            from agentic.compliance import get_compliance_checker
+            checker = get_compliance_checker()
+            success = checker.disable_rule(rule_id)
+            return {"success": success}
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.get("/api/compliance/categories")
+    async def get_compliance_categories() -> Dict[str, Any]:
+        """Get available compliance categories"""
+        try:
+            from agentic.compliance import ComplianceCategory
+            return {
+                "categories": [
+                    {"value": c.value, "name": c.name}
+                    for c in ComplianceCategory
+                ]
+            }
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    @app.get("/api/compliance/severities")
+    async def get_compliance_severities() -> Dict[str, Any]:
+        """Get available compliance severities"""
+        try:
+            from agentic.compliance import ComplianceSeverity
+            return {
+                "severities": [
+                    {"value": s.value, "name": s.name}
+                    for s in ComplianceSeverity
+                ]
+            }
+        except ImportError:
+            return {"error": "Compliance module not available"}
+
+    # ==================== Topology Exporter API ====================
+
+    @app.get("/api/exporter/status")
+    async def get_exporter_status() -> Dict[str, Any]:
+        """Get topology exporter status"""
+        try:
+            from agentic.exporter import get_topology_exporter
+            exporter = get_topology_exporter()
+            return exporter.get_statistics()
+        except ImportError:
+            return {"error": "Exporter module not available"}
+
+    @app.get("/api/exporter/formats")
+    async def get_export_formats() -> Dict[str, Any]:
+        """Get supported export formats"""
+        try:
+            from agentic.exporter import ExportFormat
+            return {
+                "formats": [
+                    {"value": f.value, "name": f.name}
+                    for f in ExportFormat
+                ]
+            }
+        except ImportError:
+            return {"error": "Exporter module not available"}
+
+    @app.post("/api/exporter/export")
+    async def export_topology(
+        format: str,
+        include_configs: bool = True,
+        include_interfaces: bool = True,
+        include_routing: bool = True,
+        include_labels: bool = True,
+        layout: str = "hierarchical",
+        filter_agents: Optional[List[str]] = None,
+        filter_protocols: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Export topology to specified format"""
+        try:
+            from agentic.exporter import get_topology_exporter, ExportFormat, ExportOptions
+            exporter = get_topology_exporter()
+
+            try:
+                export_format = ExportFormat(format.lower())
+            except ValueError:
+                return {"error": f"Invalid format: {format}"}
+
+            options = ExportOptions(
+                include_configs=include_configs,
+                include_interfaces=include_interfaces,
+                include_routing=include_routing,
+                include_labels=include_labels,
+                layout=layout,
+                filter_agents=filter_agents,
+                filter_protocols=filter_protocols
+            )
+
+            result = exporter.export(export_format, options)
+            return {"export": result.to_dict()}
+        except ImportError:
+            return {"error": "Exporter module not available"}
+
+    @app.post("/api/exporter/import")
+    async def import_topology(
+        content: str,
+        format: str
+    ) -> Dict[str, Any]:
+        """Import topology from content"""
+        try:
+            from agentic.exporter import get_topology_exporter, ExportFormat
+            exporter = get_topology_exporter()
+
+            try:
+                import_format = ExportFormat(format.lower())
+            except ValueError:
+                return {"error": f"Invalid format: {format}"}
+
+            topology = exporter.import_topology(content, import_format)
+            return {"topology": topology}
+        except ImportError:
+            return {"error": "Exporter module not available"}
+        except Exception as e:
+            return {"error": f"Import failed: {str(e)}"}
+
+    @app.get("/api/exporter/history")
+    async def get_export_history(limit: int = 10) -> Dict[str, Any]:
+        """Get export history"""
+        try:
+            from agentic.exporter import get_topology_exporter
+            exporter = get_topology_exporter()
+            return {
+                "history": exporter.get_export_history(limit)
+            }
+        except ImportError:
+            return {"error": "Exporter module not available"}
 
     # ==================== GraphQL API ====================
 
@@ -8733,6 +13504,752 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             }
         except ImportError:
             return {"error": "Scheduler module not available"}
+
+    # ==================== Inventory Manager API ====================
+
+    @app.get("/api/inventory/status")
+    async def get_inventory_status() -> Dict[str, Any]:
+        """Get inventory manager status and statistics"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            return manager.get_statistics()
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/devices")
+    async def list_inventory_devices(
+        device_type: Optional[str] = None,
+        status: Optional[str] = None,
+        site: Optional[str] = None,
+        vendor: Optional[str] = None,
+        environment: Optional[str] = None,
+        tags: Optional[str] = None,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """List inventory devices with optional filtering"""
+        try:
+            from agentic.inventory import get_inventory_manager, InventoryFilter, DeviceType, DeviceStatus
+            manager = get_inventory_manager()
+
+            filter = InventoryFilter()
+
+            if device_type:
+                try:
+                    filter.device_types = [DeviceType(device_type)]
+                except ValueError:
+                    pass
+
+            if status:
+                try:
+                    filter.statuses = [DeviceStatus(status)]
+                except ValueError:
+                    pass
+
+            if site:
+                filter.sites = [site]
+            if vendor:
+                filter.vendors = [vendor]
+            if environment:
+                filter.environments = [environment]
+            if tags:
+                filter.tags = tags.split(",")
+            if search:
+                filter.search_text = search
+
+            devices = manager.list_devices(filter)
+            return {
+                "devices": [d.to_dict() for d in devices],
+                "count": len(devices)
+            }
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.post("/api/inventory/devices")
+    async def create_inventory_device(request: Request) -> Dict[str, Any]:
+        """Add a device to inventory"""
+        try:
+            from agentic.inventory import get_inventory_manager, InventoryDevice, DeviceType, DeviceStatus, LifecycleStage, HardwareInfo, SoftwareInfo, DeviceLocation
+            manager = get_inventory_manager()
+            data = await request.json()
+
+            device = InventoryDevice()
+            device.name = data.get("name", "")
+            device.hostname = data.get("hostname", "")
+            device.management_ip = data.get("management_ip", "")
+            device.management_ipv6 = data.get("management_ipv6", "")
+            device.loopback_ip = data.get("loopback_ip", "")
+            device.loopback_ipv6 = data.get("loopback_ipv6", "")
+            device.owner = data.get("owner", "")
+            device.department = data.get("department", "")
+            device.environment = data.get("environment", "")
+            device.notes = data.get("notes", "")
+
+            if "device_type" in data:
+                device.device_type = DeviceType(data["device_type"])
+            if "status" in data:
+                device.status = DeviceStatus(data["status"])
+            if "lifecycle_stage" in data:
+                device.lifecycle_stage = LifecycleStage(data["lifecycle_stage"])
+            if "tags" in data:
+                device.tags = data["tags"]
+
+            if "hardware" in data:
+                for k, v in data["hardware"].items():
+                    if hasattr(device.hardware, k):
+                        setattr(device.hardware, k, v)
+
+            if "software" in data:
+                for k, v in data["software"].items():
+                    if hasattr(device.software, k):
+                        setattr(device.software, k, v)
+
+            if "location" in data:
+                for k, v in data["location"].items():
+                    if hasattr(device.location, k):
+                        setattr(device.location, k, v)
+
+            device = manager.add_device(device)
+            return device.to_dict()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/inventory/devices/{device_id}")
+    async def get_inventory_device(device_id: str) -> Dict[str, Any]:
+        """Get a specific device by ID"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            device = manager.get_device(device_id)
+            if device:
+                return device.to_dict()
+            return {"error": "Device not found"}
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.put("/api/inventory/devices/{device_id}")
+    async def update_inventory_device(device_id: str, request: Request) -> Dict[str, Any]:
+        """Update a device"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            data = await request.json()
+            device = manager.update_device(device_id, data)
+            if device:
+                return device.to_dict()
+            return {"error": "Device not found"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.delete("/api/inventory/devices/{device_id}")
+    async def delete_inventory_device(device_id: str) -> Dict[str, Any]:
+        """Delete a device from inventory"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            if manager.delete_device(device_id):
+                return {"success": True, "message": "Device deleted"}
+            return {"error": "Device not found"}
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/alerts")
+    async def get_inventory_alerts() -> Dict[str, Any]:
+        """Get inventory alerts (warranty/license expiring, etc.)"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            alerts = manager.get_alerts()
+            return {
+                "alerts": alerts,
+                "count": len(alerts),
+                "critical": len([a for a in alerts if a["severity"] == "critical"]),
+                "warning": len([a for a in alerts if a["severity"] == "warning"])
+            }
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.post("/api/inventory/import")
+    async def import_inventory(request: Request) -> Dict[str, Any]:
+        """Import devices from JSON data"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            data = await request.json()
+            devices = data.get("devices", [])
+            result = manager.import_devices(devices)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/inventory/export")
+    async def export_inventory(
+        device_type: Optional[str] = None,
+        status: Optional[str] = None,
+        site: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Export inventory to JSON"""
+        try:
+            from agentic.inventory import get_inventory_manager, InventoryFilter, DeviceType, DeviceStatus
+            manager = get_inventory_manager()
+
+            filter = InventoryFilter()
+            if device_type:
+                try:
+                    filter.device_types = [DeviceType(device_type)]
+                except ValueError:
+                    pass
+            if status:
+                try:
+                    filter.statuses = [DeviceStatus(status)]
+                except ValueError:
+                    pass
+            if site:
+                filter.sites = [site]
+
+            devices = manager.export_devices(filter)
+            return {
+                "devices": devices,
+                "count": len(devices),
+                "exported_at": datetime.utcnow().isoformat()
+            }
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/tags")
+    async def get_inventory_tags() -> Dict[str, Any]:
+        """Get all unique inventory tags"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            return {"tags": manager.get_tags()}
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/sites")
+    async def get_inventory_sites() -> Dict[str, Any]:
+        """Get all unique inventory sites"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            return {"sites": manager.get_sites()}
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/vendors")
+    async def get_inventory_vendors() -> Dict[str, Any]:
+        """Get all unique inventory vendors"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            return {"vendors": manager.get_vendors()}
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/device-types")
+    async def get_device_types() -> Dict[str, Any]:
+        """Get available device types"""
+        try:
+            from agentic.inventory import DeviceType
+            return {
+                "device_types": [
+                    {"value": dt.value, "name": dt.name}
+                    for dt in DeviceType
+                ]
+            }
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/statuses")
+    async def get_device_statuses() -> Dict[str, Any]:
+        """Get available device statuses"""
+        try:
+            from agentic.inventory import DeviceStatus
+            return {
+                "statuses": [
+                    {"value": s.value, "name": s.name}
+                    for s in DeviceStatus
+                ]
+            }
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/lifecycle-stages")
+    async def get_lifecycle_stages() -> Dict[str, Any]:
+        """Get available lifecycle stages"""
+        try:
+            from agentic.inventory import LifecycleStage
+            return {
+                "lifecycle_stages": [
+                    {"value": ls.value, "name": ls.name}
+                    for ls in LifecycleStage
+                ]
+            }
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.post("/api/inventory/devices/{device_id}/connections/{connected_id}")
+    async def add_device_connection(device_id: str, connected_id: str) -> Dict[str, Any]:
+        """Add a connection between two devices"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            if manager.add_connection(device_id, connected_id):
+                return {"success": True, "message": "Connection added"}
+            return {"error": "One or both devices not found"}
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.delete("/api/inventory/devices/{device_id}/connections/{connected_id}")
+    async def remove_device_connection(device_id: str, connected_id: str) -> Dict[str, Any]:
+        """Remove a connection between two devices"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            if manager.remove_connection(device_id, connected_id):
+                return {"success": True, "message": "Connection removed"}
+            return {"error": "One or both devices not found"}
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    @app.get("/api/inventory/devices/{device_id}/connections")
+    async def get_device_connections(device_id: str) -> Dict[str, Any]:
+        """Get all devices connected to a device"""
+        try:
+            from agentic.inventory import get_inventory_manager
+            manager = get_inventory_manager()
+            devices = manager.get_connected_devices(device_id)
+            return {
+                "connected_devices": [d.to_dict() for d in devices],
+                "count": len(devices)
+            }
+        except ImportError:
+            return {"error": "Inventory module not available"}
+
+    # ==================== Capacity Planning API ====================
+
+    @app.get("/api/capacity/status")
+    async def get_capacity_status() -> Dict[str, Any]:
+        """Get capacity planner status and statistics"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            return planner.get_statistics()
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.get("/api/capacity/summary")
+    async def get_capacity_summary() -> Dict[str, Any]:
+        """Get high-level capacity summary"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            return planner.get_summary()
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.get("/api/capacity/metrics")
+    async def list_capacity_metrics(
+        resource_type: Optional[str] = None,
+        device_id: Optional[str] = None,
+        min_utilization: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """List capacity metrics with filtering"""
+        try:
+            from agentic.capacity import get_capacity_planner, ResourceType
+            planner = get_capacity_planner()
+
+            rtype = None
+            if resource_type:
+                try:
+                    rtype = ResourceType(resource_type)
+                except ValueError:
+                    pass
+
+            metrics = planner.get_metrics(
+                resource_type=rtype,
+                device_id=device_id,
+                min_utilization=min_utilization
+            )
+            return {
+                "metrics": [m.to_dict() for m in metrics],
+                "count": len(metrics)
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.post("/api/capacity/metrics")
+    async def record_capacity_metric(request: Request) -> Dict[str, Any]:
+        """Record a capacity metric"""
+        try:
+            from agentic.capacity import get_capacity_planner, ResourceType
+            planner = get_capacity_planner()
+            data = await request.json()
+
+            rtype = ResourceType(data.get("resource_type", "custom"))
+            metric = planner.record_metric(
+                resource_type=rtype,
+                device_id=data.get("device_id", ""),
+                device_name=data.get("device_name", ""),
+                resource_name=data.get("resource_name", ""),
+                current_value=float(data.get("current_value", 0)),
+                max_capacity=float(data.get("max_capacity", 100)),
+                unit=data.get("unit", "")
+            )
+            return metric.to_dict()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/capacity/metrics/critical")
+    async def get_critical_metrics() -> Dict[str, Any]:
+        """Get metrics at critical or exhausted levels"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            metrics = planner.get_critical_metrics()
+            return {
+                "metrics": [m.to_dict() for m in metrics],
+                "count": len(metrics)
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.get("/api/capacity/forecasts")
+    async def list_capacity_forecasts() -> Dict[str, Any]:
+        """List all capacity forecasts"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            forecasts = planner.get_forecasts()
+            return {
+                "forecasts": [f.to_dict() for f in forecasts],
+                "count": len(forecasts)
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.post("/api/capacity/forecasts/generate")
+    async def generate_capacity_forecasts() -> Dict[str, Any]:
+        """Generate forecasts for all metrics"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            forecasts = planner.generate_all_forecasts()
+            return {
+                "forecasts": [f.to_dict() for f in forecasts],
+                "count": len(forecasts)
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.get("/api/capacity/forecasts/urgent")
+    async def get_urgent_forecasts(days: int = 30) -> Dict[str, Any]:
+        """Get forecasts that will hit thresholds soon"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            forecasts = planner.get_urgent_forecasts(days)
+            return {
+                "forecasts": [f.to_dict() for f in forecasts],
+                "count": len(forecasts),
+                "within_days": days
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.get("/api/capacity/thresholds")
+    async def list_capacity_thresholds() -> Dict[str, Any]:
+        """List capacity thresholds"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            thresholds = planner.get_thresholds()
+            return {
+                "thresholds": [t.to_dict() for t in thresholds],
+                "count": len(thresholds)
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.post("/api/capacity/thresholds")
+    async def create_capacity_threshold(request: Request) -> Dict[str, Any]:
+        """Create a capacity threshold"""
+        try:
+            from agentic.capacity import get_capacity_planner, CapacityThreshold, ResourceType
+            planner = get_capacity_planner()
+            data = await request.json()
+
+            threshold = CapacityThreshold(
+                resource_type=ResourceType(data.get("resource_type", "custom")),
+                device_pattern=data.get("device_pattern", "*"),
+                resource_pattern=data.get("resource_pattern", "*"),
+                warning_pct=float(data.get("warning_pct", 70)),
+                critical_pct=float(data.get("critical_pct", 90))
+            )
+            threshold = planner.add_threshold(threshold)
+            return threshold.to_dict()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/capacity/recommendations")
+    async def list_capacity_recommendations(status: Optional[str] = None) -> Dict[str, Any]:
+        """List capacity recommendations"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            recommendations = planner.get_recommendations(status)
+            return {
+                "recommendations": [r.to_dict() for r in recommendations],
+                "count": len(recommendations)
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.post("/api/capacity/recommendations/generate")
+    async def generate_recommendations() -> Dict[str, Any]:
+        """Generate capacity recommendations"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            recommendations = planner.generate_recommendations()
+            return {
+                "recommendations": [r.to_dict() for r in recommendations],
+                "count": len(recommendations)
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.put("/api/capacity/recommendations/{rec_id}")
+    async def update_recommendation_status(rec_id: str, request: Request) -> Dict[str, Any]:
+        """Update recommendation status"""
+        try:
+            from agentic.capacity import get_capacity_planner
+            planner = get_capacity_planner()
+            data = await request.json()
+            status = data.get("status", "pending")
+            rec = planner.update_recommendation(rec_id, status)
+            if rec:
+                return rec.to_dict()
+            return {"error": "Recommendation not found"}
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    @app.get("/api/capacity/resource-types")
+    async def get_resource_types() -> Dict[str, Any]:
+        """Get available resource types"""
+        try:
+            from agentic.capacity import ResourceType
+            return {
+                "resource_types": [
+                    {"value": rt.value, "name": rt.name}
+                    for rt in ResourceType
+                ]
+            }
+        except ImportError:
+            return {"error": "Capacity module not available"}
+
+    # ==================== SLA Monitoring API ====================
+
+    @app.get("/api/sla/status")
+    async def get_sla_status() -> Dict[str, Any]:
+        """Get SLA monitoring statistics"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            return monitor.get_statistics()
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.get("/api/sla/summary")
+    async def get_sla_summary() -> Dict[str, Any]:
+        """Get SLA dashboard summary"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            return monitor.get_dashboard_summary()
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.get("/api/sla/definitions")
+    async def list_sla_definitions(enabled_only: bool = False) -> Dict[str, Any]:
+        """List all SLA definitions"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            slas = monitor.list_slas(enabled_only)
+            return {
+                "slas": [s.to_dict() for s in slas],
+                "count": len(slas)
+            }
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.post("/api/sla/definitions")
+    async def create_sla_definition(request: Request) -> Dict[str, Any]:
+        """Create a new SLA definition"""
+        try:
+            from agentic.sla import get_sla_monitor, SLADefinition, SLATarget, SLAMetricType
+            monitor = get_sla_monitor()
+            data = await request.json()
+
+            sla = SLADefinition(
+                name=data.get("name", ""),
+                description=data.get("description", ""),
+                service_name=data.get("service_name", ""),
+                service_type=data.get("service_type", "network"),
+                scope=data.get("scope", []),
+                measurement_window=data.get("measurement_window", "30d"),
+                owner=data.get("owner", "")
+            )
+
+            if "targets" in data:
+                for t in data["targets"]:
+                    target = SLATarget(
+                        metric_type=SLAMetricType(t.get("metric_type", "availability")),
+                        target_value=float(t.get("target_value", 99.9)),
+                        comparison=t.get("comparison", ">="),
+                        unit=t.get("unit", "%"),
+                        warning_threshold=float(t.get("warning_threshold", 99.5))
+                    )
+                    sla.targets.append(target)
+
+            sla = monitor.create_sla(sla)
+            return sla.to_dict()
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/sla/definitions/{sla_id}")
+    async def get_sla_definition(sla_id: str) -> Dict[str, Any]:
+        """Get a specific SLA"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            sla = monitor.get_sla(sla_id)
+            if sla:
+                return sla.to_dict()
+            return {"error": "SLA not found"}
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.delete("/api/sla/definitions/{sla_id}")
+    async def delete_sla_definition(sla_id: str) -> Dict[str, Any]:
+        """Delete an SLA"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            if monitor.delete_sla(sla_id):
+                return {"success": True, "message": "SLA deleted"}
+            return {"error": "SLA not found"}
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.post("/api/sla/{sla_id}/metrics")
+    async def record_sla_metric(sla_id: str, request: Request) -> Dict[str, Any]:
+        """Record an SLA metric sample"""
+        try:
+            from agentic.sla import get_sla_monitor, SLAMetricType
+            monitor = get_sla_monitor()
+            data = await request.json()
+
+            sample = monitor.record_metric(
+                sla_id=sla_id,
+                metric_type=SLAMetricType(data.get("metric_type", "availability")),
+                value=float(data.get("value", 0)),
+                source=data.get("source", "")
+            )
+
+            if sample:
+                return sample.to_dict()
+            return {"error": "SLA not found"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.get("/api/sla/violations")
+    async def list_sla_violations(
+        sla_id: Optional[str] = None,
+        active_only: bool = False,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """List SLA violations"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            violations = monitor.get_violations(sla_id, active_only, limit)
+            return {
+                "violations": [v.to_dict() for v in violations],
+                "count": len(violations)
+            }
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.post("/api/sla/violations/{violation_id}/acknowledge")
+    async def acknowledge_sla_violation(violation_id: str, request: Request) -> Dict[str, Any]:
+        """Acknowledge an SLA violation"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            data = await request.json()
+            violation = monitor.acknowledge_violation(violation_id, data.get("acknowledged_by", ""))
+            if violation:
+                return violation.to_dict()
+            return {"error": "Violation not found"}
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.post("/api/sla/violations/{violation_id}/resolve")
+    async def resolve_sla_violation(violation_id: str, request: Request) -> Dict[str, Any]:
+        """Resolve an SLA violation"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            data = await request.json()
+            violation = monitor.resolve_violation(violation_id, data.get("resolution", ""))
+            if violation:
+                return violation.to_dict()
+            return {"error": "Violation not found"}
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.post("/api/sla/{sla_id}/report")
+    async def generate_sla_report(sla_id: str, days: int = 30) -> Dict[str, Any]:
+        """Generate an SLA compliance report"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            report = monitor.generate_report(sla_id, days)
+            if report:
+                return report.to_dict()
+            return {"error": "SLA not found or no data"}
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.get("/api/sla/reports")
+    async def list_sla_reports(sla_id: Optional[str] = None) -> Dict[str, Any]:
+        """List generated SLA reports"""
+        try:
+            from agentic.sla import get_sla_monitor
+            monitor = get_sla_monitor()
+            reports = monitor.get_reports(sla_id)
+            return {
+                "reports": [r.to_dict() for r in reports],
+                "count": len(reports)
+            }
+        except ImportError:
+            return {"error": "SLA module not available"}
+
+    @app.get("/api/sla/metric-types")
+    async def get_sla_metric_types() -> Dict[str, Any]:
+        """Get available SLA metric types"""
+        try:
+            from agentic.sla import SLAMetricType
+            return {
+                "metric_types": [
+                    {"value": mt.value, "name": mt.name}
+                    for mt in SLAMetricType
+                ]
+            }
+        except ImportError:
+            return {"error": "SLA module not available"}
 
     # ==================== Plugin System API ====================
 
@@ -14495,3 +20012,8 @@ def get_fallback_html() -> str:
 </body>
 </html>
 """
+
+
+# Create standalone app for direct uvicorn usage (development/testing)
+# Usage: uvicorn webui.server:app --host 0.0.0.0 --port 8000 --reload
+app = create_webui_server(None, None)

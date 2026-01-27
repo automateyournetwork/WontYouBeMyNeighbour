@@ -8,6 +8,7 @@ Orchestrates LLM queries, decision-making, and autonomous actions.
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import asyncio
+import json
 
 from ..llm.interface import LLMInterface, LLMProvider
 from ..reasoning.intent_parser import IntentParser, IntentType
@@ -19,6 +20,14 @@ from ..knowledge.analytics import NetworkAnalytics
 from ..multi_agent.gossip import GossipProtocol
 from ..multi_agent.consensus import ConsensusEngine
 from ..mcp.gait_mcp import GAITClient, GAITEventType, GAITActor, get_gait_client
+from ..mcp.pyats_mcp import PyATSMCPClient, get_pyats_client, init_pyats_for_agent
+from ..tests.dynamic_test_generator import (
+    DynamicTestGenerator,
+    SelfTestingAgent,
+    TestCategory,
+    TestTrigger,
+    TestExecutionResult,
+)
 
 
 class AgenticBridge:
@@ -85,6 +94,11 @@ class AgenticBridge:
         self._state_update_task: Optional[asyncio.Task] = None
         self._running = False
 
+        # Self-Testing Network: pyATS MCP client and dynamic test generator
+        self.pyats_client: Optional[PyATSMCPClient] = None
+        self.self_tester: Optional[SelfTestingAgent] = None
+        self._self_test_enabled = False
+
     async def initialize(self):
         """Initialize all agentic components"""
         print(f"[AgenticBridge] Initializing ASI {self.asi_id}...")
@@ -144,6 +158,204 @@ class AgenticBridge:
         self.state_manager.set_interfaces(self.interfaces)
 
         print(f"[AgenticBridge] Loaded agent config with {len(self.interfaces)} interfaces")
+
+        # Initialize self-testing if pyATS client is available
+        if self.pyats_client and self._self_test_enabled:
+            self.self_tester = SelfTestingAgent(
+                agent_config=config,
+                pyats_client=self.pyats_client,
+            )
+            # Register callback to update health scores on test completion
+            self.self_tester.register_callback(self._on_test_completed)
+            print(f"[AgenticBridge] Self-testing agent initialized")
+
+    async def enable_self_testing(
+        self,
+        pyats_server_path: Optional[str] = None,
+        testbed_path: Optional[str] = None,
+        docker_mode: bool = False,
+    ) -> bool:
+        """
+        Enable self-testing capability for this agent.
+
+        This connects to the pyATS MCP server and enables the agent
+        to autonomously generate and execute network tests.
+
+        Args:
+            pyats_server_path: Path to pyats_mcp_server.py
+            testbed_path: Path to pyATS testbed.yaml
+            docker_mode: Use Docker container for pyATS MCP
+
+        Returns:
+            True if self-testing was enabled successfully
+        """
+        try:
+            self.pyats_client = await init_pyats_for_agent(
+                server_path=pyats_server_path,
+                testbed_path=testbed_path,
+                docker_mode=docker_mode,
+            )
+            self._self_test_enabled = True
+
+            # If agent config is already set, initialize self-tester
+            if self.agent_config:
+                self.self_tester = SelfTestingAgent(
+                    agent_config=self.agent_config,
+                    pyats_client=self.pyats_client,
+                )
+                self.self_tester.register_callback(self._on_test_completed)
+
+            print(f"[AgenticBridge] Self-testing enabled for {self.asi_id}")
+            return True
+
+        except Exception as e:
+            print(f"[AgenticBridge] Failed to enable self-testing: {e}")
+            return False
+
+    def _on_test_completed(self, result: TestExecutionResult) -> None:
+        """
+        Callback when a self-test completes.
+
+        Updates health scores and records result in GAIT.
+        """
+        # Record in action history (GAIT)
+        self._record_action(
+            action_type='self_test',
+            description=f"Self-test {result.test_id}",
+            result={
+                'success': result.success,
+                'passed': result.passed,
+                'failed': result.failed,
+                'errored': result.errored,
+                'recommendations': result.recommendations,
+            }
+        )
+
+        # Log result
+        if result.success:
+            print(f"[SelfTest] PASSED - {result.test_id}: {result.passed} tests passed")
+        else:
+            print(f"[SelfTest] FAILED - {result.test_id}: {result.failed} failed, {result.errored} errors")
+            for rec in result.recommendations:
+                print(f"  Recommendation: {rec}")
+
+    async def run_self_assessment(self) -> Optional[TestExecutionResult]:
+        """
+        Run comprehensive self-assessment.
+
+        The agent tests its own connectivity, protocol states,
+        interface health, and routing table.
+
+        Returns:
+            TestExecutionResult or None if self-testing not enabled
+        """
+        if not self.self_tester:
+            print("[AgenticBridge] Self-testing not enabled. Call enable_self_testing() first.")
+            return None
+
+        print(f"[AgenticBridge] Running self-assessment for {self.asi_id}...")
+        return await self.self_tester.run_self_assessment()
+
+    async def test_connectivity(self, targets: List[str]) -> Optional[TestExecutionResult]:
+        """
+        Test connectivity to specific targets.
+
+        Args:
+            targets: List of IP addresses to test connectivity to
+
+        Returns:
+            TestExecutionResult or None if self-testing not enabled
+        """
+        if not self.self_tester:
+            return None
+
+        return await self.self_tester.test_connectivity_to(
+            targets=targets,
+            trigger=TestTrigger.HUMAN_REQUEST,
+        )
+
+    async def test_protocol_state(self, protocol: str) -> Optional[TestExecutionResult]:
+        """
+        Test a specific protocol's state.
+
+        Args:
+            protocol: Protocol to test ('ospf', 'bgp', 'interfaces')
+
+        Returns:
+            TestExecutionResult or None if self-testing not enabled
+        """
+        if not self.self_tester:
+            return None
+
+        if protocol.lower() == 'ospf':
+            return await self.self_tester.test_ospf_neighbors(
+                trigger=TestTrigger.HUMAN_REQUEST
+            )
+        elif protocol.lower() == 'bgp':
+            return await self.self_tester.test_bgp_peers(
+                trigger=TestTrigger.HUMAN_REQUEST
+            )
+        elif protocol.lower() in ('interface', 'interfaces'):
+            return await self.self_tester.test_interfaces(
+                trigger=TestTrigger.HUMAN_REQUEST
+            )
+        else:
+            print(f"[AgenticBridge] Unknown protocol: {protocol}")
+            return None
+
+    async def test_on_state_change(self, change_type: str, details: Dict[str, Any]) -> Optional[TestExecutionResult]:
+        """
+        Run appropriate tests when a state change is detected.
+
+        This is the autonomous testing trigger - when the agent
+        detects something changed, it tests to validate.
+
+        Args:
+            change_type: Type of change ('neighbor_down', 'route_withdrawn', etc.)
+            details: Details about the change
+
+        Returns:
+            TestExecutionResult or None
+        """
+        if not self.self_tester:
+            return None
+
+        print(f"[AgenticBridge] State change detected: {change_type}")
+
+        if change_type in ('neighbor_down', 'neighbor_up', 'ospf_adjacency_change'):
+            return await self.self_tester.test_ospf_neighbors(
+                trigger=TestTrigger.STATE_CHANGE
+            )
+        elif change_type in ('peer_down', 'peer_up', 'bgp_session_change'):
+            return await self.self_tester.test_bgp_peers(
+                trigger=TestTrigger.STATE_CHANGE
+            )
+        elif change_type in ('interface_down', 'interface_up', 'link_flap'):
+            return await self.self_tester.test_interfaces(
+                trigger=TestTrigger.STATE_CHANGE
+            )
+        elif change_type in ('route_withdrawn', 'route_added'):
+            # Test that expected routes are still present
+            if 'routes' in details:
+                return await self.self_tester.test_route_presence(
+                    routes=details['routes'],
+                    trigger=TestTrigger.STATE_CHANGE,
+                )
+        else:
+            # Unknown change type - run full self-assessment
+            return await self.self_tester.run_self_assessment()
+
+    def get_test_pass_rate(self) -> float:
+        """Get the overall test pass rate from self-testing history"""
+        if not self.self_tester:
+            return 0.0
+        return self.self_tester.get_pass_rate()
+
+    def get_test_history(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent test execution history"""
+        if not self.self_tester:
+            return []
+        return [r.to_dict() for r in self.self_tester.get_test_history(limit)]
 
     async def process_message(self, user_message: str) -> str:
         """
@@ -240,6 +452,9 @@ class AgenticBridge:
 
         elif intent.intent_type == IntentType.DIAGNOSTIC_TRACEROUTE:
             response = await self._handle_traceroute(intent)
+
+        elif intent.intent_type == IntentType.SEND_EMAIL:
+            response = await self._handle_send_email(intent)
 
         else:
             # Use LLM for complex queries
@@ -436,202 +651,82 @@ class AgenticBridge:
             "pinned_memory": status.get("pinned_memory", 0)
         }
 
+    async def _llm_respond(self, user_query: str, additional_context: str = "") -> str:
+        """
+        Generate an LLM response based on the user's query and full agent state.
+
+        This is the core RAG-like method - the LLM has access to all agent state
+        and generates natural language responses based on it.
+
+        Args:
+            user_query: The user's original question/request
+            additional_context: Any extra context specific to this query
+
+        Returns:
+            Natural language response from the LLM
+        """
+        prompt = f"""Based on the current network state (which you have full access to in your context),
+please answer the user's question naturally and conversationally.
+
+USER'S QUESTION: {user_query}
+"""
+        if additional_context:
+            prompt += f"\nADDITIONAL CONTEXT:\n{additional_context}\n"
+
+        prompt += """
+Provide a helpful, accurate response based on the actual network state data you have.
+Be specific - reference actual values, IPs, states, and metrics from the data.
+If something is not available in the data, say so rather than guessing.
+"""
+        response = await self.llm.query(prompt)
+        return response or "I couldn't generate a response. Please try again."
+
     async def _handle_query_neighbors(self, intent) -> str:
-        """Handle OSPF neighbor query"""
-        result = await self.executor.execute_action(
-            "query_neighbors",
-            {"protocol": "ospf"}
-        )
-
-        if result.result:
-            neighbors = result.result.get("neighbors", [])
-            if not neighbors:
-                response = "No OSPF neighbors found."
-            else:
-                lines = ["OSPF Neighbors:", ""]
-                for neighbor in neighbors:
-                    lines.append(f"  • Neighbor {neighbor['neighbor_id']}")
-                    lines.append(f"    State: {neighbor['state']}")
-                    lines.append(f"    Address: {neighbor['address']}")
-                    lines.append("")
-                response = "\n".join(lines)
-        else:
-            response = f"Error querying neighbors: {result.error}"
-
-        self._record_action('query_neighbors', result.result if result.result else result.error, bool(result.result))
-        return response
+        """Handle neighbor query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_route(self, intent) -> str:
-        """Handle route query"""
-        destination = intent.parameters.get("destination")
-
-        result = await self.executor.execute_action(
-            "query_routes",
-            {"destination": destination}
-        )
-
-        if result.result:
-            routes = result.result.get("routes", [])
-            if not routes:
-                return f"No route found to {destination}"
-
-            lines = [f"Routes to {destination}:", ""]
-            for route in routes:
-                lines.append(f"  • Network: {route['network']}")
-                lines.append(f"    Next Hop: {route['next_hop']}")
-                lines.append(f"    Protocol: {route['protocol']}")
-                if "as_path" in route:
-                    lines.append(f"    AS Path: {' '.join(map(str, route['as_path']))}")
-                lines.append("")
-
-            return "\n".join(lines)
-        else:
-            return f"Error querying routes: {result.error}"
+        """Handle route query - LLM responds based on full state"""
+        destination = intent.parameters.get("destination", "")
+        extra = f"User is asking about route to: {destination}" if destination else ""
+        return await self._llm_respond(intent.raw_query, extra)
 
     async def _handle_query_status(self, intent) -> str:
-        """Handle general status query"""
-        return self.state_manager.get_state_summary()
+        """Handle general status query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_bgp_peers(self, intent) -> str:
-        """Handle BGP peer query"""
-        result = await self.executor.execute_action(
-            "query_neighbors",
-            {"protocol": "bgp"}
-        )
-
-        if result.result:
-            peers = result.result.get("peers", [])
-            if not peers:
-                return "No BGP peers found."
-
-            lines = ["BGP Peers:", ""]
-            for peer in peers:
-                lines.append(f"  • Peer {peer['peer']}")
-                lines.append(f"    AS: {peer['as']}")
-                lines.append(f"    State: {peer['state']}")
-                lines.append("")
-
-            return "\n".join(lines)
-        else:
-            return f"Error querying BGP peers: {result.error}"
+        """Handle BGP peer query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_rib(self, intent) -> str:
-        """Handle RIB query"""
-        result = await self.executor.execute_action(
-            "query_routes",
-            {}
-        )
-
-        if result.result:
-            routes = result.result.get("routes", [])
-            count = result.result.get("count", len(routes))
-
-            lines = [f"Routing Table ({count} routes):", ""]
-            for route in routes[:10]:  # Show first 10
-                lines.append(f"  • {route['network']} via {route['next_hop']} ({route['protocol']})")
-
-            if count > 10:
-                lines.append(f"\n  ... and {count - 10} more routes")
-
-            return "\n".join(lines)
-        else:
-            return f"Error querying routing table: {result.error}"
+        """Handle RIB query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_detect_anomaly(self, intent) -> str:
-        """Handle anomaly detection"""
-        network_state = self.state_manager.get_llm_context()
-        anomalies = await self.decision_engine.detect_anomalies(network_state)
-
-        if not anomalies:
-            return "No anomalies detected. Network appears healthy."
-
-        lines = [f"Detected {len(anomalies)} anomalies:", ""]
-        for i, anomaly in enumerate(anomalies, 1):
-            lines.append(f"{i}. [{anomaly['severity'].upper()}] {anomaly['type']}")
-            lines.append(f"   {anomaly['description']}")
-            lines.append(f"   Recommendation: {anomaly['recommendation']}")
-            lines.append("")
-
-        return "\n".join(lines)
+        """Handle anomaly detection - LLM analyzes state for issues"""
+        return await self._llm_respond(
+            intent.raw_query,
+            "Analyze the network state for any anomalies, issues, or problems. "
+            "Look for things like down neighbors, missing routes, protocol issues, etc."
+        )
 
     async def _handle_analyze_topology(self, intent) -> str:
-        """Handle topology analysis"""
-        # Generate analytics report
-        report = self.analytics.generate_report()
-        return report
+        """Handle topology analysis - LLM describes the network topology"""
+        return await self._llm_respond(
+            intent.raw_query,
+            "Describe the network topology including all agents, their connections, "
+            "protocols in use, and how traffic flows between them."
+        )
 
     async def _handle_explain_decision(self, intent) -> str:
-        """Explain routing decisions"""
-        lines = ["Routing Decision Explanation:", ""]
-
-        # First check decision engine history
-        explanation = self.decision_engine.explain_last_decision()
-        if explanation and explanation != "No decisions made yet.":
-            lines.append("Recent Agentic Decision:")
-            lines.append(f"  {explanation}")
-            lines.append("")
-
-        # Also explain BGP path selection for installed routes
-        if self.bgp_connector and self.bgp_connector.speaker:
-            routes = self.bgp_connector.speaker.agent.loc_rib.get_all_routes()
-            if routes:
-                lines.append("BGP Path Selection:")
-                lines.append("  Decision process follows these steps:")
-                lines.append("    1. Highest LOCAL_PREF (prefer routes with higher local preference)")
-                lines.append("    2. Shortest AS_PATH (prefer routes with fewer AS hops)")
-                lines.append("    3. Lowest ORIGIN (IGP < EGP < Incomplete)")
-                lines.append("    4. Lowest MED (Multi-Exit Discriminator)")
-                lines.append("    5. eBGP over iBGP (prefer external routes)")
-                lines.append("    6. Lowest IGP metric to next-hop")
-                lines.append("    7. Lowest Router ID (tiebreaker)")
-                lines.append("")
-
-                # Show a sample decision
-                if routes:
-                    route = routes[0]
-                    lines.append(f"  Example: Route {route.prefix}")
-                    lines.append(f"    Learned from: {route.peer_id}")
-
-                    # AS Path
-                    as_path = route.path_attributes.get(2)
-                    if as_path and hasattr(as_path, 'get_as_list'):
-                        path_list = as_path.get_as_list()
-                        lines.append(f"    AS Path: {' '.join(map(str, path_list)) or '(local)'}")
-                        lines.append(f"    AS Path Length: {len(path_list)}")
-
-                    # Local Pref
-                    local_pref = route.path_attributes.get(5)
-                    if local_pref:
-                        val = local_pref.value
-                        if isinstance(val, (int, float)):
-                            lines.append(f"    Local Pref: {val}")
-
-                    # Origin
-                    origin = route.path_attributes.get(1)
-                    if origin:
-                        val = origin.value
-                        if isinstance(val, int):
-                            origin_names = {0: "IGP", 1: "EGP", 2: "Incomplete"}
-                            lines.append(f"    Origin: {origin_names.get(val, 'Unknown')}")
-
-        # OSPF path selection
-        if self.ospf_connector and self.ospf_connector.interface:
-            lines.append("")
-            lines.append("OSPF Path Selection:")
-            lines.append("  Routes are selected based on:")
-            lines.append("    1. Intra-area routes preferred over inter-area")
-            lines.append("    2. Inter-area routes preferred over external")
-            lines.append("    3. Lowest cumulative cost (SPF algorithm)")
-
-            ospf_state = self.state_manager.get_ospf_state()
-            if ospf_state:
-                lsdb = ospf_state.get('lsdb', {})
-                lines.append(f"  Current LSDB has {lsdb.get('total_lsas', 0)} LSAs for SPF computation")
-
-        if len(lines) == 2:
-            return "No routing decisions to explain - no protocols running."
-
-        return "\n".join(lines)
+        """Explain routing decisions - LLM explains based on full state"""
+        return await self._llm_respond(
+            intent.raw_query,
+            "Explain how routing decisions are made. Include BGP path selection criteria "
+            "(LOCAL_PREF, AS_PATH, ORIGIN, MED, etc.) and OSPF SPF algorithm if relevant. "
+            "Reference actual routes and their attributes from the current state."
+        )
 
     async def _handle_action_adjust_metric(self, intent) -> str:
         """Handle metric adjustment action"""
@@ -697,397 +792,50 @@ class AgenticBridge:
 
         lines = ["Router ID Information:", ""]
 
-        # OSPF Router ID
-        ospf_state = self.state_manager.get_ospf_state()
-        if ospf_state:
-            lines.append(f"  OSPF Router ID: {ospf_state.get('router_id', 'N/A')}")
-            lines.append(f"  OSPF Area: {ospf_state.get('area_id', 'N/A')}")
-
-        # BGP Router ID
-        bgp_state = self.state_manager.get_bgp_state()
-        if bgp_state:
-            lines.append(f"  BGP Router ID: {bgp_state.get('router_id', 'N/A')}")
-            lines.append(f"  BGP Local AS: {bgp_state.get('local_as', 'N/A')}")
-
-        if len(lines) == 2:
-            return "No router ID information available."
-
-        return "\n".join(lines)
+    async def _handle_query_router_id(self, intent) -> str:
+        """Handle router ID query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_lsa(self, intent) -> str:
-        """Handle LSA/LSDB query"""
-        await self.state_manager.update_state()
-
-        ospf_state = self.state_manager.get_ospf_state()
-        if not ospf_state:
-            return "No OSPF state available."
-
-        lsdb = ospf_state.get("lsdb", {})
-        lines = ["OSPF Link State Database:", ""]
-        lines.append(f"  Router LSAs: {lsdb.get('router_lsas', 0)}")
-        lines.append(f"  Network LSAs: {lsdb.get('network_lsas', 0)}")
-        lines.append(f"  Summary LSAs: {lsdb.get('summary_lsas', 0)}")
-        lines.append(f"  External LSAs: {lsdb.get('external_lsas', 0)}")
-        lines.append(f"  Total LSAs: {lsdb.get('total_lsas', 0)}")
-
-        return "\n".join(lines)
+        """Handle LSA/LSDB query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_statistics(self, intent) -> str:
-        """Handle statistics query"""
-        stats = self.get_statistics()
-        await self.state_manager.update_state()
-
-        lines = ["Network Statistics:", ""]
-
-        # OSPF stats
-        ospf_state = self.state_manager.get_ospf_state()
-        if ospf_state:
-            lines.append("OSPF:")
-            lines.append(f"  Neighbors: {ospf_state.get('neighbor_count', 0)}")
-            lines.append(f"  Full Adjacencies: {ospf_state.get('full_neighbors', 0)}")
-            lines.append(f"  Total LSAs: {ospf_state.get('lsdb', {}).get('total_lsas', 0)}")
-            lines.append("")
-
-        # BGP stats
-        bgp_state = self.state_manager.get_bgp_state()
-        if bgp_state:
-            lines.append("BGP:")
-            lines.append(f"  Total Peers: {bgp_state.get('peer_count', 0)}")
-            lines.append(f"  Established Peers: {bgp_state.get('established_peers', 0)}")
-            lines.append(f"  Total Routes: {bgp_state.get('route_count', 0)}")
-            lines.append("")
-
-        # LLM stats
-        lines.append("Agentic Layer:")
-        lines.append(f"  LLM Turns: {stats['llm']['turns']}/{stats['llm']['max_turns']}")
-        lines.append(f"  Actions Completed: {stats['actions']['completed']}")
-        lines.append(f"  State Snapshots: {stats['state']['snapshots']}")
-
-        return "\n".join(lines)
+        """Handle statistics query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_interface(self, intent) -> str:
-        """Handle interface query"""
-        await self.state_manager.update_state()
-
-        lines = ["Interface Information:", ""]
-
-        # Show ALL configured interfaces
-        if self.interfaces:
-            lines.append(f"Configured Interfaces ({len(self.interfaces)} total):")
-            lines.append("")
-            for iface in self.interfaces:
-                name = iface.get('name', iface.get('id', 'unknown'))
-                iface_type = iface.get('type', 'eth')
-                addrs = iface.get('addresses', [])
-                status = iface.get('status', 'up')
-                mtu = iface.get('mtu', 1500)
-
-                type_names = {
-                    'eth': 'Ethernet',
-                    'lo': 'Loopback',
-                    'vlan': 'VLAN',
-                    'tun': 'Tunnel',
-                    'sub': 'Sub-Interface'
-                }
-                type_display = type_names.get(iface_type, iface_type)
-
-                lines.append(f"  • {name} ({type_display})")
-                if addrs:
-                    lines.append(f"      IP: {', '.join(addrs)}")
-                else:
-                    lines.append(f"      IP: Not configured")
-                lines.append(f"      Status: {status}, MTU: {mtu}")
-                lines.append("")
-        else:
-            lines.append("  No interfaces configured in agent config.")
-            lines.append("")
-
-        # Also show protocol-specific interface info
-        ospf_state = self.state_manager.get_ospf_state()
-        if ospf_state:
-            lines.append("Protocol Interface Bindings:")
-            lines.append(f"  OSPF bound to: {ospf_state.get('interface_name', 'N/A')}")
-            lines.append(f"  OSPF Router ID: {ospf_state.get('router_id', 'N/A')}")
-            lines.append(f"  OSPF Area: {ospf_state.get('area_id', 'N/A')}")
-
-        if len(lines) == 2:
-            return "No interface information available."
-
-        return "\n".join(lines)
+        """Handle interface query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_analyze_health(self, intent) -> str:
-        """Handle network health analysis"""
-        await self.state_manager.update_state()
-
-        issues = []
-
-        # Check OSPF health
-        ospf_state = self.state_manager.get_ospf_state()
-        if ospf_state:
-            neighbor_count = ospf_state.get('neighbor_count', 0)
-            full_neighbors = ospf_state.get('full_neighbors', 0)
-            if neighbor_count > 0 and full_neighbors < neighbor_count:
-                issues.append(f"OSPF: Only {full_neighbors}/{neighbor_count} neighbors in Full state")
-
-        # Check BGP health
-        bgp_state = self.state_manager.get_bgp_state()
-        if bgp_state:
-            peer_count = bgp_state.get('peer_count', 0)
-            established = bgp_state.get('established_peers', 0)
-            if peer_count > 0 and established < peer_count:
-                issues.append(f"BGP: Only {established}/{peer_count} peers Established")
-
-        if not issues:
-            lines = ["Network Health: ✓ HEALTHY", ""]
-            if ospf_state:
-                lines.append(f"  OSPF: {ospf_state.get('full_neighbors', 0)} Full neighbors")
-            if bgp_state:
-                lines.append(f"  BGP: {bgp_state.get('established_peers', 0)} Established peers, {bgp_state.get('route_count', 0)} routes")
-            return "\n".join(lines)
-        else:
-            lines = ["Network Health: ⚠ ISSUES DETECTED", ""]
-            for issue in issues:
-                lines.append(f"  • {issue}")
-            return "\n".join(lines)
+        """Handle network health analysis - LLM analyzes state"""
+        return await self._llm_respond(
+            intent.raw_query,
+            "Analyze the overall health of the network. Check for issues like "
+            "neighbors not in Full state, BGP peers not Established, missing routes, etc. "
+            "Provide a health assessment with specific details from the current state."
+        )
 
     async def _handle_query_protocol_status(self, intent) -> str:
-        """Handle protocol status query (is OSPF/BGP running?)"""
-        await self.state_manager.update_state()
-
-        lines = ["Protocol Status:", ""]
-
-        # Check OSPF
-        ospf_running = False
-        if self.ospf_connector and self.ospf_connector.interface:
-            ospf_running = True
-            ospf_state = self.state_manager.get_ospf_state()
-            neighbor_count = ospf_state.get('neighbor_count', 0) if ospf_state else 0
-            full_neighbors = ospf_state.get('full_neighbors', 0) if ospf_state else 0
-            lines.append(f"  OSPF: ✓ Running")
-            lines.append(f"    Router ID: {ospf_state.get('router_id', 'N/A') if ospf_state else 'N/A'}")
-            lines.append(f"    Area: {ospf_state.get('area_id', 'N/A') if ospf_state else 'N/A'}")
-            lines.append(f"    Neighbors: {full_neighbors}/{neighbor_count} Full")
-        else:
-            lines.append(f"  OSPF: ✗ Not running")
-
-        lines.append("")
-
-        # Check BGP
-        bgp_running = False
-        if self.bgp_connector and self.bgp_connector.speaker:
-            bgp_running = self.bgp_connector.speaker.agent.running
-            bgp_state = self.state_manager.get_bgp_state()
-            if bgp_running:
-                peer_count = bgp_state.get('peer_count', 0) if bgp_state else 0
-                established = bgp_state.get('established_peers', 0) if bgp_state else 0
-                lines.append(f"  BGP: ✓ Running")
-                lines.append(f"    Local AS: {bgp_state.get('local_as', 'N/A') if bgp_state else 'N/A'}")
-                lines.append(f"    Router ID: {bgp_state.get('router_id', 'N/A') if bgp_state else 'N/A'}")
-                lines.append(f"    Peers: {established}/{peer_count} Established")
-            else:
-                lines.append(f"  BGP: ✗ Not running")
-        else:
-            lines.append(f"  BGP: ✗ Not configured")
-
-        return "\n".join(lines)
+        """Handle protocol status query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_capabilities(self, intent) -> str:
-        """Handle BGP capabilities query"""
-        await self.state_manager.update_state()
-
-        if not self.bgp_connector or not self.bgp_connector.speaker:
-            return "BGP is not configured."
-
-        lines = ["BGP Negotiated Capabilities:", ""]
-
-        # Get capabilities from each BGP session
-        for peer_ip, session in self.bgp_connector.speaker.agent.sessions.items():
-            lines.append(f"  Peer {peer_ip} (AS {session.config.peer_as}):")
-
-            caps = session.capabilities
-            cap_stats = caps.get_statistics()
-
-            # List negotiated capabilities
-            cap_list = []
-            if cap_stats.get('ipv4_unicast'):
-                cap_list.append("IPv4 Unicast")
-            if cap_stats.get('ipv6_unicast'):
-                cap_list.append("IPv6 Unicast")
-            if cap_stats.get('route_refresh'):
-                cap_list.append("Route Refresh")
-            if cap_stats.get('four_octet_as'):
-                cap_list.append("4-Byte AS")
-            if cap_stats.get('graceful_restart'):
-                cap_list.append("Graceful Restart")
-            if cap_stats.get('add_path'):
-                cap_list.append("ADD-PATH")
-
-            if cap_list:
-                lines.append(f"    Negotiated: {', '.join(cap_list)}")
-            else:
-                lines.append(f"    Negotiated: Basic BGP only")
-
-            # Show local vs peer capability counts
-            lines.append(f"    Local capabilities: {cap_stats.get('local_capabilities', 0)}")
-            lines.append(f"    Peer capabilities: {cap_stats.get('peer_capabilities', 0)}")
-            lines.append("")
-
-        if len(lines) == 2:
-            return "No BGP sessions configured."
-
-        return "\n".join(lines)
+        """Handle BGP capabilities query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_fib(self, intent) -> str:
-        """Handle FIB/forwarding table query"""
-        lines = ["Forwarding Information Base (FIB):", ""]
-
-        # Get kernel routes if kernel route manager is available
-        kernel_routes = []
-        if self.bgp_connector and self.bgp_connector.speaker:
-            kernel_mgr = self.bgp_connector.speaker.agent.kernel_route_manager
-            if kernel_mgr:
-                kernel_routes = kernel_mgr.get_installed_routes()
-                lines.append(f"  Kernel Routes Installed: {len(kernel_routes)}")
-                lines.append("")
-
-                if kernel_routes:
-                    for prefix in kernel_routes[:15]:  # Show first 15
-                        next_hop = kernel_mgr.installed_routes.get(prefix, "unknown")
-                        lines.append(f"    • {prefix} via {next_hop}")
-
-                    if len(kernel_routes) > 15:
-                        lines.append(f"\n    ... and {len(kernel_routes) - 15} more routes")
-                else:
-                    lines.append("    No routes installed in kernel.")
-            else:
-                lines.append("  Kernel route manager not configured.")
-        else:
-            lines.append("  BGP not configured (no kernel routes from BGP).")
-
-        # Also show OSPF-derived routes if available
-        if self.ospf_connector and self.ospf_connector.interface:
-            lines.append("")
-            lines.append("  OSPF Routes:")
-            ospf_state = self.state_manager.get_ospf_state()
-            if ospf_state:
-                lsdb = ospf_state.get('lsdb', {})
-                lines.append(f"    Router LSAs: {lsdb.get('router_lsas', 0)}")
-                lines.append(f"    Total LSAs: {lsdb.get('total_lsas', 0)}")
-            else:
-                lines.append("    No OSPF routes computed.")
-
-        return "\n".join(lines)
+        """Handle FIB/forwarding table query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_changes(self, intent) -> str:
-        """Handle recent network changes query"""
-        # Get state changes from snapshots
-        changes = self.state_manager.detect_state_changes()
-
-        lines = ["Recent Network Changes:", ""]
-
-        if changes:
-            for change in changes:
-                lines.append(f"  • {change}")
-        else:
-            lines.append("  No recent changes detected.")
-
-        # Show snapshot count
-        lines.append("")
-        lines.append(f"  Snapshots tracked: {len(self.state_manager.snapshots)}")
-
-        # Show recent snapshots with timestamps if available
-        if self.state_manager.snapshots:
-            recent = self.state_manager.snapshots[-3:]  # Last 3 snapshots
-            lines.append("")
-            lines.append("  Recent Snapshots:")
-            for snapshot in reversed(recent):
-                ts = snapshot.timestamp.strftime("%H:%M:%S")
-                health = snapshot.metrics.get('health_score', 0)
-                lines.append(f"    • {ts} - Health: {health:.0f}/100")
-
-        return "\n".join(lines)
+        """Handle recent network changes query - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_query_metrics(self, intent) -> str:
-        """Handle metrics query (OSPF costs, BGP attributes)"""
-        await self.state_manager.update_state()
-
-        lines = ["Network Metrics:", ""]
-
-        # OSPF metrics
-        if self.ospf_connector and self.ospf_connector.interface:
-            lines.append("  OSPF Metrics:")
-            ospf_iface = self.ospf_connector.interface
-
-            # Interface cost
-            cost = getattr(ospf_iface, 'cost', 10)
-            lines.append(f"    Interface Cost: {cost}")
-
-            # Hello/Dead intervals
-            hello = getattr(ospf_iface, 'hello_interval', 10)
-            dead = getattr(ospf_iface, 'dead_interval', 40)
-            lines.append(f"    Hello Interval: {hello}s")
-            lines.append(f"    Dead Interval: {dead}s")
-
-            # Router priority
-            priority = getattr(ospf_iface, 'priority', 1)
-            lines.append(f"    Router Priority: {priority}")
-            lines.append("")
-
-        # BGP metrics
-        if self.bgp_connector and self.bgp_connector.speaker:
-            lines.append("  BGP Metrics:")
-
-            # Show route attributes for routes in Loc-RIB
-            routes = self.bgp_connector.speaker.agent.loc_rib.get_all_routes()
-            if routes:
-                lines.append(f"    Routes in Loc-RIB: {len(routes)}")
-                lines.append("")
-
-                # Show sample route attributes
-                for route in routes[:5]:  # Show first 5 routes
-                    lines.append(f"    Route: {route.prefix}")
-
-                    # Local preference
-                    local_pref = route.path_attributes.get(5)  # ATTR_LOCAL_PREF
-                    if local_pref:
-                        val = local_pref.value
-                        if isinstance(val, (int, float)):
-                            lines.append(f"      Local Pref: {val}")
-                        elif val and val != b'':
-                            lines.append(f"      Local Pref: {val}")
-
-                    # MED
-                    med = route.path_attributes.get(4)  # ATTR_MED
-                    if med:
-                        val = med.value
-                        if isinstance(val, (int, float)):
-                            lines.append(f"      MED: {val}")
-                        elif val and val != b'':
-                            lines.append(f"      MED: {val}")
-
-                    # AS Path
-                    as_path = route.path_attributes.get(2)  # ATTR_AS_PATH
-                    if as_path and hasattr(as_path, 'get_as_list'):
-                        path_list = as_path.get_as_list()
-                        lines.append(f"      AS Path: {' '.join(map(str, path_list)) or '(local)'}")
-                        lines.append(f"      AS Path Length: {len(path_list)}")
-
-                    # Next-hop
-                    next_hop = route.path_attributes.get(3)  # ATTR_NEXT_HOP
-                    if next_hop and hasattr(next_hop, 'next_hop'):
-                        lines.append(f"      Next-Hop: {next_hop.next_hop}")
-
-                    lines.append("")
-
-                if len(routes) > 5:
-                    lines.append(f"    ... and {len(routes) - 5} more routes")
-            else:
-                lines.append("    No routes in Loc-RIB.")
-
-        if len(lines) == 2:
-            return "No metrics available - no protocols configured."
-
-        return "\n".join(lines)
+        """Handle metrics query (OSPF costs, BGP attributes) - LLM responds based on full state"""
+        return await self._llm_respond(intent.raw_query)
 
     async def _handle_ping(self, intent) -> str:
         """Handle ping diagnostic"""
@@ -1182,6 +930,195 @@ class AgenticBridge:
                 return f"✗ Traceroute to {target} failed: {trace_result.get('error', 'Unknown error')}"
         else:
             return f"Error executing traceroute: {result.error}"
+
+    async def _handle_send_email(self, intent) -> str:
+        """Handle send email request with LLM-generated reports"""
+        import re
+        import os
+        import json
+
+        # Extract email addresses from both intent parameters and raw query
+        raw_query = intent.raw_query if hasattr(intent, 'raw_query') else str(intent.parameters)
+
+        # First check if LLM parsed recipients in parameters
+        recipients = []
+        if hasattr(intent, 'parameters') and intent.parameters:
+            param_recipients = intent.parameters.get('recipients', [])
+            if isinstance(param_recipients, list):
+                recipients.extend(param_recipients)
+            elif isinstance(param_recipients, str):
+                recipients.append(param_recipients)
+            # Also check for 'recipient' (singular)
+            single_recipient = intent.parameters.get('recipient')
+            if single_recipient and single_recipient not in recipients:
+                recipients.append(single_recipient)
+
+        # Also extract any emails from raw query using regex (as fallback)
+        email_matches = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', raw_query)
+        for email in email_matches:
+            if email not in recipients:
+                recipients.append(email)
+
+        if not recipients:
+            return "Please specify email address(es). Example: 'email the report to user@example.com'"
+
+        # Get subject from parameters if provided
+        custom_subject = None
+        if hasattr(intent, 'parameters') and intent.parameters:
+            custom_subject = intent.parameters.get('subject')
+
+        try:
+            from ..mcp.smtp_mcp import (
+                get_smtp_client, Email, SMTPConfig, configure_smtp_from_mcp
+            )
+
+            # Load SMTP configuration from environment variables (set by wizard)
+            smtp_server = os.environ.get("SMTP_SERVER", "")
+            smtp_username = os.environ.get("SMTP_USERNAME", "")
+            smtp_password = os.environ.get("SMTP_PASSWORD", "")
+
+            if not smtp_server or not smtp_username:
+                return (
+                    "SMTP is not configured. Please configure SMTP in the wizard:\n"
+                    "1. Go to the Agent Wizard\n"
+                    "2. Enable 'SMTP Email' in Optional MCPs\n"
+                    "3. Click 'Configure' and enter your SMTP settings\n"
+                    "4. Re-deploy the agent\n\n"
+                    "For Gmail: Use smtp.gmail.com, port 587, and an App Password."
+                )
+
+            # Build SMTP config from environment
+            config_dict = {
+                "smtp_server": smtp_server,
+                "smtp_port": os.environ.get("SMTP_PORT", "587"),
+                "smtp_username": smtp_username,
+                "smtp_password": smtp_password,
+                "smtp_from": os.environ.get("SMTP_FROM", smtp_username),
+                "smtp_use_tls": os.environ.get("SMTP_USE_TLS", "true").lower() == "true"
+            }
+            smtp_config = configure_smtp_from_mcp(config_dict)
+
+            # Get SMTP client and configure it
+            smtp_client = get_smtp_client(self.asi_id)
+            smtp_client.configure(smtp_config)
+
+            # Get FULL agent state - let the LLM decide what's relevant
+            context = self.state_manager.get_llm_context()
+
+            # Gather ALL available data - the LLM will determine what to include
+            full_state = {
+                'agent_id': self.asi_id,
+                'timestamp': datetime.now().isoformat(),
+                'routes': context.get('routes', []),
+                'interfaces': context.get('interfaces', []),
+                'neighbors': context.get('neighbors', {}),
+                'ospf': {
+                    'neighbors': context.get('neighbors', {}).get('ospf', []),
+                    'areas': context.get('ospf_areas', [])
+                },
+                'bgp': {
+                    'peers': context.get('neighbors', {}).get('bgp', []),
+                    'local_as': context.get('local_as')
+                },
+                'health': {
+                    'uptime': context.get('uptime'),
+                    'cpu': context.get('cpu_usage'),
+                    'memory': context.get('memory_usage'),
+                    'protocol_status': context.get('protocol_status', {})
+                },
+                'metrics': context.get('metrics', {}),
+                'topology': {
+                    'connected_agents': context.get('connected_agents', []),
+                    'network_role': context.get('network_role', 'unknown')
+                }
+            }
+
+            # Let the LLM interpret the user's request and generate the report
+            report_prompt = f"""You are a network agent assistant. The user has requested an email report.
+
+USER'S REQUEST: "{raw_query}"
+
+Based on their request, generate an appropriate email report. You have access to the complete agent state below.
+Interpret what the user wants and include the relevant information. If they ask for "full state", "everything",
+"complete report", etc., include all sections. If they ask for something specific like "routing table" or
+"BGP peers", focus on that.
+
+AGENT: {self.asi_id}
+TIMESTAMP: {datetime.now().isoformat()}
+
+COMPLETE AGENT STATE:
+{json.dumps(full_state, indent=2, default=str)}
+
+Generate a professional, well-formatted email report. Include:
+1. An appropriate subject line based on what they asked for
+2. Executive summary
+3. Relevant data sections based on their request
+4. Any observations or recommendations
+
+Format your response EXACTLY as:
+SUBJECT: <subject line here>
+BODY:
+<email body here>
+"""
+
+            # Let the LLM generate the report
+            llm_response = await self.llm.query(report_prompt)
+
+            # Parse LLM response
+            subject, body = self._parse_llm_email_response(llm_response, "Agent Report")
+
+            # Use custom subject from intent if provided, otherwise use LLM-generated subject
+            final_subject = custom_subject if custom_subject else subject
+
+            # Create and send email to all recipients
+            email = Email(
+                to=recipients,
+                subject=f"[{self.asi_id}] {final_subject}",
+                body=body
+            )
+
+            success = await smtp_client.send_immediate(email)
+
+            recipient_list = ', '.join(recipients)
+            if success:
+                return f"Email report sent successfully to {len(recipients)} recipient(s): {recipient_list}"
+            else:
+                return f"Failed to send email to {recipient_list}. Please check SMTP configuration (server: {smtp_server})."
+
+        except ImportError:
+            return "SMTP module not available. Email functionality requires SMTP MCP."
+        except Exception as e:
+            return f"Error sending email: {str(e)}"
+
+    def _parse_llm_email_response(self, response: str, default_type: str) -> tuple:
+        """Parse LLM response to extract subject and body"""
+        if not response:
+            return f"{default_type} Report", f"Report generated at {datetime.now().isoformat()}\n\nNo data available."
+
+        # Try to parse structured response
+        lines = response.strip().split('\n')
+        subject = f"{default_type} Report"
+        body_lines = []
+        in_body = False
+
+        for line in lines:
+            if line.upper().startswith('SUBJECT:'):
+                subject = line[8:].strip()
+            elif line.upper().startswith('BODY:'):
+                in_body = True
+            elif in_body:
+                body_lines.append(line)
+
+        if body_lines:
+            body = '\n'.join(body_lines).strip()
+        else:
+            # If parsing failed, use entire response as body
+            body = response.strip()
+
+        # Add footer
+        body += f"\n\n---\nGenerated by Network Agent: {self.asi_id}\nTimestamp: {datetime.now().isoformat()}"
+
+        return subject, body
 
     def _register_gossip_handlers(self):
         """Register handlers for gossip messages"""

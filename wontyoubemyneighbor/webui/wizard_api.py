@@ -47,9 +47,11 @@ router = APIRouter(prefix="/api/wizard", tags=["wizard"])
 class DockerNetworkConfig(BaseModel):
     """Docker network configuration"""
     name: str = Field(..., min_length=1, max_length=64)
-    subnet: Optional[str] = Field(None, pattern=r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$")
+    # Accept both IPv4 (172.20.0.0/16) and IPv6 (fd00:d0c:1::/64) subnets
+    subnet: Optional[str] = Field(None)
     gateway: Optional[str] = None
     driver: str = "bridge"
+    enable_ipv6: Optional[bool] = False
 
 
 class MCPSelection(BaseModel):
@@ -111,8 +113,8 @@ class OverlayConfig(BaseModel):
 class DockerIPv6Config(BaseModel):
     """Docker IPv6 network configuration (Layer 1)"""
     enabled: bool = False
-    subnet: Optional[str] = "fd00:docker:1::/64"
-    gateway: Optional[str] = "fd00:docker:1::1"
+    subnet: Optional[str] = "fd00:d0c:1::/64"
+    gateway: Optional[str] = "fd00:d0c:1::1"
 
 
 class NetworkFoundationConfig(BaseModel):
@@ -865,17 +867,40 @@ def _build_network_from_session(session: WizardState) -> TOONNetwork:
     # Then add user-selected MCPs (skip if already added as mandatory)
     if session.mcp_selection:
         default_mcps = {m.id: m for m in create_default_mcps()}
+
+        # Build a map of custom configs by MCP id
+        custom_configs = {}
+        for custom in session.mcp_selection.custom:
+            if isinstance(custom, dict) and "id" in custom:
+                custom_configs[custom["id"]] = custom.get("config", {})
+
         for mcp_id in session.mcp_selection.selected:
             if mcp_id not in mcp_ids_added and mcp_id in default_mcps:
-                mcps.append(default_mcps[mcp_id])
+                mcp = default_mcps[mcp_id]
+                # Apply custom config if available
+                if mcp_id in custom_configs:
+                    # Merge user config into MCP's config
+                    user_config = custom_configs[mcp_id]
+                    merged_config = {**mcp.c, **user_config}
+                    mcp = TOONMCPConfig(
+                        id=mcp.id,
+                        t=mcp.t,
+                        n=mcp.n,
+                        d=mcp.d,
+                        url=mcp.url,
+                        c=merged_config,
+                        e=True  # Enable since user configured it
+                    )
+                mcps.append(mcp)
                 mcp_ids_added.add(mcp_id)
 
-        # Add custom MCPs
+        # Add fully custom MCPs (user-imported, not from defaults)
         for custom in session.mcp_selection.custom:
-            custom_mcp = TOONMCPConfig.from_dict(custom)
-            if custom_mcp.id not in mcp_ids_added:
-                mcps.append(custom_mcp)
-                mcp_ids_added.add(custom_mcp.id)
+            if isinstance(custom, dict) and custom.get("id") not in default_mcps:
+                custom_mcp = TOONMCPConfig.from_dict(custom)
+                if custom_mcp.id not in mcp_ids_added:
+                    mcps.append(custom_mcp)
+                    mcp_ids_added.add(custom_mcp.id)
 
     # Agents
     agents = []
@@ -955,9 +980,16 @@ def _build_network_from_session(session: WizardState) -> TOONNetwork:
 
 @router.get("/networks")
 async def list_deployed_networks():
-    """List all deployed networks"""
+    """List all deployed networks - includes discovered running containers"""
     orchestrator = get_orchestrator()
     deployments = orchestrator.list_deployments()
+
+    # If no deployments tracked, try to discover running ASI containers
+    if not deployments:
+        discovered = await discover_running_agents()
+        if discovered:
+            return discovered
+
     return [
         {
             "network_id": d.network_id,
@@ -971,9 +1003,149 @@ async def list_deployed_networks():
     ]
 
 
+@router.get("/networks/discover")
+async def discover_networks():
+    """Discover running ASI agent containers from Docker"""
+    return await discover_running_agents()
+
+
+async def discover_running_agents():
+    """
+    Discover ASI agent containers directly from Docker.
+    This works even if the wizard was restarted and lost deployment tracking.
+    Includes stopped containers so users can see their networks even if crashed.
+    """
+    try:
+        # Use the existing DockerManager which handles SDK availability gracefully
+        docker_mgr = DockerManager()
+        if not docker_mgr.available:
+            logger.warning(f"Docker not available for discovery: {docker_mgr.error_message}")
+            return []
+
+        # Use DockerManager's list_containers with ASI filter
+        # Include ALL containers (running + stopped) so we show crashed networks too
+        containers = docker_mgr.list_containers(asi_only=True, all=True)
+
+        # Group containers by network name
+        networks = {}
+
+        for container in containers:
+            name = container.name
+            labels = container.labels or {}
+            ports = container.ports or {}
+
+            # Extract network name from labels or container name
+            # Check multiple label formats that might be used
+            network_id = labels.get("asi.network_id") or labels.get("asi.network")
+            if not network_id:
+                # Try to extract from container name (e.g., "springfield-ospf-router")
+                network_id = name.split("-")[0] if "-" in name else name
+
+            if network_id not in networks:
+                networks[network_id] = {
+                    "network_id": network_id,
+                    "name": network_id,
+                    "status": "running",
+                    "docker_network": labels.get("asi.docker_network", container.network or network_id),
+                    "agents": [],
+                    "discovered": True  # Flag that this was auto-discovered
+                }
+
+            # Extract port mappings from ContainerInfo.ports dict
+            webui_port = None
+            api_port = None
+            for container_port, host_bindings in ports.items():
+                if host_bindings:
+                    # host_bindings can be list of dicts or None
+                    if isinstance(host_bindings, list) and len(host_bindings) > 0:
+                        host_port = host_bindings[0].get("HostPort") if isinstance(host_bindings[0], dict) else None
+                        if host_port:
+                            if "8888" in str(container_port):
+                                webui_port = host_port
+                            elif "8080" in str(container_port):
+                                api_port = host_port
+
+            # Get agent info from labels
+            agent_id = labels.get("asi.agent_id") or name
+            agent_name = labels.get("asi.agent_name") or name
+            overlay_ipv6 = labels.get("asi.overlay_ipv6")
+
+            networks[network_id]["agents"].append({
+                "id": agent_id,
+                "name": agent_name,
+                "container_name": name,
+                "container_id": container.id,
+                "status": container.status,
+                "webui_port": webui_port,
+                "api_port": api_port,
+                "ip_address": container.ip_address,
+                "ip_address_v6": container.ip_address_v6,
+                "overlay_ipv6": overlay_ipv6
+            })
+
+        # Convert to list, add agent counts, and calculate network status
+        result = []
+        for network_id, network_data in networks.items():
+            network_data["agent_count"] = len(network_data["agents"])
+
+            # Determine overall network status based on agent statuses
+            agent_statuses = [a["status"] for a in network_data["agents"]]
+            if not agent_statuses:
+                network_data["status"] = "unknown"
+            elif all(s == "running" for s in agent_statuses):
+                network_data["status"] = "running"
+            elif any(s == "running" for s in agent_statuses):
+                network_data["status"] = "partial"  # Some running, some stopped
+            elif any("exited" in s.lower() for s in agent_statuses):
+                network_data["status"] = "stopped"
+            else:
+                network_data["status"] = "unknown"
+
+            result.append(network_data)
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error discovering containers: {e}")
+        return []
+
+
+@router.get("/networks/discover/{network_id}/status")
+async def get_discovered_network_status(network_id: str):
+    """Get status for a discovered (not wizard-tracked) network"""
+    discovered = await discover_running_agents()
+
+    for network in discovered:
+        if network["network_id"] == network_id:
+            # Build agents_info dict compatible with topology3d
+            agents_info = {}
+            for agent in network.get("agents", []):
+                agents_info[agent["id"]] = {
+                    "status": agent["status"],
+                    "webui_port": agent.get("webui_port"),
+                    "ip_address": agent.get("ip_address"),
+                    "ip_address_v6": agent.get("ip_address_v6"),
+                    "ipv6_overlay": agent.get("overlay_ipv6"),
+                    "container_name": agent.get("container_name"),
+                    "config": {"n": agent["name"]}
+                }
+
+            return {
+                "network_id": network_id,
+                "name": network.get("name", network_id),
+                "status": network.get("status", "unknown"),  # Use calculated status
+                "agents": agents_info
+            }
+
+    raise HTTPException(status_code=404, detail="Network not found")
+
+
 @router.get("/networks/{network_id}/status")
 async def get_deployed_network_status(network_id: str):
-    """Get status of deployed network including 3-layer network info"""
+    """Get status of deployed network including 3-layer network info and live protocol stats"""
+    import aiohttp
+    import asyncio
+
     orchestrator = get_orchestrator()
     deployment = orchestrator.get_status(network_id)
     if not deployment:
@@ -981,14 +1153,15 @@ async def get_deployed_network_status(network_id: str):
 
     # Build agent info with all 3 layers
     agents_info = {}
-    for agent_id, agent in deployment.agents.items():
-        # Get agent config if available
+
+    async def fetch_agent_status(agent_id, agent):
+        """Fetch live status from agent's API"""
         config = getattr(agent, 'config', None)
 
         # Extract underlay protocol info from config
         underlay_info = None
+        protos = []
         if config:
-            protos = []
             if hasattr(config, 'protos') and config.protos:
                 for p in config.protos:
                     if hasattr(p, 'p'):
@@ -996,7 +1169,8 @@ async def get_deployed_network_status(network_id: str):
             if protos:
                 underlay_info = ', '.join(protos)
 
-        agents_info[agent_id] = {
+        # Base agent info
+        agent_info = {
             "status": agent.status,
             "container_id": agent.container_id,
             # Layer 1: Docker Network
@@ -1008,8 +1182,60 @@ async def get_deployed_network_status(network_id: str):
             "underlay_info": underlay_info,
             "webui_port": agent.webui_port,
             "error": agent.error_message,
-            "config": config
+            "config": config,
+            # Initialize protocol stats to 0
+            "ospf_neighbors": 0,
+            "ospf_full_neighbors": 0,
+            "ospf_routes": 0,
+            "bgp_peers": 0,
+            "bgp_established_peers": 0,
+            "bgp_routes": 0,
+            "isis_adjacencies": 0,
+            "isis_routes": 0,
+            "routes": 0
         }
+
+        # Try to fetch live stats from agent's API
+        if agent.status == "running" and agent.webui_port:
+            try:
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=2)) as session:
+                    url = f"http://localhost:{agent.webui_port}/api/status"
+                    async with session.get(url) as response:
+                        if response.status == 200:
+                            status_data = await response.json()
+                            # Extract OSPF stats
+                            if 'ospf' in status_data:
+                                ospf = status_data['ospf']
+                                agent_info["ospf_neighbors"] = ospf.get('neighbors', 0)
+                                agent_info["ospf_full_neighbors"] = ospf.get('full_neighbors', 0)
+                                agent_info["ospf_routes"] = ospf.get('routes', 0)
+                            # Extract BGP stats
+                            if 'bgp' in status_data:
+                                bgp = status_data['bgp']
+                                agent_info["bgp_peers"] = bgp.get('total_peers', 0)
+                                agent_info["bgp_established_peers"] = bgp.get('established_peers', 0)
+                                agent_info["bgp_routes"] = bgp.get('loc_rib_routes', 0)
+                            # Extract IS-IS stats
+                            if 'isis' in status_data:
+                                isis = status_data['isis']
+                                agent_info["isis_adjacencies"] = isis.get('adjacencies', 0)
+                                agent_info["isis_routes"] = isis.get('routes', 0)
+                            # Total routes
+                            agent_info["routes"] = status_data.get('total_routes', 0)
+            except Exception as e:
+                # Silently fail - agent might be starting up
+                pass
+
+        return agent_id, agent_info
+
+    # Fetch all agent statuses concurrently
+    tasks = [fetch_agent_status(agent_id, agent) for agent_id, agent in deployment.agents.items()]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    for result in results:
+        if isinstance(result, tuple):
+            agent_id, agent_info = result
+            agents_info[agent_id] = agent_info
 
     return {
         "network_id": deployment.network_id,
@@ -1239,6 +1465,291 @@ async def get_agent_mcp_info(agent_id: str):
         "agent_id": agent_id,
         "mcp_status": get_agent_mcp_status(agent)
     }
+
+
+# =============================================================================
+# NetBox MCP Integration API
+# =============================================================================
+
+class NetBoxTestRequest(BaseModel):
+    """Request model for testing NetBox connection"""
+    netbox_url: str = Field(..., min_length=1)
+    api_token: str = Field(..., min_length=1)
+
+
+@router.post("/mcps/netbox/test")
+async def test_netbox_connection(request: NetBoxTestRequest):
+    """
+    Test connection to NetBox instance.
+
+    Returns connection status and NetBox version info.
+    """
+    try:
+        from agentic.mcp.netbox_mcp import NetBoxClient, NetBoxConfig
+
+        config = NetBoxConfig(
+            url=request.netbox_url,
+            api_token=request.api_token
+        )
+        client = NetBoxClient(config)
+
+        result = await client.test_connection()
+        await client.close()
+
+        return {
+            "status": "ok" if result.get("connected") else "error",
+            **result
+        }
+    except ImportError as e:
+        return {
+            "status": "error",
+            "error": f"NetBox MCP not available: {e}",
+            "hint": "Install httpx: pip install httpx"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+class NetBoxRegisterRequest(BaseModel):
+    """Request model for registering agent in NetBox"""
+    netbox_url: str = Field(..., min_length=1)
+    api_token: str = Field(..., min_length=1)
+    site_name: str = Field(..., min_length=1)
+
+
+@router.post("/agents/{agent_id}/mcps/netbox/register")
+async def register_agent_in_netbox(agent_id: str, request: NetBoxRegisterRequest):
+    """
+    Register an agent as a device in NetBox with full configuration.
+
+    Creates:
+    - Device (Name, Site, Role=Router, Type=ASI Agent, Manufacturer=Agentic)
+    - All interfaces from agent config
+    - IP addresses assigned to interfaces
+    - Services for protocols (BGP port 179, OSPF, etc.)
+    - Sets primary IP on device
+
+    Args:
+        agent_id: Agent ID
+        request: NetBox URL, API token, and site name
+
+    Returns:
+        Registration result with created objects
+    """
+    agent = load_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+
+    try:
+        from agentic.mcp.netbox_mcp import (
+            NetBoxClient, NetBoxConfig, configure_netbox, auto_register_agent
+        )
+
+        # Configure client with site and auto_register enabled
+        config = NetBoxConfig(
+            url=request.netbox_url,
+            api_token=request.api_token,
+            site_name=request.site_name,
+            auto_register=True
+        )
+        configure_netbox(config)
+
+        # Build agent config dict from agent object
+        agent_config = {
+            "router_id": agent.router_id,
+            "interfaces": [],
+            "protocols": []
+        }
+
+        # Convert interfaces
+        if agent.interfaces:
+            for iface in agent.interfaces:
+                agent_config["interfaces"].append({
+                    "name": iface.n if hasattr(iface, 'n') else str(iface),
+                    "type": iface.t if hasattr(iface, 't') else "ethernet",
+                    "ip": iface.ip if hasattr(iface, 'ip') else "",
+                    "enabled": iface.e if hasattr(iface, 'e') else True,
+                    "mac": getattr(iface, 'mac', None),
+                })
+
+        # Convert protocols
+        if agent.protos:
+            for proto in agent.protos:
+                proto_dict = {
+                    "type": proto.t if hasattr(proto, 't') else str(proto),
+                }
+                # Add protocol-specific fields
+                if hasattr(proto, 'area'):
+                    proto_dict["area"] = proto.area
+                if hasattr(proto, 'asn'):
+                    proto_dict["local_as"] = proto.asn
+                if hasattr(proto, 'peers'):
+                    proto_dict["peers"] = proto.peers
+                agent_config["protocols"].append(proto_dict)
+
+        # Register the agent with full config
+        agent_name = agent.name or agent_id
+        result = await auto_register_agent(agent_name, agent_config)
+
+        # Close client
+        from agentic.mcp.netbox_mcp import get_netbox_client
+        client = get_netbox_client()
+        if client:
+            await client.close()
+
+        return {
+            "status": "ok" if result.get("success") else "error",
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            **result
+        }
+
+    except ImportError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"NetBox MCP not available: {e}. Install httpx: pip install httpx"
+        )
+    except Exception as e:
+        logger.error(f"NetBox registration failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/mcps/netbox/sites")
+async def list_netbox_sites(netbox_url: str, api_token: str):
+    """
+    Get list of sites from NetBox.
+
+    Useful for populating site dropdown in the wizard.
+    """
+    try:
+        from agentic.mcp.netbox_mcp import NetBoxClient, NetBoxConfig
+
+        config = NetBoxConfig(url=netbox_url, api_token=api_token)
+        client = NetBoxClient(config)
+
+        sites = await client.list_sites()
+        await client.close()
+
+        return {
+            "status": "ok",
+            "sites": [{"id": s["id"], "name": s["name"], "slug": s["slug"]} for s in sites]
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e), "sites": []}
+
+
+@router.get("/mcps/netbox/device-roles")
+async def list_netbox_device_roles(netbox_url: str, api_token: str):
+    """
+    Get list of device roles from NetBox.
+
+    Useful for populating role dropdown in the wizard.
+    """
+    try:
+        from agentic.mcp.netbox_mcp import NetBoxClient, NetBoxConfig
+
+        config = NetBoxConfig(url=netbox_url, api_token=api_token)
+        client = NetBoxClient(config)
+
+        roles = await client.list_device_roles()
+        await client.close()
+
+        return {
+            "status": "ok",
+            "roles": [{"id": r["id"], "name": r["name"], "slug": r["slug"]} for r in roles]
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e), "roles": []}
+
+
+@router.get("/mcps/netbox/devices")
+async def list_netbox_devices(netbox_url: str, api_token: str,
+                               site: Optional[str] = None,
+                               role: Optional[str] = None):
+    """
+    Get list of devices from NetBox.
+
+    Used for importing existing devices as agents.
+
+    Args:
+        netbox_url: NetBox instance URL
+        api_token: NetBox API token
+        site: Optional site filter
+        role: Optional role filter
+
+    Returns:
+        List of devices with basic info for selection
+    """
+    try:
+        from agentic.mcp.netbox_mcp import NetBoxClient, NetBoxConfig
+
+        config = NetBoxConfig(url=netbox_url, api_token=api_token)
+        client = NetBoxClient(config)
+
+        devices = await client.list_devices(site=site, role=role)
+        await client.close()
+
+        return {
+            "status": "ok",
+            "devices": [
+                {
+                    "id": d["id"],
+                    "name": d["name"],
+                    "site": d.get("site", {}).get("name", ""),
+                    "role": d.get("role", {}).get("name", ""),
+                    "device_type": d.get("device_type", {}).get("model", ""),
+                    "manufacturer": d.get("device_type", {}).get("manufacturer", {}).get("name", ""),
+                    "status": d.get("status", {}).get("value", ""),
+                    "primary_ip": d.get("primary_ip4", {}).get("address", "").split("/")[0] if d.get("primary_ip4") else "",
+                    "url": d.get("url", "")
+                }
+                for d in devices
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error listing NetBox devices: {e}")
+        return {"status": "error", "error": str(e), "devices": []}
+
+
+@router.get("/mcps/netbox/devices/{device_id}/import")
+async def import_netbox_device(device_id: int, netbox_url: str, api_token: str):
+    """
+    Import a device from NetBox and convert to agent configuration.
+
+    Fetches full device details including interfaces and IPs,
+    then maps them to the wizard's agent configuration format.
+
+    Args:
+        device_id: NetBox device ID
+        netbox_url: NetBox instance URL
+        api_token: NetBox API token
+
+    Returns:
+        Agent configuration ready to populate the wizard
+    """
+    try:
+        from agentic.mcp.netbox_mcp import NetBoxClient, NetBoxConfig
+
+        config = NetBoxConfig(url=netbox_url, api_token=api_token)
+        client = NetBoxClient(config)
+
+        agent_config = await client.import_device_as_agent_config(device_id)
+        await client.close()
+
+        if "error" in agent_config:
+            return {"status": "error", "error": agent_config["error"]}
+
+        return {
+            "status": "ok",
+            "agent_config": agent_config,
+            "message": f"Imported device '{agent_config.get('name')}' from NetBox"
+        }
+    except Exception as e:
+        logger.error(f"Error importing NetBox device: {e}")
+        return {"status": "error", "error": str(e)}
 
 
 # =============================================================================

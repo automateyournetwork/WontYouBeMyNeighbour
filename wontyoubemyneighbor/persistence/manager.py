@@ -293,7 +293,7 @@ def capture_agent_state(
 
 
 # Mandatory MCPs per spec (Quality Gate 2)
-MANDATORY_MCP_TYPES = {"gait", "pyats", "rfc", "markmap"}
+MANDATORY_MCP_TYPES = {"gait", "pyats", "rfc", "markmap", "prometheus", "grafana"}
 
 
 def get_mandatory_mcps() -> List[TOONMCPConfig]:
@@ -371,7 +371,7 @@ def validate_agent_mcps(agent: 'TOONAgent') -> Dict[str, Any]:
 
 
 # Optional MCPs that require configuration
-OPTIONAL_MCP_TYPES = {"servicenow", "netbox", "slack", "github"}
+OPTIONAL_MCP_TYPES = {"servicenow", "netbox", "slack", "github", "smtp"}
 
 
 def get_optional_mcps() -> List[TOONMCPConfig]:
@@ -856,9 +856,17 @@ def create_default_mcps() -> List[TOONMCPConfig]:
             c={
                 "_config_fields": [
                     {"id": "netbox_url", "label": "NetBox URL", "type": "url", "placeholder": "https://netbox.example.com", "required": True, "hint": "Your NetBox instance URL"},
-                    {"id": "api_token", "label": "API Token", "type": "password", "placeholder": "", "required": True, "hint": "NetBox API token (Admin > API Tokens)"}
+                    {"id": "api_token", "label": "API Token", "type": "password", "placeholder": "", "required": True, "hint": "NetBox API token (Admin > API Tokens)"},
+                    {"id": "_separator_1", "type": "separator", "label": "Auto-Registration"},
+                    {"id": "auto_register", "label": "Register Agent in NetBox", "type": "checkbox", "default": False, "hint": "Create device with interfaces, IPs, and protocol services in NetBox"},
+                    {"id": "site_name", "label": "Site", "type": "text", "placeholder": "DC1", "required": False, "hint": "NetBox site name (required)", "depends_on": "auto_register"}
                 ],
-                "_requires_config": True
+                "_requires_config": True,
+                "_defaults": {
+                    "manufacturer": "Agentic",
+                    "device_type": "ASI Agent",
+                    "platform": "ASI"
+                }
             },
             e=False  # Disabled by default - needs config
         ),
@@ -899,6 +907,50 @@ def create_default_mcps() -> List[TOONMCPConfig]:
                 "_config_fields": [
                     {"id": "personal_access_token", "label": "Personal Access Token", "type": "password", "placeholder": "ghp_...", "required": True, "hint": "GitHub PAT with repo access (Settings > Developer settings > PAT)"},
                     {"id": "default_repo", "label": "Default Repository", "type": "text", "placeholder": "owner/repo", "required": False, "hint": "Optional: Default repository (owner/repo format)"}
+                ],
+                "_requires_config": True
+            },
+            e=False  # Disabled by default - needs config
+        ),
+        TOONMCPConfig(
+            id="prometheus",
+            t="prometheus",
+            n="Prometheus",
+            d="Agent metrics collection, visualization and alerting",
+            url="https://github.com/pab1it0/prometheus-mcp-server",
+            c={
+                "auto_metrics": True,
+                "_config_fields": [],  # Built-in metrics - no config needed
+                "_requires_config": False
+            },
+            e=True  # Always enabled - provides agent metrics
+        ),
+        TOONMCPConfig(
+            id="grafana",
+            t="grafana",
+            n="Grafana",
+            d="Agent dashboard visualization and monitoring",
+            url="https://github.com/grafana/mcp-grafana",
+            c={
+                "auto_dashboards": True,
+                "_config_fields": [],  # Built-in dashboards - no config needed
+                "_requires_config": False
+            },
+            e=True  # Always enabled - provides agent dashboards
+        ),
+        TOONMCPConfig(
+            id="smtp",
+            t="smtp",
+            n="SMTP Email",
+            d="Send email notifications and reports via SMTP",
+            url="",  # Built-in capability
+            c={
+                "_config_fields": [
+                    {"id": "smtp_server", "label": "SMTP Server", "type": "text", "placeholder": "smtp.gmail.com", "required": True, "hint": "SMTP server hostname"},
+                    {"id": "smtp_port", "label": "SMTP Port", "type": "number", "placeholder": "587", "required": True, "hint": "587 for TLS, 465 for SSL"},
+                    {"id": "smtp_username", "label": "Gmail Address", "type": "email", "placeholder": "", "required": True, "hint": "MUST match the account used to generate the App Password below"},
+                    {"id": "smtp_password", "label": "App Password", "type": "password", "placeholder": "", "required": True, "hint": "16-character code from Google App Passwords (no spaces)"},
+                    {"id": "smtp_use_tls", "label": "Use TLS", "type": "checkbox", "default": True, "required": False, "hint": "Recommended for port 587"}
                 ],
                 "_requires_config": True
             },

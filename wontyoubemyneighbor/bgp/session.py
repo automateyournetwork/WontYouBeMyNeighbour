@@ -153,7 +153,16 @@ class BGPSession:
             'routes_advertised': 0,
             'last_error': None,
             'uptime': 0,
-            'established_time': None
+            'established_time': None,
+            # Individual message type counters for Prometheus
+            'open_sent': 0,
+            'open_recv': 0,
+            'update_sent': 0,
+            'update_recv': 0,
+            'keepalive_sent': 0,
+            'keepalive_recv': 0,
+            'notification_sent': 0,
+            'notification_recv': 0
         }
 
         # Tasks
@@ -363,6 +372,13 @@ class BGPSession:
             self.stats['messages_sent'] += 1
             if message.msg_type == MSG_UPDATE:
                 self.stats['updates_sent'] += 1
+                self.stats['update_sent'] += 1
+            elif message.msg_type == MSG_OPEN:
+                self.stats['open_sent'] += 1
+            elif message.msg_type == MSG_KEEPALIVE:
+                self.stats['keepalive_sent'] += 1
+            elif message.msg_type == MSG_NOTIFICATION:
+                self.stats['notification_sent'] += 1
 
         except ConnectionResetError as e:
             self.logger.error(f"Connection reset while sending {msg_name}: {e}")
@@ -470,13 +486,18 @@ class BGPSession:
         """
         msg_type = message.msg_type
 
+        # Track individual message type counters for Prometheus
         if msg_type == MSG_OPEN:
+            self.stats['open_recv'] += 1
             await self._process_open(message)
         elif msg_type == MSG_UPDATE:
+            self.stats['update_recv'] += 1
             await self._process_update(message)
         elif msg_type == MSG_KEEPALIVE:
+            self.stats['keepalive_recv'] += 1
             await self._process_keepalive(message)
         elif msg_type == MSG_NOTIFICATION:
+            self.stats['notification_recv'] += 1
             await self._process_notification(message)
         elif msg_type == MSG_ROUTE_REFRESH:
             await self._process_route_refresh(message)

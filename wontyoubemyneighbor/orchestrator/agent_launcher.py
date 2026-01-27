@@ -385,7 +385,9 @@ class AgentLauncher:
             "ASI_AGENT_NAME": agent.n,
             "ASI_ROUTER_ID": agent.r,
             # Pass full agent config as JSON for interface/protocol display
-            "ASI_AGENT_CONFIG": json.dumps(agent.to_dict())
+            "ASI_AGENT_CONFIG": json.dumps(agent.to_dict()),
+            # For LLDP daemon system name
+            "AGENT_NAME": agent.n
         }
 
         # IPv6 Overlay Network configuration (Layer 2: ASI Agent Mesh)
@@ -415,7 +417,25 @@ class AgentLauncher:
                 env[f"MCP_{mcp.t.upper()}_ENABLED"] = "true"
                 env[f"MCP_{mcp.t.upper()}_URL"] = mcp.url
                 for key, value in mcp.c.items():
+                    # Skip internal config fields
+                    if key.startswith("_"):
+                        continue
                     env[f"MCP_{mcp.t.upper()}_{key.upper()}"] = str(value)
+
+                # Special handling for SMTP - set standard env vars for bridge
+                if mcp.t == "smtp":
+                    env["SMTP_SERVER"] = mcp.c.get("smtp_server", "")
+                    env["SMTP_PORT"] = str(mcp.c.get("smtp_port", 587))
+                    env["SMTP_USERNAME"] = mcp.c.get("smtp_username", "")
+                    # Sanitize password - remove non-breaking spaces and regular spaces
+                    # Google App Passwords are displayed with spaces but should be entered without
+                    raw_password = mcp.c.get("smtp_password", "")
+                    sanitized_password = raw_password.replace('\xa0', '').replace(' ', '').strip()
+                    env["SMTP_PASSWORD"] = sanitized_password
+                    # Use username as from address if from address doesn't match Gmail requirements
+                    smtp_from = mcp.c.get("smtp_from", mcp.c.get("smtp_username", ""))
+                    env["SMTP_FROM"] = smtp_from
+                    env["SMTP_USE_TLS"] = str(mcp.c.get("smtp_use_tls", True)).lower()
 
         return env
 

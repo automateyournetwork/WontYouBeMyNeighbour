@@ -569,6 +569,14 @@
                     <input type="checkbox" id="labelInterfaces" checked style="accent-color: #facc15;">
                     <span>Interfaces</span>
                 </label>
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="labelLinkInterfaces" checked style="accent-color: #fb923c;">
+                    <span>Link Interfaces</span>
+                </label>
+                <label style="display: flex; align-items: center; cursor: pointer; gap: 8px;">
+                    <input type="checkbox" id="labelProtocolStatus" checked style="accent-color: #4ade80;">
+                    <span>Protocol Status</span>
+                </label>
             </div>
             <div style="margin-top: 8px;">
                 <button class="control-btn" id="btnAllLabels" style="font-size: 0.7rem; padding: 4px 8px;">All Labels</button>
@@ -665,6 +673,26 @@
             <div class="legend-color" style="background: #ef4444;"></div>
             <span>Down</span>
         </div>
+
+        <h3 style="margin-top: 10px;">Link Labels</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #fb923c;"></div>
+            <span>src ↔ dst (LLDP)</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #22d3ee;"></div>
+            <span>Po1 (x/y) - LAG Bundle</span>
+        </div>
+
+        <h3 style="margin-top: 10px;">Protocol Status</h3>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #4ade80; width: 10px; height: 10px;"></div>
+            <span>Protocol Up</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-color" style="background: #ef4444; width: 10px; height: 10px;"></div>
+            <span>Protocol Down</span>
+        </div>
     </div>
 
     <!-- Stats -->
@@ -716,8 +744,16 @@
             names: true,
             dockerIp: true,
             overlayIp: true,
-            interfaces: true
+            interfaces: true,
+            linkInterfaces: true,  // Show interface names on links
+            protocolStatus: true   // Show protocol status indicators on nodes
         };
+
+        // LLDP neighbor data cache for interface info
+        let lldpNeighbors = {};
+
+        // LACP LAG data cache for bundle visualization
+        let lacpLAGs = {};
 
         // Per-agent view mode
         let perAgentMode = false;
@@ -1082,7 +1118,8 @@
                         }
                     } else {
                         // Infer from node status
-                        isUp = node.status === 'running' || node.status === 'established' || node.status === 'full';
+                        const nodeStatusLower = (node.status || '').toLowerCase();
+                        isUp = nodeStatusLower === 'running' || nodeStatusLower === 'established' || nodeStatusLower === 'full';
                     }
 
                     // Status indicator: green dot for up, red dot for down
@@ -1234,6 +1271,14 @@
                 labelVisibility.interfaces = e.target.checked;
                 updateLabelVisibility();
             });
+            document.getElementById('labelLinkInterfaces').addEventListener('change', (e) => {
+                labelVisibility.linkInterfaces = e.target.checked;
+                updateLabelVisibility();
+            });
+            document.getElementById('labelProtocolStatus').addEventListener('change', (e) => {
+                labelVisibility.protocolStatus = e.target.checked;
+                updateLabelVisibility();
+            });
 
             // Quick label buttons
             document.getElementById('btnAllLabels').addEventListener('click', () => {
@@ -1358,15 +1403,87 @@
                     links: []
                 };
 
-                // First, try to load all deployed networks from orchestrator
+                // Fetch LLDP neighbor data for interface info on links
                 try {
-                    const networksResponse = await fetch('/api/wizard/networks');
-                    const networks = await networksResponse.json();
+                    const lldpResponse = await fetch('/api/lldp/neighbors');
+                    const lldpData = await lldpResponse.json();
+                    if (lldpData.neighbors) {
+                        // Index neighbors by local interface for quick lookup
+                        lldpNeighbors = {};
+                        lldpData.neighbors.forEach(neighbor => {
+                            const key = neighbor.local_interface;
+                            if (!lldpNeighbors[key]) {
+                                lldpNeighbors[key] = [];
+                            }
+                            lldpNeighbors[key].push(neighbor);
+                        });
+                        console.log('Loaded LLDP neighbors:', Object.keys(lldpNeighbors).length, 'interfaces');
+                    }
+                } catch (lldpErr) {
+                    console.log('LLDP data not available:', lldpErr.message);
+                    lldpNeighbors = {};
+                }
+
+                // Fetch LACP LAG data for bundle visualization
+                try {
+                    const lacpResponse = await fetch('/api/lacp/lags');
+                    const lacpData = await lacpResponse.json();
+                    if (lacpData.lags) {
+                        // Index LAGs by name and member interface
+                        lacpLAGs = {
+                            byName: {},
+                            byMember: {}
+                        };
+                        lacpData.lags.forEach(lag => {
+                            lacpLAGs.byName[lag.name] = lag;
+                            // Also index by member interfaces
+                            if (lag.members) {
+                                lag.members.forEach(member => {
+                                    lacpLAGs.byMember[member.interface || member.name] = {
+                                        lagName: lag.name,
+                                        lag: lag,
+                                        member: member
+                                    };
+                                });
+                            }
+                        });
+                        console.log('Loaded LACP LAGs:', Object.keys(lacpLAGs.byName).length, 'bundles');
+                    }
+                } catch (lacpErr) {
+                    console.log('LACP data not available:', lacpErr.message);
+                    lacpLAGs = { byName: {}, byMember: {} };
+                }
+
+                // First, try to load all deployed networks from orchestrator
+                // This also includes auto-discovered running containers
+                try {
+                    console.log('[TOPO-DEBUG] Fetching /api/wizard/networks...');
+                    let networksResponse = await fetch('/api/wizard/networks');
+                    let networks = await networksResponse.json();
+                    console.log('[TOPO-DEBUG] /api/wizard/networks returned:', networks.length, 'networks');
+
+                    // If no networks from main endpoint, try discovery endpoint
+                    if (!networks || networks.length === 0) {
+                        console.log('[TOPO-DEBUG] No tracked networks, trying discovery...');
+                        networksResponse = await fetch('/api/wizard/networks/discover');
+                        networks = await networksResponse.json();
+                        console.log('[TOPO-DEBUG] Discovered networks:', networks.length, networks);
+                    }
 
                     if (networks && networks.length > 0) {
+                        // Update page subtitle with network name(s)
+                        const networkNames = networks.map(n => n.network_id || n.name).filter(Boolean);
+                        if (networkNames.length > 0 && !perAgentMode) {
+                            document.getElementById('pageSubtitle').textContent = `Network: ${networkNames.join(', ')}`;
+                        }
+
                         // Load details for each network
                         for (const network of networks) {
-                            const detailsResponse = await fetch(`/api/wizard/networks/${network.network_id}/status`);
+                            // Use discover endpoint for auto-discovered networks
+                            const statusUrl = network.discovered
+                                ? `/api/wizard/networks/discover/${network.network_id}/status`
+                                : `/api/wizard/networks/${network.network_id}/status`;
+                            const detailsResponse = await fetch(statusUrl);
                             const details = await detailsResponse.json();
 
                             if (details.agents) {
@@ -1410,13 +1527,32 @@
                                     // Determine Docker IP - use IPv6 if subnet6 available, otherwise IPv4
                                     const dockerIp = agent.docker_ip || agent.ip_address;
 
+                                    // Calculate neighbor and route counts from agent data
+                                    const neighborCount = (agent.ospf_neighbors || 0) + (agent.bgp_peers || 0) + (agent.isis_adjacencies || 0);
+                                    const routeCount = (agent.ospf_routes || 0) + (agent.bgp_routes || 0) + (agent.isis_routes || 0) + (agent.routes || 0);
+
                                     topologyData.nodes.push({
                                         id: agentId,
                                         name: agent.config?.n || agentId,
                                         status: agent.status || 'unknown',
                                         protocols: protocols,
-                                        neighbors: 0,
-                                        routes: 0,
+                                        neighbors: neighborCount,
+                                        routes: routeCount,
+                                        // Protocol-specific status for detailed info panel
+                                        protocolStatus: {
+                                            ospf: agent.ospf_neighbors > 0 ? {
+                                                up: true,
+                                                neighbors: agent.ospf_neighbors,
+                                                fullNeighbors: agent.ospf_full_neighbors || agent.ospf_neighbors,
+                                                routes: agent.ospf_routes || 0
+                                            } : null,
+                                            bgp: agent.bgp_peers > 0 ? {
+                                                up: true,
+                                                totalPeers: agent.bgp_peers,
+                                                establishedPeers: agent.bgp_established_peers || agent.bgp_peers,
+                                                routes: agent.bgp_routes || 0
+                                            } : null
+                                        },
                                         // 3-Layer Network Info
                                         ip: dockerIp,
                                         docker_ip: dockerIp,  // Layer 1: Docker
@@ -1435,13 +1571,18 @@
                                         const agent1 = details.agents[agentIds[i]];
                                         const agent2 = details.agents[agentIds[j]];
 
+                                        // Find LLDP interface info for this link
+                                        const linkIfaces = findLinkInterfaces(agentIds[i], agentIds[j]);
+
                                         // Layer 1: Docker network link (always exists between containers on same network)
                                         topologyData.links.push({
                                             source: agentIds[i],
                                             target: agentIds[j],
                                             protocol: networkSubnet6 ? 'Docker IPv6' : 'Docker',
                                             layer: 'docker',
-                                            status: 'up'
+                                            status: 'up',
+                                            sourceInterface: linkIfaces.sourceInterface || 'eth0',
+                                            targetInterface: linkIfaces.targetInterface || 'eth0'
                                         });
 
                                         // Layer 2: ASI Overlay link - if both have IPv6 overlay addresses
@@ -1451,7 +1592,9 @@
                                                 target: agentIds[j],
                                                 protocol: 'ASI-Overlay',
                                                 layer: 'overlay',
-                                                status: 'up'
+                                                status: 'up',
+                                                sourceInterface: linkIfaces.sourceInterface || 'lo',
+                                                targetInterface: linkIfaces.targetInterface || 'lo'
                                             });
                                         }
 
@@ -1467,7 +1610,9 @@
                                                     target: agentIds[j],
                                                     protocol: p1.p.toUpperCase(),
                                                     layer: 'underlay',
-                                                    status: 'up'
+                                                    status: 'up',
+                                                    sourceInterface: linkIfaces.sourceInterface,
+                                                    targetInterface: linkIfaces.targetInterface
                                                 });
                                             }
                                         });
@@ -1480,7 +1625,9 @@
                                                 target: agentIds[j],
                                                 protocol: 'Underlay',
                                                 layer: 'underlay',
-                                                status: 'up'
+                                                status: 'up',
+                                                sourceInterface: linkIfaces.sourceInterface,
+                                                targetInterface: linkIfaces.targetInterface
                                             });
                                         }
                                     }
@@ -1489,13 +1636,17 @@
                         }
                     }
                 } catch (orchError) {
-                    console.log('No orchestrator data, trying single agent status...');
+                    console.log('[TOPO-DEBUG] Orchestrator error:', orchError.message);
                 }
+
+                console.log('[TOPO-DEBUG] After orchestrator block, nodes:', topologyData.nodes.length);
 
                 // If no orchestrator data, try single agent status
                 if (topologyData.nodes.length === 0) {
+                    console.log('[TOPO-DEBUG] Trying single agent /api/status...');
                     const response = await fetch('/api/status');
                     const status = await response.json();
+                    console.log('[TOPO-DEBUG] /api/status returned, router_id:', status.router_id);
 
                     if (status.router_id) {
                         const protocols = [];
@@ -1525,6 +1676,7 @@
                             };
                         }
 
+                        console.log('[TOPO-DEBUG] Pushing local agent node:', status.router_id, status.agent_name);
                         topologyData.nodes.push({
                             id: status.router_id,
                             name: status.agent_name || `Router ${status.router_id}`,
@@ -1534,6 +1686,7 @@
                             neighbors: (status.ospf?.neighbors || 0) + (status.bgp?.total_peers || 0),
                             routes: (status.ospf?.routes || 0) + (status.bgp?.loc_rib_routes || 0)
                         });
+                        console.log('[TOPO-DEBUG] Node pushed, total nodes now:', topologyData.nodes.length);
 
                         // Add OSPF neighbors as nodes
                         if (status.ospf?.neighbor_details) {
@@ -1582,8 +1735,12 @@
                 }
 
                 // If still no data, create demo topology
+                console.log('[TOPO-DEBUG] Final nodes count before demo check:', topologyData.nodes.length);
                 if (topologyData.nodes.length === 0) {
+                    console.log('[TOPO-DEBUG] No nodes found, CREATING DEMO TOPOLOGY');
                     topologyData = createDemoTopology();
+                } else {
+                    console.log('[TOPO-DEBUG] Using real topology with', topologyData.nodes.length, 'nodes');
                 }
 
                 nodes = topologyData.nodes;
@@ -1611,7 +1768,8 @@
                 lastUpdateTime = Date.now();
 
             } catch (error) {
-                console.error('Failed to load topology:', error);
+                console.error('[TOPO-DEBUG] OUTER CATCH - Failed to load topology:', error);
+                console.error('[TOPO-DEBUG] Error stack:', error.stack);
                 // Create demo topology
                 const demo = createDemoTopology();
                 nodes = demo.nodes;
@@ -1632,62 +1790,138 @@
             }
         }
 
+        // Find interface info for a link from LLDP neighbor data
+        function findLinkInterfaces(sourceId, targetId) {
+            let sourceInterface = null;
+            let targetInterface = null;
+
+            // Search through LLDP neighbors to find matching connection
+            for (const [localIf, neighbors] of Object.entries(lldpNeighbors)) {
+                for (const neighbor of neighbors) {
+                    // Check if this neighbor connects sourceId to targetId
+                    const neighborName = neighbor.system_name || neighbor.chassis_id || '';
+                    const neighborPort = neighbor.port_id || neighbor.port_description || '';
+
+                    // Match by system name or chassis ID containing agent ID
+                    if (neighborName.includes(targetId) || targetId.includes(neighborName)) {
+                        sourceInterface = localIf;
+                        targetInterface = neighborPort;
+                    } else if (neighborName.includes(sourceId) || sourceId.includes(neighborName)) {
+                        targetInterface = localIf;
+                        sourceInterface = neighborPort;
+                    }
+                }
+            }
+
+            return { sourceInterface, targetInterface };
+        }
+
+        // Check if interface is part of a LAG bundle
+        function getLAGInfo(interfaceName) {
+            if (!lacpLAGs || !lacpLAGs.byMember) return null;
+            return lacpLAGs.byMember[interfaceName] || null;
+        }
+
+        // Check if a link is a LAG bundle (multiple member links)
+        function isLAGBundle(sourceInterface, targetInterface) {
+            const srcLAG = getLAGInfo(sourceInterface);
+            const tgtLAG = getLAGInfo(targetInterface);
+            return srcLAG || tgtLAG;
+        }
+
+        // Get LAG bundle info for link styling
+        function getLinkBundleInfo(link) {
+            const srcLAG = getLAGInfo(link.sourceInterface);
+            const tgtLAG = getLAGInfo(link.targetInterface);
+
+            if (srcLAG || tgtLAG) {
+                const lag = srcLAG?.lag || tgtLAG?.lag;
+                const memberCount = lag?.members?.length || 1;
+                const activeMembers = lag?.members?.filter(m => m.state === 'active' || m.state === 'ACTIVE').length || memberCount;
+
+                return {
+                    isBundle: true,
+                    lagName: lag?.name || 'port-channel',
+                    memberCount: memberCount,
+                    activeMembers: activeMembers,
+                    mode: lag?.mode || 'active',
+                    loadBalance: lag?.load_balance || 'layer34'
+                };
+            }
+
+            return { isBundle: false };
+        }
+
         function createDemoTopology() {
             return {
                 nodes: [
-                    // Demo nodes with 3-layer network info
+                    // Demo nodes with 3-layer network info and protocol status indicators
                     { id: 'spine1', name: 'Spine-1', status: 'running', protocols: ['bgp', 'ospf'], neighbors: 4, routes: 120,
-                      docker_ip: '172.20.0.2', overlay_ipv6: 'fd00:a510:0:1::1/64', underlay_info: 'BGP AS65001, OSPF Area 0' },
+                      docker_ip: '172.20.0.2', overlay_ipv6: 'fd00:a510:0:1::1/64', underlay_info: 'BGP AS65001, OSPF Area 0',
+                      protocolStatus: { bgp: { up: true, totalPeers: 6, establishedPeers: 6, routes: 80 }, ospf: { up: true, neighbors: 4, fullNeighbors: 4, routes: 40 } } },
                     { id: 'spine2', name: 'Spine-2', status: 'running', protocols: ['bgp', 'ospf'], neighbors: 4, routes: 115,
-                      docker_ip: '172.20.0.3', overlay_ipv6: 'fd00:a510:0:1::2/64', underlay_info: 'BGP AS65001, OSPF Area 0' },
+                      docker_ip: '172.20.0.3', overlay_ipv6: 'fd00:a510:0:1::2/64', underlay_info: 'BGP AS65001, OSPF Area 0',
+                      protocolStatus: { bgp: { up: true, totalPeers: 6, establishedPeers: 6, routes: 75 }, ospf: { up: true, neighbors: 4, fullNeighbors: 4, routes: 40 } } },
                     { id: 'leaf1', name: 'Leaf-1', status: 'running', protocols: ['bgp', 'vxlan'], neighbors: 2, routes: 45,
-                      docker_ip: '172.20.0.4', overlay_ipv6: 'fd00:a510:0:1::3/64', underlay_info: 'BGP AS65101, VXLAN VNI 10001' },
+                      docker_ip: '172.20.0.4', overlay_ipv6: 'fd00:a510:0:1::3/64', underlay_info: 'BGP AS65101, VXLAN VNI 10001',
+                      protocolStatus: { bgp: { up: true, totalPeers: 2, establishedPeers: 2, routes: 45 }, vxlan: { up: true, vteps: 3 } } },
                     { id: 'leaf2', name: 'Leaf-2', status: 'running', protocols: ['bgp', 'vxlan'], neighbors: 2, routes: 48,
-                      docker_ip: '172.20.0.5', overlay_ipv6: 'fd00:a510:0:1::4/64', underlay_info: 'BGP AS65102, VXLAN VNI 10001' },
+                      docker_ip: '172.20.0.5', overlay_ipv6: 'fd00:a510:0:1::4/64', underlay_info: 'BGP AS65102, VXLAN VNI 10001',
+                      protocolStatus: { bgp: { up: true, totalPeers: 2, establishedPeers: 2, routes: 48 }, vxlan: { up: true, vteps: 3 } } },
                     { id: 'leaf3', name: 'Leaf-3', status: 'running', protocols: ['bgp', 'vxlan'], neighbors: 2, routes: 42,
-                      docker_ip: '172.20.0.6', overlay_ipv6: 'fd00:a510:0:1::5/64', underlay_info: 'BGP AS65103, VXLAN VNI 10002' },
+                      docker_ip: '172.20.0.6', overlay_ipv6: 'fd00:a510:0:1::5/64', underlay_info: 'BGP AS65103, VXLAN VNI 10002',
+                      protocolStatus: { bgp: { up: true, totalPeers: 2, establishedPeers: 2, routes: 42 }, vxlan: { up: true, vteps: 2 } } },
                     { id: 'leaf4', name: 'Leaf-4', status: 'initializing', protocols: ['bgp', 'vxlan'], neighbors: 1, routes: 20,
-                      docker_ip: '172.20.0.7', overlay_ipv6: 'fd00:a510:0:1::6/64', underlay_info: 'BGP AS65104' },
+                      docker_ip: '172.20.0.7', overlay_ipv6: 'fd00:a510:0:1::6/64', underlay_info: 'BGP AS65104',
+                      protocolStatus: { bgp: { up: false, totalPeers: 2, establishedPeers: 1, routes: 20 }, vxlan: { up: false, vteps: 0 } } },
                     { id: 'border1', name: 'Border-1', status: 'running', protocols: ['bgp', 'mpls'], neighbors: 3, routes: 200,
-                      docker_ip: '172.20.0.8', overlay_ipv6: 'fd00:a510:0:1::7/64', underlay_info: 'BGP AS65001, MPLS LDP' },
+                      docker_ip: '172.20.0.8', overlay_ipv6: 'fd00:a510:0:1::7/64', underlay_info: 'BGP AS65001, MPLS LDP',
+                      protocolStatus: { bgp: { up: true, totalPeers: 4, establishedPeers: 4, routes: 180 }, mpls: { up: true, ldpNeighbors: 2, lspCount: 12 } } },
                     { id: 'border2', name: 'Border-2', status: 'running', protocols: ['bgp', 'mpls'], neighbors: 3, routes: 195,
-                      docker_ip: '172.20.0.9', overlay_ipv6: 'fd00:a510:0:1::8/64', underlay_info: 'BGP AS65001, MPLS LDP' },
+                      docker_ip: '172.20.0.9', overlay_ipv6: 'fd00:a510:0:1::8/64', underlay_info: 'BGP AS65001, MPLS LDP',
+                      protocolStatus: { bgp: { up: true, totalPeers: 4, establishedPeers: 4, routes: 175 }, mpls: { up: true, ldpNeighbors: 2, lspCount: 10 } } },
                 ],
                 links: [
-                    // Layer 1: Docker network links (purple)
-                    { source: 'spine1', target: 'spine2', protocol: 'Docker', layer: 'docker', status: 'up' },
-                    { source: 'spine1', target: 'leaf1', protocol: 'Docker', layer: 'docker', status: 'up' },
-                    { source: 'spine1', target: 'leaf2', protocol: 'Docker', layer: 'docker', status: 'up' },
-                    { source: 'spine2', target: 'leaf3', protocol: 'Docker', layer: 'docker', status: 'up' },
-                    { source: 'spine2', target: 'leaf4', protocol: 'Docker', layer: 'docker', status: 'up' },
-                    { source: 'spine1', target: 'border1', protocol: 'Docker', layer: 'docker', status: 'up' },
-                    { source: 'spine2', target: 'border2', protocol: 'Docker', layer: 'docker', status: 'up' },
+                    // Layer 1: Docker network links (purple) with interface info
+                    { source: 'spine1', target: 'spine2', protocol: 'Docker', layer: 'docker', status: 'up', sourceInterface: 'eth0', targetInterface: 'eth0' },
+                    { source: 'spine1', target: 'leaf1', protocol: 'Docker', layer: 'docker', status: 'up', sourceInterface: 'eth1', targetInterface: 'eth0' },
+                    { source: 'spine1', target: 'leaf2', protocol: 'Docker', layer: 'docker', status: 'up', sourceInterface: 'eth2', targetInterface: 'eth0' },
+                    { source: 'spine2', target: 'leaf3', protocol: 'Docker', layer: 'docker', status: 'up', sourceInterface: 'eth1', targetInterface: 'eth0' },
+                    { source: 'spine2', target: 'leaf4', protocol: 'Docker', layer: 'docker', status: 'up', sourceInterface: 'eth2', targetInterface: 'eth0' },
+                    { source: 'spine1', target: 'border1', protocol: 'Docker', layer: 'docker', status: 'up', sourceInterface: 'eth3', targetInterface: 'eth0' },
+                    { source: 'spine2', target: 'border2', protocol: 'Docker', layer: 'docker', status: 'up', sourceInterface: 'eth3', targetInterface: 'eth0' },
 
                     // Layer 2: ASI Overlay links (green) - full mesh via ND
-                    { source: 'spine1', target: 'spine2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'spine1', target: 'leaf1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'spine1', target: 'leaf2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'spine1', target: 'leaf3', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'spine2', target: 'leaf1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'spine2', target: 'leaf2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'spine2', target: 'leaf3', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'spine1', target: 'border1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'spine2', target: 'border2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
-                    { source: 'border1', target: 'border2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up' },
+                    { source: 'spine1', target: 'spine2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'spine1', target: 'leaf1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'spine1', target: 'leaf2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'spine1', target: 'leaf3', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'spine2', target: 'leaf1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'spine2', target: 'leaf2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'spine2', target: 'leaf3', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'spine1', target: 'border1', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'spine2', target: 'border2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
+                    { source: 'border1', target: 'border2', protocol: 'ASI-Overlay', layer: 'overlay', status: 'up', sourceInterface: 'lo', targetInterface: 'lo' },
 
-                    // Layer 3: Underlay links (cyan) - user-defined BGP/OSPF peerings
-                    { source: 'spine1', target: 'leaf1', protocol: 'BGP', layer: 'underlay', status: 'up' },
-                    { source: 'spine1', target: 'leaf2', protocol: 'BGP', layer: 'underlay', status: 'up' },
-                    { source: 'spine1', target: 'leaf3', protocol: 'BGP', layer: 'underlay', status: 'up' },
-                    { source: 'spine1', target: 'leaf4', protocol: 'BGP', layer: 'underlay', status: 'down' },
-                    { source: 'spine2', target: 'leaf1', protocol: 'BGP', layer: 'underlay', status: 'up' },
-                    { source: 'spine2', target: 'leaf2', protocol: 'BGP', layer: 'underlay', status: 'up' },
-                    { source: 'spine2', target: 'leaf3', protocol: 'BGP', layer: 'underlay', status: 'up' },
-                    { source: 'spine2', target: 'leaf4', protocol: 'BGP', layer: 'underlay', status: 'up' },
-                    { source: 'spine1', target: 'border1', protocol: 'OSPF', layer: 'underlay', status: 'up' },
-                    { source: 'spine1', target: 'border2', protocol: 'OSPF', layer: 'underlay', status: 'up' },
-                    { source: 'spine2', target: 'border1', protocol: 'OSPF', layer: 'underlay', status: 'up' },
-                    { source: 'spine2', target: 'border2', protocol: 'OSPF', layer: 'underlay', status: 'up' },
+                    // Layer 3: Underlay links (cyan) - user-defined BGP/OSPF peerings with interface info
+                    // Some links are LAG bundles (port-channels)
+                    { source: 'spine1', target: 'leaf1', protocol: 'BGP', layer: 'underlay', status: 'up', sourceInterface: 'Eth1/1', targetInterface: 'Eth49/1' },
+                    { source: 'spine1', target: 'leaf2', protocol: 'BGP', layer: 'underlay', status: 'up', sourceInterface: 'Eth1/2', targetInterface: 'Eth49/1' },
+                    { source: 'spine1', target: 'leaf3', protocol: 'BGP', layer: 'underlay', status: 'up', sourceInterface: 'Eth1/3', targetInterface: 'Eth49/1' },
+                    { source: 'spine1', target: 'leaf4', protocol: 'BGP', layer: 'underlay', status: 'down', sourceInterface: 'Eth1/4', targetInterface: 'Eth49/1' },
+                    { source: 'spine2', target: 'leaf1', protocol: 'BGP', layer: 'underlay', status: 'up', sourceInterface: 'Eth1/1', targetInterface: 'Eth50/1' },
+                    { source: 'spine2', target: 'leaf2', protocol: 'BGP', layer: 'underlay', status: 'up', sourceInterface: 'Eth1/2', targetInterface: 'Eth50/1' },
+                    { source: 'spine2', target: 'leaf3', protocol: 'BGP', layer: 'underlay', status: 'up', sourceInterface: 'Eth1/3', targetInterface: 'Eth50/1' },
+                    { source: 'spine2', target: 'leaf4', protocol: 'BGP', layer: 'underlay', status: 'up', sourceInterface: 'Eth1/4', targetInterface: 'Eth50/1' },
+                    // Border router connections - OSPF with LAG bundles (port-channel1)
+                    { source: 'spine1', target: 'border1', protocol: 'OSPF', layer: 'underlay', status: 'up', sourceInterface: 'Po1', targetInterface: 'Po1',
+                      bundleInfo: { isBundle: true, lagName: 'Po1', memberCount: 4, activeMembers: 4, mode: 'active' } },
+                    { source: 'spine1', target: 'border2', protocol: 'OSPF', layer: 'underlay', status: 'up', sourceInterface: 'Po2', targetInterface: 'Po1',
+                      bundleInfo: { isBundle: true, lagName: 'Po2', memberCount: 2, activeMembers: 2, mode: 'active' } },
+                    { source: 'spine2', target: 'border1', protocol: 'OSPF', layer: 'underlay', status: 'up', sourceInterface: 'Po1', targetInterface: 'Po2',
+                      bundleInfo: { isBundle: true, lagName: 'Po1', memberCount: 4, activeMembers: 3, mode: 'active' } },
+                    { source: 'spine2', target: 'border2', protocol: 'OSPF', layer: 'underlay', status: 'up', sourceInterface: 'Po2', targetInterface: 'Po2',
+                      bundleInfo: { isBundle: true, lagName: 'Po2', memberCount: 2, activeMembers: 2, mode: 'passive' } },
                 ]
             };
         }
@@ -1792,10 +2026,14 @@
                 }
 
                 // Increase emissive intensity for connected/running nodes
-                const isConnected = node.status === 'running' || node.status === 'established' || node.status === 'full';
+                const nodeStatusLower = (node.status || '').toLowerCase();
+                const isConnected = nodeStatusLower === 'running' || nodeStatusLower === 'established' || nodeStatusLower === 'full';
+                const isStopped = nodeStatusLower === 'stopped' || nodeStatusLower === 'down' || nodeStatusLower.includes('exited');
                 if (isConnected) {
                     emissiveIntensity = Math.min(emissiveIntensity + 0.2, 0.6);
-                } else if (node.status === 'initializing') {
+                } else if (isStopped) {
+                    emissiveIntensity = 0.05;  // Very dim for stopped nodes
+                } else if (nodeStatusLower === 'initializing') {
                     emissiveIntensity = Math.max(emissiveIntensity - 0.1, 0.1);
                 }
 
@@ -1864,6 +2102,58 @@
                     labelObjects.push(underlayRing);
                 }
 
+                // Add protocol status indicators (small spheres showing protocol health)
+                if (node.protocolStatus) {
+                    const indicatorRadius = 1.5;
+                    const indicatorDistance = 10;
+                    let indicatorIndex = 0;
+                    const totalIndicators = Object.keys(node.protocolStatus).length;
+
+                    Object.entries(node.protocolStatus).forEach(([protocol, status]) => {
+                        // Skip null status entries (protocol not active)
+                        if (!status) {
+                            indicatorIndex++;
+                            return;
+                        }
+
+                        // Calculate position around node
+                        const angle = (indicatorIndex / totalIndicators) * Math.PI * 2 - Math.PI / 2;
+                        const indicatorX = pos.x + Math.cos(angle) * indicatorDistance;
+                        const indicatorY = pos.y + 6;  // Slightly above node
+                        const indicatorZ = pos.z + Math.sin(angle) * indicatorDistance;
+
+                        // Green if up/active, red if down/inactive
+                        const isUp = status.up || status.established || status.fullNeighbors > 0;
+                        const indicatorColor = isUp ? 0x4ade80 : 0xef4444;
+
+                        const indicatorGeom = new THREE.SphereGeometry(indicatorRadius, 8, 8);
+                        const indicatorMat = new THREE.MeshBasicMaterial({
+                            color: indicatorColor,
+                            transparent: true,
+                            opacity: 0.9
+                        });
+                        const indicator = new THREE.Mesh(indicatorGeom, indicatorMat);
+                        indicator.position.set(indicatorX, indicatorY, indicatorZ);
+                        indicator.userData = {
+                            type: 'protocolIndicator',
+                            protocol: protocol.toUpperCase(),
+                            status: isUp ? 'up' : 'down',
+                            details: status
+                        };
+                        scene.add(indicator);
+                        labelObjects.push(indicator);
+
+                        // Add tiny protocol label below indicator
+                        const protoLabel = createTextSprite(protocol.toUpperCase(), isUp ? '#4ade80' : '#ef4444', 6);
+                        protoLabel.position.set(indicatorX, indicatorY - 3, indicatorZ);
+                        protoLabel.userData = { type: 'protocolLabel', protocol: protocol };
+                        scene.add(protoLabel);
+                        labelObjects.push(protoLabel);
+
+                        indicatorIndex++;
+                    });
+                }
+
                 // Create text labels for the node
                 const labelResult = createNodeLabels(node, pos);
                 scene.add(labelResult.group);
@@ -1891,6 +2181,10 @@
                 const targetPos = nodePositions[link.target];
 
                 if (sourcePos && targetPos) {
+                    // Check if this link is part of a LAG bundle
+                    const bundleInfo = getLinkBundleInfo(link);
+                    link.bundleInfo = bundleInfo;  // Store for label display
+
                     // Create curved links with different heights per layer
                     let curveHeight, lineWidth, opacity;
                     if (link.layer === 'docker') {
@@ -1909,6 +2203,13 @@
                         curveHeight = 0;
                         lineWidth = 2;
                         opacity = 0.6;
+                    }
+
+                    // Enhance styling for LAG bundles
+                    if (bundleInfo.isBundle) {
+                        // Thicker lines for bundles, width scales with member count
+                        lineWidth = Math.min(lineWidth + bundleInfo.memberCount, 8);
+                        opacity = Math.min(opacity + 0.1, 1.0);
                     }
 
                     // Calculate midpoint with curve
@@ -1964,8 +2265,9 @@
         }
 
         function getNodeColor(node) {
-            // Red for down/stopped
-            if (node.status === 'stopped' || node.status === 'down') {
+            // Red for down/stopped/exited containers
+            const statusLower = (node.status || '').toLowerCase();
+            if (statusLower === 'stopped' || statusLower === 'down' || statusLower.includes('exited')) {
                 return protocolColors.down;
             }
 
@@ -1978,13 +2280,13 @@
             const primaryProtocol = node.protocols[0].toLowerCase();
 
             // Check if the node is fully connected/running
-            const isConnected = node.status === 'running' || node.status === 'established' || node.status === 'full';
+            const isNodeConnected = statusLower === 'running' || statusLower === 'established' || statusLower === 'full';
 
             // For connected nodes, show protocol color; for initializing, show dimmer version
-            if (isConnected) {
+            if (isNodeConnected) {
                 // Return the protocol color (purple for bgp, green for ospf, etc)
                 return protocolColors[primaryProtocol] || protocolColors.default;
-            } else if (node.status === 'initializing' || node.status === 'active' || node.status === 'connect') {
+            } else if (statusLower === 'initializing' || statusLower === 'active' || statusLower === 'connect') {
                 // Return a dimmer version (yellow/amber for "connecting" state)
                 return 0xfbbf24; // Amber/yellow for initializing
             }
@@ -1995,11 +2297,16 @@
 
         function getNodeEmissive(node) {
             // Emissive glow for running nodes - makes them stand out more
-            if (node.status === 'running' || node.status === 'established' || node.status === 'full') {
+            const statusLower = (node.status || '').toLowerCase();
+            if (statusLower === 'running' || statusLower === 'established' || statusLower === 'full') {
                 const primaryProtocol = (node.protocols && node.protocols[0]) ? node.protocols[0].toLowerCase() : 'default';
                 const color = protocolColors[primaryProtocol] || protocolColors.default;
                 // Return dimmer version for emissive
                 return color;
+            }
+            // No emissive for stopped/exited nodes
+            if (statusLower === 'stopped' || statusLower === 'down' || statusLower.includes('exited')) {
+                return 0x333333; // Very dim grey
             }
             return 0x000000; // No glow for non-running nodes
         }
@@ -2107,7 +2414,7 @@
             return { group: labelGroup, labels: labels };
         }
 
-        // Create link label
+        // Create link label with interface info
         function createLinkLabel(link, sourcePos, targetPos) {
             // Calculate midpoint
             const midX = (sourcePos.x + targetPos.x) / 2;
@@ -2128,6 +2435,21 @@
             } else {
                 color = '#888888';
                 text = link.protocol || '';
+            }
+
+            // Add interface info if enabled and available
+            if (labelVisibility.linkInterfaces && (link.sourceInterface || link.targetInterface)) {
+                const srcIf = link.sourceInterface || '?';
+                const tgtIf = link.targetInterface || '?';
+
+                // Check for LAG bundle info
+                if (link.bundleInfo && link.bundleInfo.isBundle) {
+                    // Show LAG bundle with member count
+                    text = `${link.bundleInfo.lagName} (${link.bundleInfo.activeMembers}/${link.bundleInfo.memberCount})`;
+                    color = '#22d3ee';  // Cyan for LAG bundles
+                } else {
+                    text = `${srcIf} ↔ ${tgtIf}`;
+                }
             }
 
             const label = createTextSprite(text, color, 9);
@@ -2225,7 +2547,9 @@
                         const node = nodeEntry[1].data;
                         // Build enhanced tooltip with protocol info
                         let tooltipContent = `<strong>${node.name}</strong><br>`;
-                        tooltipContent += `<span style="color: ${node.status === 'running' ? '#4ade80' : '#ef4444'};">${node.status}</span>`;
+                        const statusLower = (node.status || '').toLowerCase();
+                        const isHealthy = statusLower === 'running' || statusLower === 'established' || statusLower === 'full';
+                        tooltipContent += `<span style="color: ${isHealthy ? '#4ade80' : '#ef4444'};">${node.status}</span>`;
 
                         if (node.protocols && node.protocols.length > 0) {
                             tooltipContent += `<br><span style="color: #888;">Protocols:</span> ${node.protocols.join(', ').toUpperCase()}`;
@@ -2235,6 +2559,28 @@
                         }
                         if (node.routes !== undefined && node.routes > 0) {
                             tooltipContent += `<br><span style="color: #888;">Routes:</span> ${node.routes}`;
+                        }
+
+                        // Add protocol status details
+                        if (node.protocolStatus) {
+                            tooltipContent += `<br><span style="color: #00d9ff; font-size: 0.8em;">─── Protocol Status ───</span>`;
+                            Object.entries(node.protocolStatus).forEach(([proto, status]) => {
+                                const isUp = status.up || status.established || status.fullNeighbors > 0;
+                                const statusColor = isUp ? '#4ade80' : '#ef4444';
+                                const statusIcon = isUp ? '●' : '○';
+                                tooltipContent += `<br><span style="color: ${statusColor};">${statusIcon}</span> <span style="color: #888;">${proto.toUpperCase()}:</span> `;
+                                if (proto === 'bgp') {
+                                    tooltipContent += `${status.establishedPeers || 0}/${status.totalPeers || 0} peers, ${status.routes || 0} routes`;
+                                } else if (proto === 'ospf') {
+                                    tooltipContent += `${status.fullNeighbors || 0}/${status.neighbors || 0} adj, ${status.routes || 0} routes`;
+                                } else if (proto === 'vxlan') {
+                                    tooltipContent += `${status.vteps || 0} VTEPs`;
+                                } else if (proto === 'mpls') {
+                                    tooltipContent += `${status.ldpNeighbors || 0} LDP, ${status.lspCount || 0} LSPs`;
+                                } else {
+                                    tooltipContent += isUp ? 'active' : 'inactive';
+                                }
+                            });
                         }
 
                         tooltip.innerHTML = tooltipContent;
@@ -2263,31 +2609,36 @@
             // Also sync label visibility with layer visibility
             // When showing only one layer, only show that layer's labels
             if (docker && !overlay && !underlay) {
-                // Docker only - show Docker IP labels
+                // Docker only - show Docker IP labels and link interfaces
                 labelVisibility.dockerIp = true;
                 labelVisibility.overlayIp = false;
                 labelVisibility.interfaces = false;
+                labelVisibility.linkInterfaces = true;
             } else if (!docker && overlay && !underlay) {
-                // Overlay only - show Overlay IPv6 labels
+                // Overlay only - show Overlay IPv6 labels and link interfaces
                 labelVisibility.dockerIp = false;
                 labelVisibility.overlayIp = true;
                 labelVisibility.interfaces = false;
+                labelVisibility.linkInterfaces = true;
             } else if (!docker && !overlay && underlay) {
-                // Underlay only - show interface labels
+                // Underlay only - show interface labels and link interfaces
                 labelVisibility.dockerIp = false;
                 labelVisibility.overlayIp = false;
                 labelVisibility.interfaces = true;
+                labelVisibility.linkInterfaces = true;
             } else {
                 // All or multiple - show all labels
                 labelVisibility.dockerIp = docker;
                 labelVisibility.overlayIp = overlay;
                 labelVisibility.interfaces = underlay;
+                labelVisibility.linkInterfaces = docker || overlay || underlay;
             }
 
             // Update label checkboxes
             document.getElementById('labelDockerIp').checked = labelVisibility.dockerIp;
             document.getElementById('labelOverlayIp').checked = labelVisibility.overlayIp;
             document.getElementById('labelInterfaces').checked = labelVisibility.interfaces;
+            document.getElementById('labelLinkInterfaces').checked = labelVisibility.linkInterfaces;
 
             updateLayerVisibility();
         }
@@ -2357,14 +2708,19 @@
                             // Name labels always visible if any layer is visible
                             obj.visible = (layerVisibility.docker || layerVisibility.overlay || layerVisibility.underlay) && labelVisibility.names;
                         } else if (obj.userData.type === 'linkLabel') {
-                            // Link labels follow their layer
+                            // Link labels follow their layer and linkInterfaces visibility
                             const link = obj.userData.link;
                             if (link) {
-                                if (link.layer === 'docker') obj.visible = layerVisibility.docker;
-                                else if (link.layer === 'overlay') obj.visible = layerVisibility.overlay;
-                                else if (link.layer === 'underlay') obj.visible = layerVisibility.underlay;
-                                else obj.visible = true;
+                                let layerVisible = true;
+                                if (link.layer === 'docker') layerVisible = layerVisibility.docker;
+                                else if (link.layer === 'overlay') layerVisible = layerVisibility.overlay;
+                                else if (link.layer === 'underlay') layerVisible = layerVisibility.underlay;
+                                // Show link labels only if layer visible AND linkInterfaces enabled
+                                obj.visible = layerVisible && labelVisibility.linkInterfaces;
                             }
+                        } else if (obj.userData.type === 'protocolIndicator' || obj.userData.type === 'protocolLabel') {
+                            // Protocol status indicators follow protocolStatus visibility
+                            obj.visible = labelVisibility.protocolStatus;
                         }
                     }
                 }
@@ -2447,11 +2803,15 @@
             labelVisibility.dockerIp = visible;
             labelVisibility.overlayIp = visible;
             labelVisibility.interfaces = visible;
+            labelVisibility.linkInterfaces = visible;
+            labelVisibility.protocolStatus = visible;
 
             document.getElementById('labelNames').checked = visible;
             document.getElementById('labelDockerIp').checked = visible;
             document.getElementById('labelOverlayIp').checked = visible;
             document.getElementById('labelInterfaces').checked = visible;
+            document.getElementById('labelLinkInterfaces').checked = visible;
+            document.getElementById('labelProtocolStatus').checked = visible;
 
             updateLabelVisibility();
         }

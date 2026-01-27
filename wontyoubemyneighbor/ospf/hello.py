@@ -67,6 +67,20 @@ class HelloHandler:
         self.on_neighbor_dead: Optional[Callable] = None
         self.on_hello_received: Optional[Callable] = None
 
+        # Message statistics
+        self.stats = {
+            'hello_sent': 0,
+            'hello_recv': 0,
+            'dbd_sent': 0,
+            'dbd_recv': 0,
+            'lsr_sent': 0,
+            'lsr_recv': 0,
+            'lsu_sent': 0,
+            'lsu_recv': 0,
+            'lsack_sent': 0,
+            'lsack_recv': 0
+        }
+
         logger.info(f"Hello handler initialized for {router_id} on {interface}")
 
     def build_hello_packet(self, active_neighbors: Optional[list] = None) -> bytes:
@@ -107,6 +121,10 @@ class HelloHandler:
 
         # Combine and serialize
         packet = header / hello
+
+        # Increment send counter
+        self.stats['hello_sent'] += 1
+
         return bytes(packet)
 
     def process_hello(self, packet_data: bytes, source_ip: str) -> Optional[str]:
@@ -151,6 +169,9 @@ class HelloHandler:
             # Extract neighbor router ID
             neighbor_id = packet.router_id
             logger.debug(f"Received valid Hello from {neighbor_id} ({source_ip})")
+
+            # Increment receive counter
+            self.stats['hello_recv'] += 1
 
             # Update neighbor last seen time
             now = time.time()
