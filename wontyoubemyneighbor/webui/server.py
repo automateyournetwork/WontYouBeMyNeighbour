@@ -19,6 +19,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Import wizard router
@@ -31,6 +32,9 @@ except ImportError:
 
 
 # Log buffer for streaming to web clients
+# Storage for NetBox configuration (received from wizard during deployment)
+_netbox_config_storage: Dict[str, Any] = {}
+
 class LogBuffer:
     """Thread-safe circular buffer for log messages"""
 
@@ -134,6 +138,15 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
     app = FastAPI(
         title="ASI Dashboard",
         description="Web UI for Won't You Be My Neighbor routing agent"
+    )
+
+    # Add CORS middleware to allow wizard (port 5111) to push config to agents (ports 8801+)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins for local development
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # Track app startup time for uptime display
@@ -597,6 +610,204 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             pass
 
         return status
+
+    # ========================================
+    # NetBox Configuration Storage
+    # (Received from wizard during deployment)
+    # ========================================
+
+    @app.get("/api/config/netbox")
+    async def get_netbox_config() -> Dict[str, Any]:
+        """Get stored NetBox configuration for this agent"""
+        global _netbox_config_storage
+        if _netbox_config_storage:
+            return {
+                "status": "ok",
+                "config": _netbox_config_storage
+            }
+        return {
+            "status": "not_configured",
+            "config": None
+        }
+
+    @app.post("/api/config/netbox")
+    async def set_netbox_config(request: Request) -> Dict[str, Any]:
+        """Store NetBox configuration for this agent (called by wizard during deployment)"""
+        global _netbox_config_storage
+        try:
+            data = await request.json()
+            # Validate required fields
+            if not data.get('netbox_url') or not data.get('api_token'):
+                return {"status": "error", "message": "Missing netbox_url or api_token"}
+
+            _netbox_config_storage = {
+                "netbox_url": data.get('netbox_url'),
+                "api_token": data.get('api_token'),
+                "site_name": data.get('site_name'),
+                "device_name": data.get('device_name')
+            }
+
+            logging.getLogger("WebUI").info(f"[NetBox] Stored config for device: {_netbox_config_storage.get('device_name')}")
+            return {"status": "ok", "message": "NetBox config stored"}
+        except Exception as e:
+            logging.getLogger("WebUI").error(f"[NetBox] Failed to store config: {e}")
+            return {"status": "error", "message": str(e)}
+
+    @app.get("/api/netbox/sync")
+    async def sync_netbox_device() -> Dict[str, Any]:
+        """
+        Get full device sync status from NetBox using stored config.
+        Fetches device info, interfaces, IPs, services, and cables.
+        """
+        global _netbox_config_storage
+
+        if not _netbox_config_storage:
+            return {"status": "not_configured", "error": "NetBox not configured for this agent"}
+
+        netbox_url = _netbox_config_storage.get("netbox_url")
+        api_token = _netbox_config_storage.get("api_token")
+        device_name = _netbox_config_storage.get("device_name")
+
+        if not all([netbox_url, api_token, device_name]):
+            return {"status": "error", "error": "Missing required NetBox configuration (url, token, or device_name)"}
+
+        try:
+            from agentic.mcp.netbox_mcp import NetBoxClient, NetBoxConfig
+
+            config = NetBoxConfig(url=netbox_url, api_token=api_token)
+            client = NetBoxClient(config)
+
+            # Get device by name
+            device = await client.get_device(device_name)
+            if not device:
+                await client.close()
+                return {
+                    "status": "not_found",
+                    "error": f"Device '{device_name}' not found in NetBox"
+                }
+
+            device_id = device["id"]
+
+            # Get the underlying HTTP client for direct API calls
+            http_client = await client._get_client()
+
+            # Get interfaces with full details
+            interfaces_raw = await client.get_interfaces(device_id)
+            interfaces = []
+            for iface in (interfaces_raw or []):
+                interfaces.append({
+                    "id": iface.get("id"),
+                    "name": iface.get("name"),
+                    "type": iface.get("type", {}).get("value") if isinstance(iface.get("type"), dict) else iface.get("type"),
+                    "enabled": iface.get("enabled", True),
+                    "url": f"{netbox_url.rstrip('/')}/dcim/interfaces/{iface.get('id')}/"
+                })
+            interface_count = len(interfaces)
+
+            # Get IP addresses for the device
+            ip_addresses = []
+            try:
+                ip_response = await http_client.get(
+                    "/api/ipam/ip-addresses/",
+                    params={"device_id": device_id, "limit": 100}
+                )
+                logging.getLogger("WebUI").info(f"[NetBox] IP query for device_id={device_id}, status={ip_response.status_code}")
+                if ip_response.status_code == 200:
+                    ip_data = ip_response.json()
+                    logging.getLogger("WebUI").info(f"[NetBox] IP results count: {ip_data.get('count', 0)}, results: {len(ip_data.get('results', []))}")
+                    for ip in ip_data.get("results", []):
+                        ip_addresses.append({
+                            "id": ip.get("id"),
+                            "address": ip.get("address"),
+                            "status": ip.get("status", {}).get("value") if isinstance(ip.get("status"), dict) else ip.get("status"),
+                            "interface": ip.get("assigned_object", {}).get("name") if ip.get("assigned_object") else None,
+                            "url": f"{netbox_url.rstrip('/')}/ipam/ip-addresses/{ip.get('id')}/"
+                        })
+                else:
+                    logging.getLogger("WebUI").warning(f"[NetBox] IP query failed: {ip_response.text[:200]}")
+            except Exception as e:
+                logging.getLogger("WebUI").warning(f"[NetBox] Could not get IP addresses: {e}")
+            ip_count = len(ip_addresses)
+
+            # Get services for the device
+            services = []
+            try:
+                svc_response = await http_client.get(
+                    "/api/ipam/services/",
+                    params={"device_id": device_id, "limit": 100}
+                )
+                if svc_response.status_code == 200:
+                    svc_data = svc_response.json()
+                    for svc in svc_data.get("results", []):
+                        services.append({
+                            "id": svc.get("id"),
+                            "name": svc.get("name"),
+                            "protocol": svc.get("protocol", {}).get("value") if isinstance(svc.get("protocol"), dict) else svc.get("protocol"),
+                            "ports": svc.get("ports", []),
+                            "url": f"{netbox_url.rstrip('/')}/ipam/services/{svc.get('id')}/"
+                        })
+            except Exception as e:
+                logging.getLogger("WebUI").warning(f"[NetBox] Could not get services: {e}")
+            service_count = len(services)
+
+            # Get cable connections
+            connections = await client.get_interface_connections(device_id)
+            logging.getLogger("WebUI").info(f"[NetBox] Cable connections for device_id={device_id}: {len(connections)} found")
+            if connections:
+                logging.getLogger("WebUI").info(f"[NetBox] First connection: {connections[0]}")
+            cables = []
+            for conn in connections:
+                cable_id = conn.get("cable_id")
+                cables.append({
+                    "local_interface": conn.get("local_interface"),
+                    "remote_device": conn.get("remote_device"),
+                    "remote_interface": conn.get("remote_interface"),
+                    "cable_id": cable_id,
+                    "status": "connected",
+                    "url": f"{netbox_url.rstrip('/')}/dcim/cables/{cable_id}/" if cable_id else None
+                })
+
+            await client.close()
+
+            # Build NetBox URL for the device
+            device_url = f"{netbox_url.rstrip('/')}/dcim/devices/{device_id}/"
+
+            # Extract site name
+            site_name = None
+            if device.get("site"):
+                site_name = device["site"].get("name") if isinstance(device["site"], dict) else str(device["site"])
+
+            # Extract primary IP
+            primary_ip = None
+            if device.get("primary_ip4"):
+                primary_ip = device["primary_ip4"].get("address") if isinstance(device["primary_ip4"], dict) else str(device["primary_ip4"])
+            elif device.get("primary_ip"):
+                primary_ip = device["primary_ip"].get("address") if isinstance(device["primary_ip"], dict) else str(device["primary_ip"])
+
+            return {
+                "status": "ok",
+                "device": {
+                    "id": device_id,
+                    "name": device.get("name"),
+                    "site": site_name,
+                    "primary_ip": primary_ip,
+                    "url": device_url,
+                    "interface_count": interface_count,
+                    "ip_count": ip_count,
+                    "service_count": service_count,
+                    "status": device.get("status", {}).get("value") if isinstance(device.get("status"), dict) else device.get("status"),
+                    "role": device.get("role", {}).get("name") if isinstance(device.get("role"), dict) else device.get("role")
+                },
+                "interfaces": interfaces,
+                "ip_addresses": ip_addresses,
+                "services": services,
+                "cables": cables
+            }
+        except ImportError:
+            return {"status": "error", "error": "NetBox client module not available"}
+        except Exception as e:
+            logging.getLogger("WebUI").error(f"[NetBox] Sync error: {e}")
+            return {"status": "error", "error": str(e)}
 
     @app.get("/api/nd/neighbors")
     async def get_nd_neighbors() -> Dict[str, Any]:

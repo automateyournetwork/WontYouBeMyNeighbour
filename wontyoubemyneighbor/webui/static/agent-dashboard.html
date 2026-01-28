@@ -191,6 +191,7 @@
         .protocol-tab.subif.active { color: #ec4899; }
         .protocol-tab.ospfv3.active { color: #0ea5e9; }
         .protocol-tab.email.active { color: #f59e0b; }
+        .protocol-tab.netbox.active { color: #06b6d4; }
         .protocol-tab.firewall.active { color: #ef4444; }
         .protocol-tab.ssh.active { color: #06b6d4; }
         .protocol-tab.netconf.active { color: #14b8a6; }
@@ -333,6 +334,7 @@
         .metric-card.subif::before { background: #ec4899; }
         .metric-card.ospfv3::before { background: #0ea5e9; }
         .metric-card.email::before { background: #f59e0b; }
+        .metric-card.netbox::before { background: #06b6d4; }
         .metric-card.firewall::before { background: #ef4444; }
         .metric-card.ssh::before { background: #06b6d4; }
         .metric-card.netconf::before { background: #14b8a6; }
@@ -637,6 +639,11 @@
         .btn-secondary:hover {
             background: var(--accent-cyan);
             color: var(--bg-primary);
+        }
+
+        /* Spinner animation */
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
 
         /* Chat Tab Styles */
@@ -3116,6 +3123,175 @@
                     <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
                         <button class="btn btn-secondary" id="email-rule-cancel">Cancel</button>
                         <button class="btn btn-primary" id="email-rule-save">Add Rule</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- NetBox Content (DCIM/IPAM Integration) - SIMPLIFIED AUTO-SYNC -->
+        <div class="protocol-content" id="netbox-content">
+            <!-- LOADING STATE -->
+            <div id="netbox-loading" style="text-align: center; padding: 60px;">
+                <div class="spinner" style="width: 48px; height: 48px; border: 4px solid #06b6d4; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px;"></div>
+                <div style="color: #06b6d4; font-size: 1.2rem;">Syncing with NetBox...</div>
+            </div>
+
+            <!-- MAIN SYNC STATUS (shown after loading) -->
+            <div id="netbox-main-content" style="display: none;">
+                <!-- BIG SYNC STATUS BUTTON -->
+                <div id="netbox-sync-banner" style="background: linear-gradient(135deg, #1a3a3a 0%, #16213e 100%); border-radius: 16px; padding: 30px; margin-bottom: 25px; text-align: center;">
+                    <!-- Clickable Sync Status -->
+                    <button id="netbox-sync-button" style="background: none; border: none; cursor: pointer; padding: 20px; border-radius: 12px; transition: all 0.3s; width: 100%;" onmouseover="this.style.background='rgba(6,182,212,0.1)'" onmouseout="this.style.background='none'">
+                        <div id="netbox-sync-icon" style="width: 120px; height: 120px; border-radius: 50%; background: linear-gradient(135deg, #4ade80 0%, #22c55e 100%); display: flex; align-items: center; justify-content: center; font-size: 3.5rem; border: 4px solid #4ade80; margin: 0 auto 15px; box-shadow: 0 0 30px rgba(74, 222, 128, 0.4);">
+                            ✓
+                        </div>
+                        <div id="netbox-sync-status-text" style="font-size: 2rem; font-weight: bold; color: #4ade80; margin-bottom: 5px;">
+                            IN SYNC
+                        </div>
+                        <div id="netbox-sync-substatus" style="font-size: 0.95rem; color: var(--text-secondary);">
+                            Click to refresh • Last checked: <span id="netbox-last-check">just now</span>
+                        </div>
+                    </button>
+
+                    <!-- Device Quick Info -->
+                    <div id="netbox-device-quick-info" style="display: flex; justify-content: center; gap: 30px; margin-top: 20px; flex-wrap: wrap;">
+                        <div style="text-align: center;">
+                            <div style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase;">Device</div>
+                            <div id="netbox-device-name" style="font-size: 1.1rem; color: #06b6d4; font-weight: bold;">-</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase;">Site</div>
+                            <div id="netbox-device-site" style="font-size: 1.1rem; color: var(--text-primary);">-</div>
+                        </div>
+                        <div style="text-align: center;">
+                            <div style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase;">Primary IP</div>
+                            <div id="netbox-device-primary-ip" style="font-size: 1.1rem; color: var(--text-primary); font-family: monospace;">-</div>
+                        </div>
+                        <a id="netbox-device-link" href="#" target="_blank" style="background: #06b6d4; color: #1a1a2e; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: bold; align-self: center;">
+                            Open in NetBox ↗
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Stats Cards Row -->
+                <div class="metrics-row">
+                    <div class="metric-card netbox" style="--metric-color: #06b6d4;">
+                        <div class="metric-label">Interfaces</div>
+                        <div class="metric-value" id="netbox-interface-count">0</div>
+                    </div>
+                    <div class="metric-card netbox" style="--metric-color: #06b6d4;">
+                        <div class="metric-label">IP Addresses</div>
+                        <div class="metric-value" id="netbox-ip-count">0</div>
+                    </div>
+                    <div class="metric-card netbox" style="--metric-color: #06b6d4;">
+                        <div class="metric-label">Services</div>
+                        <div class="metric-value" id="netbox-service-count">0</div>
+                    </div>
+                    <div class="metric-card netbox" style="--metric-color: #9333ea;">
+                        <div class="metric-label">Cables</div>
+                        <div class="metric-value" id="netbox-cable-count">0</div>
+                    </div>
+                </div>
+
+                <!-- Interface Connections Section -->
+                <div class="section" style="margin-bottom: 20px;">
+                    <div class="section-header">
+                        <h3>🔗 Interface Connections</h3>
+                    </div>
+                    <div id="netbox-cables-list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 12px; padding: 15px;">
+                        <!-- Cables will be populated here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- NOT CONFIGURED STATE -->
+            <div id="netbox-not-configured" style="display: none; text-align: center; padding: 60px;">
+                <div style="font-size: 4rem; margin-bottom: 20px;">📦</div>
+                <div style="font-size: 1.5rem; color: var(--text-primary); margin-bottom: 10px;">NetBox Not Configured</div>
+                <div style="color: var(--text-secondary); margin-bottom: 30px;">
+                    This agent was not launched with NetBox integration enabled.<br>
+                    Configure NetBox in the wizard when launching to enable auto-sync.
+                </div>
+            </div>
+
+            <!-- Hidden inputs for stored config -->
+            <input type="hidden" id="netbox-url" value="">
+            <input type="hidden" id="netbox-api-token" value="">
+            <input type="hidden" id="netbox-site" value="">
+
+            <div class="section" style="margin-top: 20px;">
+                <div class="section-header">
+                    <h3>Registered Objects</h3>
+                    <button class="btn btn-secondary" id="netbox-refresh-btn">Refresh</button>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
+                    <div>
+                        <h4 style="margin-bottom: 10px; color: var(--accent-cyan);">Interfaces</h4>
+                        <div id="netbox-interfaces-list" style="background: var(--bg-tertiary); border-radius: 8px; padding: 10px; max-height: 200px; overflow-y: auto;">
+                            <div style="color: var(--text-secondary); text-align: center; padding: 20px;">Not registered</div>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 style="margin-bottom: 10px; color: var(--accent-green);">IP Addresses</h4>
+                        <div id="netbox-ips-list" style="background: var(--bg-tertiary); border-radius: 8px; padding: 10px; max-height: 200px; overflow-y: auto;">
+                            <div style="color: var(--text-secondary); text-align: center; padding: 20px;">Not registered</div>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 style="margin-bottom: 10px; color: var(--accent-purple);">Services</h4>
+                        <div id="netbox-services-list" style="background: var(--bg-tertiary); border-radius: 8px; padding: 10px; max-height: 200px; overflow-y: auto;">
+                            <div style="color: var(--text-secondary); text-align: center; padding: 20px;">Not registered</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Change Log / Sync History -->
+            <div class="section" style="margin-top: 20px;">
+                <div class="section-header">
+                    <h3>📋 Change Log & Sync History</h3>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn btn-secondary" id="netbox-export-log-btn" style="font-size: 0.8rem;">Export Log</button>
+                        <button class="btn btn-secondary" id="netbox-clear-log-btn" style="font-size: 0.8rem;">Clear</button>
+                    </div>
+                </div>
+                <div style="padding: 15px;">
+                    <!-- Summary Stats -->
+                    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px;">
+                        <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: bold; color: #4ade80;" id="netbox-log-syncs">0</div>
+                            <div style="font-size: 0.75rem; color: var(--text-secondary);">Successful Syncs</div>
+                        </div>
+                        <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: bold; color: #ef4444;" id="netbox-log-errors">0</div>
+                            <div style="font-size: 0.75rem; color: var(--text-secondary);">Errors</div>
+                        </div>
+                        <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: bold; color: #facc15;" id="netbox-log-drifts">0</div>
+                            <div style="font-size: 0.75rem; color: var(--text-secondary);">Drift Detected</div>
+                        </div>
+                        <div style="background: var(--bg-tertiary); padding: 15px; border-radius: 8px; text-align: center;">
+                            <div style="font-size: 1.5rem; font-weight: bold; color: #06b6d4;" id="netbox-log-total">0</div>
+                            <div style="font-size: 0.75rem; color: var(--text-secondary);">Total Events</div>
+                        </div>
+                    </div>
+
+                    <!-- Log Table -->
+                    <div style="max-height: 400px; overflow-y: auto; background: var(--bg-tertiary); border-radius: 8px;">
+                        <table class="data-table" style="margin: 0;">
+                            <thead style="position: sticky; top: 0; background: var(--bg-secondary);">
+                                <tr>
+                                    <th style="width: 150px;">Timestamp</th>
+                                    <th style="width: 100px;">Action</th>
+                                    <th style="width: 100px;">Type</th>
+                                    <th>Details</th>
+                                    <th style="width: 80px;">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="netbox-sync-history">
+                                <tr><td colspan="5" class="empty-state">No sync history yet. Register or sync with NetBox to see activity.</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
