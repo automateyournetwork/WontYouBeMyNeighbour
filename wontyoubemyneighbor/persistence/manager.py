@@ -521,13 +521,24 @@ def get_agent_mcp_status(agent: 'TOONAgent') -> Dict[str, Any]:
 
     if agent.mcps:
         for mcp in agent.mcps:
+            # Extract non-sensitive config values
+            config_values = {k: v for k, v in mcp.c.items() if not k.startswith("_")}
+            # Mask sensitive values
+            safe_config = {}
+            for key, value in config_values.items():
+                if any(sensitive in key.lower() for sensitive in ['token', 'password', 'secret', 'key', 'credential']):
+                    safe_config[key] = '***' if value else None
+                else:
+                    safe_config[key] = value
+
             status = {
                 "id": mcp.id,
                 "type": mcp.t,
                 "name": mcp.n,
                 "enabled": mcp.e,
                 "requires_config": mcp.c.get("_requires_config", False),
-                "has_config": bool({k: v for k, v in mcp.c.items() if not k.startswith("_")})
+                "has_config": bool(config_values),
+                "config": safe_config  # Non-sensitive config values
             }
             if mcp.t in MANDATORY_MCP_TYPES:
                 mandatory_status.append(status)
@@ -857,9 +868,10 @@ def create_default_mcps() -> List[TOONMCPConfig]:
                 "_config_fields": [
                     {"id": "netbox_url", "label": "NetBox URL", "type": "url", "placeholder": "https://netbox.example.com", "required": True, "hint": "Your NetBox instance URL"},
                     {"id": "api_token", "label": "API Token", "type": "password", "placeholder": "", "required": True, "hint": "NetBox API token (Admin > API Tokens)"},
-                    {"id": "_separator_1", "type": "separator", "label": "Auto-Registration"},
-                    {"id": "auto_register", "label": "Register Agent in NetBox", "type": "checkbox", "default": False, "hint": "Create device with interfaces, IPs, and protocol services in NetBox"},
-                    {"id": "site_name", "label": "Site", "type": "text", "placeholder": "DC1", "required": False, "hint": "NetBox site name (required)", "depends_on": "auto_register"}
+                    {"id": "site_name", "label": "Site", "type": "text", "placeholder": "DC1", "required": True, "hint": "NetBox site name - used for both push and pull operations"},
+                    {"id": "_separator_1", "type": "separator", "label": "Direction"},
+                    {"id": "auto_register", "label": "Push: Register agents in NetBox", "type": "checkbox", "default": False, "hint": "When agents are built, create devices in NetBox with interfaces, IPs, and protocol services"},
+                    {"id": "auto_build", "label": "Pull: Build agents from NetBox", "type": "checkbox", "default": False, "hint": "Query NetBox site and auto-create one agent per device found"}
                 ],
                 "_requires_config": True,
                 "_defaults": {
@@ -937,6 +949,19 @@ def create_default_mcps() -> List[TOONMCPConfig]:
                 "_requires_config": False
             },
             e=True  # Always enabled - provides agent dashboards
+        ),
+        TOONMCPConfig(
+            id="subnet",
+            t="subnet",
+            n="Subnet Calculator",
+            d="IPv4 and IPv6 subnet calculation and IP analysis",
+            url="https://github.com/automateyournetwork/NAF_AC4/tree/main/MCP/Lab02",
+            c={
+                "max_host_preview": 10,
+                "_config_fields": [],  # No config needed - built-in
+                "_requires_config": False
+            },
+            e=True  # Always enabled - foundational tool
         ),
         TOONMCPConfig(
             id="smtp",

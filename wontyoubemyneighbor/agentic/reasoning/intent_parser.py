@@ -51,6 +51,10 @@ class IntentType(str, Enum):
     # Notification intents
     SEND_EMAIL = "send_email"
 
+    # Subnet/IP calculation intents
+    CALCULATE_SUBNET = "calculate_subnet"
+    ANALYZE_IP = "analyze_ip"
+
     # Multi-agent intents
     COORDINATE_CONSENSUS = "coordinate_consensus"
     GOSSIP_STATE = "gossip_state"
@@ -163,6 +167,27 @@ class IntentParser:
         """
         params = existing_params.copy()
 
+        # Extract CIDR notation for subnet queries (IPv4 and IPv6)
+        cidr_v4_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2})'
+        cidr_v6_pattern = r'([0-9a-fA-F:]+::[0-9a-fA-F:]*(?:/\d{1,3})?|[0-9a-fA-F:]+/\d{1,3})'
+
+        if intent_type in ['calculate_subnet', 'analyze_ip']:
+            # Try IPv4 CIDR first
+            cidrs_v4 = re.findall(cidr_v4_pattern, query)
+            if cidrs_v4 and 'cidr' not in params:
+                params['cidr'] = cidrs_v4[0]
+            else:
+                # Try IPv6 CIDR
+                cidrs_v6 = re.findall(cidr_v6_pattern, query)
+                if cidrs_v6 and 'cidr' not in params:
+                    params['cidr'] = cidrs_v6[0]
+                else:
+                    # Try plain IPv4
+                    ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+                    ips = re.findall(ip_pattern, query)
+                    if ips and 'cidr' not in params:
+                        params['cidr'] = ips[0]
+
         # Extract IP addresses for relevant intents
         ip_pattern = r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
         ips = re.findall(ip_pattern, query)
@@ -217,6 +242,8 @@ class IntentParser:
             "diagnostic_ping": "Requests to ping an IP address",
             "diagnostic_traceroute": "Requests to traceroute to an IP address",
             "send_email": "Requests to send email, reports, or notifications",
+            "calculate_subnet": "Requests to calculate subnet information for an IPv4 or IPv6 CIDR (e.g., '192.168.1.0/24', 'what subnet is 10.0.0.0/8')",
+            "analyze_ip": "Questions about IP addresses, their classification, or properties (e.g., 'what type of IP is 10.0.0.1', 'is this IP private')",
             "coordinate_consensus": "Multi-agent coordination requests",
             "gossip_state": "Multi-agent state sharing requests",
             "unknown": "Query that doesn't fit any category"

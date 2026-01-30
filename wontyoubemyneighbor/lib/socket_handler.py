@@ -183,6 +183,21 @@ class OSPFSocket:
         Returns:
             Tuple of (packet_bytes, source_ip) or None if timeout/error
         """
+        result = self.receive_with_dscp(timeout)
+        if result:
+            return (result[0], result[1])
+        return None
+
+    def receive_with_dscp(self, timeout: float = 1.0) -> Optional[Tuple[bytes, str, int]]:
+        """
+        Receive OSPF packet with timeout and extract DSCP value from IP header.
+
+        Args:
+            timeout: Receive timeout in seconds
+
+        Returns:
+            Tuple of (packet_bytes, source_ip, dscp_value) or None if timeout/error
+        """
         try:
             if not self.sock:
                 logger.error("Socket not open")
@@ -197,15 +212,22 @@ class OSPFSocket:
 
             # Strip IP header (SOCK_RAW includes IP header in received data)
             # IP header length is in first byte: IHL field (lower 4 bits) * 4 bytes
-            if len(data) > 0:
+            dscp_value = 0
+            if len(data) > 1:
                 ip_header_len = (data[0] & 0x0F) * 4
+                # Extract DSCP from TOS byte (byte 1 of IP header)
+                # TOS byte format: DSCP (6 bits) + ECN (2 bits)
+                # DSCP = TOS >> 2
+                tos_byte = data[1]
+                dscp_value = tos_byte >> 2
                 ospf_data = data[ip_header_len:]
                 logger.debug(f"Received {len(data)} bytes from {source_ip}, "
+                           f"TOS={tos_byte:#04x} DSCP={dscp_value}, "
                            f"stripped {ip_header_len} byte IP header, "
                            f"OSPF data: {len(ospf_data)} bytes")
-                return (ospf_data, source_ip)
+                return (ospf_data, source_ip, dscp_value)
 
-            return (data, source_ip)
+            return (data, source_ip, dscp_value)
 
         except socket.timeout:
             # Timeout is normal, not an error

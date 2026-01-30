@@ -22,6 +22,10 @@ class AgentDashboard {
         this.bgpRoutes = [];
         this.isisAdjacencies = [];
 
+        // MCP status for dynamic tabs
+        this.mcpStatus = null;
+        this.enabledMcps = new Set();
+
         this.init();
     }
 
@@ -33,15 +37,53 @@ class AgentDashboard {
         this.connectWebSocket();
         this.setupEventListeners();
 
-        // Build initial tabs (MCP tabs will show immediately)
-        this.buildProtocolTabs();
+        // Fetch MCP status then build tabs
+        this.fetchMcpStatus().then(() => {
+            // Build initial tabs (MCP tabs will show based on enabled MCPs)
+            this.buildProtocolTabs();
 
-        // Set default active protocol to chat
-        this.activeProtocol = 'chat';
-        this.selectProtocol('chat');
+            // Set default active protocol to chat
+            this.activeProtocol = 'chat';
+            this.selectProtocol('chat');
+        });
 
         // Setup chat functionality
         this.setupChat();
+    }
+
+    async fetchMcpStatus() {
+        try {
+            const response = await fetch(`/api/wizard/agents/${this.agentId}/mcps/status`);
+            if (response.ok) {
+                const data = await response.json();
+                this.mcpStatus = data.mcp_status;
+
+                // Build set of enabled MCPs
+                this.enabledMcps.clear();
+                if (this.mcpStatus) {
+                    // Check mandatory MCPs
+                    if (this.mcpStatus.mandatory?.mcps) {
+                        for (const mcp of this.mcpStatus.mandatory.mcps) {
+                            if (mcp.enabled) {
+                                this.enabledMcps.add(mcp.type);
+                            }
+                        }
+                    }
+                    // Check optional MCPs
+                    if (this.mcpStatus.optional?.mcps) {
+                        for (const mcp of this.mcpStatus.optional.mcps) {
+                            if (mcp.enabled) {
+                                this.enabledMcps.add(mcp.type);
+                            }
+                        }
+                    }
+                }
+                console.log('Enabled MCPs:', Array.from(this.enabledMcps));
+            }
+        } catch (error) {
+            console.log('Could not fetch MCP status:', error);
+            // Continue without MCP status - tabs will show based on defaults
+        }
     }
 
     connectWebSocket() {
@@ -336,6 +378,9 @@ class AgentDashboard {
             markmap: 'Markmap',
             prometheus: 'Prometheus',
             grafana: 'Grafana',
+            subnet: '🧮',  // Subnet Calculator - small emoji-only tab
+            qos: '📊 QoS',  // QoS RFC 4594 DiffServ
+            netflow: '🌊 NetFlow',  // NetFlow/IPFIX RFC 7011
             logs: 'Logs'
         };
 
@@ -391,6 +436,27 @@ class AgentDashboard {
             `;
         }
 
+        // Optional MCP tabs - shown only when enabled
+        // Email tab (SMTP MCP)
+        if (this.enabledMcps.has('smtp')) {
+            const emailActive = this.activeProtocol === 'email' ? 'active' : '';
+            html += `
+                <button class="protocol-tab email ${emailActive}" data-protocol="email">
+                    <span class="protocol-indicator active"></span>
+                    📧 Email
+                </button>
+            `;
+        }
+
+        // NetBox tab - always show (core DCIM/IPAM integration feature)
+        const netboxActive = this.activeProtocol === 'netbox' ? 'active' : '';
+        html += `
+            <button class="protocol-tab netbox ${netboxActive}" data-protocol="netbox">
+                <span class="protocol-indicator active"></span>
+                📦 NetBox
+            </button>
+        `;
+
         tabsContainer.innerHTML = html;
 
         // Add click handlers (including interfaces and MCP tabs)
@@ -429,6 +495,18 @@ class AgentDashboard {
             this.fetchLLDPData();
         } else if (protocol === 'logs') {
             this.fetchLogsData();
+        } else if (protocol === 'email') {
+            this.fetchEmailData();
+        } else if (protocol === 'netbox') {
+            this.fetchNetBoxData();
+            this.fetchNetBoxCables();
+            this.setupNetBoxEventListeners();
+        } else if (protocol === 'subnet') {
+            this.initSubnetCalculator();
+        } else if (protocol === 'qos') {
+            this.initQoSTab();
+        } else if (protocol === 'netflow') {
+            this.initNetFlowTab();
         }
     }
 
@@ -1060,6 +1138,902 @@ class AgentDashboard {
         if (warningsEl) warningsEl.textContent = logs.filter(l => l.level === 'WARNING').length;
 
         // The actual log rendering is handled by the inline script in agent-dashboard.html
+    }
+
+    // =========================================================================
+    // Subnet Calculator Functions
+    // =========================================================================
+
+    initSubnetCalculator() {
+        // Initialize calculator state
+        if (!this.subnetStats) {
+            this.subnetStats = { ipv4: 0, ipv6: 0 };
+        }
+
+        // Add enter key handler for input
+        const input = document.getElementById('subnet-input');
+        if (input) {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.calculateSubnet();
+                }
+            });
+        }
+
+        // Auto-load agent IPs
+        this.refreshAgentIPs();
+
+        // Initialize SLAAC and fetch mesh address
+        this.initSLAAC();
+    }
+
+    async initSLAAC() {
+        try {
+            // Initialize SLAAC if not already done
+            const initResponse = await fetch('/api/slaac/initialize', { method: 'POST' });
+            const initData = await initResponse.json();
+
+            if (initData.success) {
+                this.displaySLAACStatus(initData);
+            } else {
+                // Just fetch status if already initialized
+                const statusResponse = await fetch('/api/slaac/status');
+                const statusData = await statusResponse.json();
+                this.displaySLAACStatus(statusData);
+            }
+        } catch (error) {
+            console.error('SLAAC initialization error:', error);
+        }
+    }
+
+    displaySLAACStatus(data) {
+        const container = document.getElementById('slaac-status');
+        if (!container) return;
+
+        const meshAddr = data.mesh_address || data.details?.mesh_address;
+        const meshAddrStr = meshAddr?.full_cidr || meshAddr?.address || meshAddr || 'Configuring...';
+
+        let html = `
+            <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 12px; height: 12px; background: #22c55e; border-radius: 50%; box-shadow: 0 0 8px #22c55e;"></div>
+                    <span style="color: var(--text-secondary); font-size: 0.9rem;">Agent IPv6:</span>
+                </div>
+                <code style="font-size: 1.1rem; color: var(--accent-cyan); background: var(--bg-primary); padding: 8px 16px; border-radius: 6px; border: 1px solid var(--border-color);">
+                    ${meshAddrStr}
+                </code>
+                <span style="color: var(--text-muted); font-size: 0.8rem;">Auto-assigned via SLAAC</span>
+            </div>
+        `;
+
+        container.innerHTML = html;
+    }
+
+    async calculateSubnet() {
+        const input = document.getElementById('subnet-input');
+        if (!input || !input.value.trim()) {
+            alert('Please enter a CIDR notation or IP address');
+            return;
+        }
+
+        const cidr = input.value.trim();
+
+        try {
+            const response = await fetch(`/api/subnet/calculate?cidr=${encodeURIComponent(cidr)}`);
+            const result = await response.json();
+
+            if (result.error) {
+                this.displaySubnetError(result.error, cidr);
+                return;
+            }
+
+            // Update stats
+            if (result.version === 4) {
+                this.subnetStats.ipv4++;
+            } else {
+                this.subnetStats.ipv6++;
+            }
+            this.updateSubnetStats();
+
+            // Display result
+            this.displaySubnetResult(result);
+
+        } catch (error) {
+            console.error('Subnet calculation error:', error);
+            this.displaySubnetError(error.message, cidr);
+        }
+    }
+
+    displaySubnetResult(result) {
+        const section = document.getElementById('subnet-result-section');
+        const container = document.getElementById('subnet-result');
+        const title = document.getElementById('subnet-result-title');
+
+        if (!section || !container) return;
+
+        section.style.display = 'block';
+        title.textContent = result.version === 4 ? '📊 IPv4 Subnet Analysis' : '📊 IPv6 Subnet Analysis';
+
+        const isV4 = result.version === 4;
+        const classColor = this.getClassificationColor(result.classification);
+
+        let html = `
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px;">
+                <!-- Network Info -->
+                <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 15px; border-left: 3px solid var(--accent-cyan);">
+                    <h4 style="color: var(--accent-cyan); margin-bottom: 10px;">Network Information</h4>
+                    <div style="font-family: monospace; font-size: 0.9rem;">
+                        <p><span style="color: var(--text-secondary);">Network:</span> <span style="color: var(--text-primary);">${result.network_address}</span></p>
+                        ${isV4 ? `<p><span style="color: var(--text-secondary);">Broadcast:</span> <span style="color: var(--text-primary);">${result.broadcast_address}</span></p>` : ''}
+                        ${isV4 ? `<p><span style="color: var(--text-secondary);">Netmask:</span> <span style="color: var(--text-primary);">${result.netmask}</span></p>` : ''}
+                        ${isV4 ? `<p><span style="color: var(--text-secondary);">Wildcard:</span> <span style="color: var(--text-primary);">${result.wildcard_mask}</span></p>` : ''}
+                        <p><span style="color: var(--text-secondary);">Prefix:</span> <span style="color: var(--text-primary);">/${result.prefix_length}</span></p>
+                    </div>
+                </div>
+
+                <!-- Host Range -->
+                <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 15px; border-left: 3px solid var(--accent-green);">
+                    <h4 style="color: var(--accent-green); margin-bottom: 10px;">Host Range</h4>
+                    <div style="font-family: monospace; font-size: 0.9rem;">
+                        <p><span style="color: var(--text-secondary);">Total Addresses:</span> <span style="color: var(--text-primary);">${result.num_addresses_formatted || result.num_addresses.toLocaleString()}</span></p>
+                        <p><span style="color: var(--text-secondary);">Usable Hosts:</span> <span style="color: var(--text-primary);">${result.usable_hosts_count.toLocaleString()}</span></p>
+                        <p><span style="color: var(--text-secondary);">First Usable:</span> <span style="color: var(--text-primary);">${result.first_usable || 'N/A'}</span></p>
+                        <p><span style="color: var(--text-secondary);">Last Usable:</span> <span style="color: var(--text-primary);">${result.last_usable || 'N/A'}</span></p>
+                    </div>
+                </div>
+
+                <!-- Classification -->
+                <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 15px; border-left: 3px solid ${classColor};">
+                    <h4 style="color: ${classColor}; margin-bottom: 10px;">Classification</h4>
+                    <div style="font-size: 0.9rem;">
+                        <p style="font-size: 1.1rem; color: ${classColor}; font-weight: bold;">${result.classification}</p>
+                        <div style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 5px;">
+                            ${result.is_private ? '<span style="background: #22c55e33; color: #4ade80; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">Private</span>' : ''}
+                            ${result.is_global ? '<span style="background: #3b82f633; color: #60a5fa; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">Global</span>' : ''}
+                            ${result.is_loopback ? '<span style="background: #a855f733; color: #c084fc; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">Loopback</span>' : ''}
+                            ${result.is_link_local ? '<span style="background: #f59e0b33; color: #fbbf24; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">Link-Local</span>' : ''}
+                            ${result.is_multicast ? '<span style="background: #ec489933; color: #f472b6; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">Multicast</span>' : ''}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Neighboring Subnets -->
+                <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 15px; border-left: 3px solid var(--accent-purple);">
+                    <h4 style="color: var(--accent-purple); margin-bottom: 10px;">Neighboring Subnets</h4>
+                    <div style="font-family: monospace; font-size: 0.9rem;">
+                        <p><span style="color: var(--text-secondary);">Previous:</span> <span style="color: var(--text-primary);">${result.previous_subnet || 'N/A'}</span></p>
+                        <p><span style="color: var(--text-secondary);">Next:</span> <span style="color: var(--text-primary);">${result.next_subnet || 'N/A'}</span></p>
+                    </div>
+                </div>
+
+                <!-- Bit Info -->
+                <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 15px; border-left: 3px solid var(--accent-yellow);">
+                    <h4 style="color: var(--accent-yellow); margin-bottom: 10px;">Bit Distribution</h4>
+                    <div style="font-size: 0.9rem;">
+                        <p><span style="color: var(--text-secondary);">Network Bits:</span> <span style="color: var(--text-primary);">${result.network_bits}</span></p>
+                        <p><span style="color: var(--text-secondary);">Host Bits:</span> <span style="color: var(--text-primary);">${result.host_bits}</span></p>
+                        <p><span style="color: var(--text-secondary);">Total Bits:</span> <span style="color: var(--text-primary);">${result.total_bits}</span></p>
+                        <div style="margin-top: 10px; background: var(--bg-primary); padding: 8px; border-radius: 4px;">
+                            <div style="display: flex; height: 20px; border-radius: 4px; overflow: hidden;">
+                                <div style="width: ${(result.network_bits / result.total_bits) * 100}%; background: var(--accent-cyan);" title="Network bits"></div>
+                                <div style="width: ${(result.host_bits / result.total_bits) * 100}%; background: var(--accent-green);" title="Host bits"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-top: 5px; font-size: 0.7rem; color: var(--text-secondary);">
+                                <span>Network (${result.network_bits})</span>
+                                <span>Host (${result.host_bits})</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Summary -->
+            <div style="margin-top: 15px; padding: 15px; background: var(--bg-tertiary); border-radius: 8px; border: 1px solid var(--border-color);">
+                <p style="color: var(--text-primary); font-size: 0.95rem;">${result.summary}</p>
+            </div>
+
+            <!-- Usable Hosts Preview -->
+            ${result.usable_hosts_preview && result.usable_hosts_preview.length > 0 ? `
+            <div style="margin-top: 15px; padding: 15px; background: var(--bg-tertiary); border-radius: 8px;">
+                <h4 style="color: var(--text-secondary); margin-bottom: 10px; font-size: 0.85rem;">First ${result.usable_hosts_preview.length} Usable Hosts:</h4>
+                <div style="display: flex; flex-wrap: wrap; gap: 8px; font-family: monospace; font-size: 0.85rem;">
+                    ${result.usable_hosts_preview.map(ip => `<span style="background: var(--bg-primary); padding: 4px 8px; border-radius: 4px; color: var(--accent-cyan);">${ip}</span>`).join('')}
+                </div>
+            </div>
+            ` : ''}
+        `;
+
+        container.innerHTML = html;
+    }
+
+    displaySubnetError(error, input) {
+        const section = document.getElementById('subnet-result-section');
+        const container = document.getElementById('subnet-result');
+        const title = document.getElementById('subnet-result-title');
+
+        if (!section || !container) return;
+
+        section.style.display = 'block';
+        title.textContent = '❌ Calculation Error';
+
+        container.innerHTML = `
+            <div style="background: #ef444433; border: 1px solid #ef4444; border-radius: 8px; padding: 20px;">
+                <p style="color: #f87171; font-weight: bold;">Invalid input: ${input}</p>
+                <p style="color: var(--text-secondary); margin-top: 10px;">${error}</p>
+                <p style="color: var(--text-secondary); margin-top: 15px; font-size: 0.85rem;">
+                    <strong>Examples:</strong><br>
+                    IPv4: 192.168.1.0/24, 10.0.0.0/8, 172.16.0.0/12<br>
+                    IPv6: 2001:db8::/32, fe80::/10, fd00::/8
+                </p>
+            </div>
+        `;
+    }
+
+    clearSubnetResult() {
+        const section = document.getElementById('subnet-result-section');
+        const input = document.getElementById('subnet-input');
+
+        if (section) section.style.display = 'none';
+        if (input) input.value = '';
+    }
+
+    async refreshAgentIPs() {
+        const container = document.getElementById('agent-ips-list');
+        if (!container) return;
+
+        container.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 30px;">Loading agent IPs...</div>';
+
+        try {
+            const response = await fetch('/api/subnet/agent-ips');
+            const data = await response.json();
+
+            if (data.error) {
+                container.innerHTML = `<div style="color: #f87171; padding: 20px;">Error: ${data.error}</div>`;
+                return;
+            }
+
+            const agentIps = data.agent_ips || [];
+
+            // Update count metric
+            const countEl = document.getElementById('subnet-agent-ips');
+            if (countEl) countEl.textContent = agentIps.length;
+
+            if (agentIps.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 30px;">No IP addresses configured on this agent</div>';
+                return;
+            }
+
+            container.innerHTML = agentIps.map(ip => {
+                const classColor = this.getClassificationColor(ip.classification);
+                return `
+                    <div style="background: var(--bg-tertiary); border-radius: 8px; padding: 15px; border-left: 3px solid ${classColor};">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <span style="font-family: monospace; font-size: 1rem; color: var(--accent-cyan);">${ip.network_address || ip.address}/${ip.prefix_length}</span>
+                            <span style="font-size: 0.8rem; color: var(--text-secondary);">${ip.interface}</span>
+                        </div>
+                        <div style="font-size: 0.85rem; color: ${classColor}; margin-bottom: 8px;">${ip.classification}</div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 5px; font-size: 0.75rem;">
+                            ${ip.is_private ? '<span style="background: #22c55e22; color: #4ade80; padding: 2px 6px; border-radius: 3px;">Private</span>' : ''}
+                            ${ip.is_global ? '<span style="background: #3b82f622; color: #60a5fa; padding: 2px 6px; border-radius: 3px;">Global</span>' : ''}
+                            ${ip.is_loopback ? '<span style="background: #a855f722; color: #c084fc; padding: 2px 6px; border-radius: 3px;">Loopback</span>' : ''}
+                            <span style="background: var(--bg-primary); color: var(--text-secondary); padding: 2px 6px; border-radius: 3px;">IPv${ip.version}</span>
+                        </div>
+                        <div style="margin-top: 10px; font-size: 0.8rem; color: var(--text-secondary);">
+                            ${ip.usable_hosts_count?.toLocaleString() || 0} usable hosts
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+        } catch (error) {
+            console.error('Error fetching agent IPs:', error);
+            container.innerHTML = `<div style="color: #f87171; padding: 20px;">Error: ${error.message}</div>`;
+        }
+    }
+
+    updateSubnetStats() {
+        const ipv4El = document.getElementById('subnet-ipv4-count');
+        const ipv6El = document.getElementById('subnet-ipv6-count');
+
+        if (ipv4El) ipv4El.textContent = this.subnetStats.ipv4;
+        if (ipv6El) ipv6El.textContent = this.subnetStats.ipv6;
+    }
+
+    getClassificationColor(classification) {
+        if (!classification) return 'var(--text-secondary)';
+        const lower = classification.toLowerCase();
+        if (lower.includes('private') || lower.includes('ula')) return '#4ade80';
+        if (lower.includes('global')) return '#60a5fa';
+        if (lower.includes('loopback')) return '#c084fc';
+        if (lower.includes('link-local')) return '#fbbf24';
+        if (lower.includes('multicast')) return '#f472b6';
+        if (lower.includes('reserved')) return '#f87171';
+        return 'var(--accent-cyan)';
+    }
+
+    // ==========================================================================
+    // QoS Tab - RFC 4594 DiffServ
+    // ==========================================================================
+
+    async initQoSTab() {
+        // Initialize QoS stats
+        if (!this.qosStats) {
+            this.qosStats = { classified: 0, marked: 0 };
+        }
+
+        // Auto-apply QoS to all interfaces (QoS is always-on)
+        await this.autoApplyQoS();
+
+        // Fetch swim lanes and display
+        await this.fetchQoSSwimLanes();
+        await this.fetchQoSRules();
+        await this.fetchQoSStatistics();
+
+        // Auto-refresh stats every 5 seconds while on QoS tab
+        if (this.qosRefreshInterval) {
+            clearInterval(this.qosRefreshInterval);
+        }
+        this.qosRefreshInterval = setInterval(() => {
+            if (this.activeProtocol === 'qos') {
+                this.fetchQoSStatistics();
+                this.fetchQoSRules();  // Also refresh rule hit counts
+            }
+        }, 5000);
+    }
+
+    async autoApplyQoS() {
+        // Silently apply QoS to all interfaces - QoS is always enabled
+        try {
+            await fetch('/api/qos/apply', { method: 'POST' });
+        } catch (error) {
+            console.log('[QoS] Auto-apply:', error.message);
+        }
+    }
+
+    async fetchQoSSwimLanes() {
+        try {
+            const response = await fetch('/api/qos/swim-lanes');
+            const data = await response.json();
+
+            if (data.error) {
+                console.error('QoS swim lanes error:', data.error);
+                return;
+            }
+
+            this.displayQoSSwimLanes(data.swim_lanes);
+        } catch (error) {
+            console.error('Error fetching QoS swim lanes:', error);
+        }
+    }
+
+    displayQoSSwimLanes(lanes) {
+        const container = document.getElementById('qos-swim-lanes');
+        if (!container || !lanes) return;
+
+        // Update service class count
+        const countEl = document.getElementById('qos-classes-count');
+        if (countEl) countEl.textContent = lanes.length;
+
+        let html = '';
+
+        for (const lane of lanes) {
+            const toleranceHtml = `
+                <span class="qos-tolerance" title="Loss Tolerance">📉 ${lane.tolerance.loss}</span>
+                <span class="qos-tolerance" title="Delay Tolerance">⏱️ ${lane.tolerance.delay}</span>
+                <span class="qos-tolerance" title="Jitter Tolerance">📊 ${lane.tolerance.jitter}</span>
+            `;
+
+            html += `
+                <div class="qos-swim-lane" style="--lane-color: ${lane.color};">
+                    <div class="qos-lane-header">
+                        <div class="qos-lane-priority" style="background: ${lane.color};">P${lane.priority}</div>
+                        <div class="qos-lane-name">${lane.name}</div>
+                        <div class="qos-dscp-badge" title="DSCP Value">
+                            <span class="dscp-name">${lane.dscp}</span>
+                            <span class="dscp-value">(${lane.dscp_value})</span>
+                            <span class="dscp-binary" title="Binary">${lane.dscp_binary}</span>
+                        </div>
+                        <div class="qos-lane-stats" id="qos-lane-stats-${lane.id}">
+                            <span class="lane-stat">0 pkts</span>
+                            <span class="lane-stat">0 B</span>
+                        </div>
+                    </div>
+                    <div class="qos-lane-body">
+                        <div class="qos-lane-info">
+                            <span class="qos-phb" title="Per-Hop Behavior">${lane.phb}</span>
+                            <span class="qos-traffic-type">${lane.traffic_type}</span>
+                        </div>
+                        <div class="qos-lane-bandwidth">
+                            <span class="bandwidth-bar" style="--min-bw: ${lane.bandwidth.min}%; --max-bw: ${lane.bandwidth.max}%;">
+                                <span class="bw-min" style="width: ${lane.bandwidth.min}%; background: ${lane.color}40;"></span>
+                                <span class="bw-max" style="width: ${lane.bandwidth.max - lane.bandwidth.min}%; background: ${lane.color}80;"></span>
+                            </span>
+                            <span class="bandwidth-label">${lane.bandwidth.min}%-${lane.bandwidth.max}%</span>
+                        </div>
+                        <div class="qos-tolerances">
+                            ${toleranceHtml}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        container.innerHTML = html || '<div class="empty-state">No swim lanes configured</div>';
+    }
+
+    async fetchQoSRules() {
+        try {
+            const response = await fetch('/api/qos/rules');
+            const data = await response.json();
+
+            if (data.error) {
+                console.error('QoS rules error:', data.error);
+                return;
+            }
+
+            this.displayQoSRules(data.rules);
+
+            // Update rules count
+            const countEl = document.getElementById('qos-rules-count');
+            if (countEl) countEl.textContent = data.count;
+        } catch (error) {
+            console.error('Error fetching QoS rules:', error);
+        }
+    }
+
+    displayQoSRules(rules) {
+        const container = document.getElementById('qos-rules-table');
+        if (!container || !rules) return;
+
+        if (rules.length === 0) {
+            container.innerHTML = '<tr><td colspan="5" class="empty-state">No classification rules</td></tr>';
+            return;
+        }
+
+        let html = '';
+        for (const rule of rules) {
+            const matchCriteria = [];
+            if (rule.match.protocol) matchCriteria.push(`proto: ${rule.match.protocol}`);
+            if (rule.match.dst_port) matchCriteria.push(`port: ${rule.match.dst_port}`);
+            if (rule.match.src_ip) matchCriteria.push(`src: ${rule.match.src_ip}`);
+            if (rule.match.dst_ip) matchCriteria.push(`dst: ${rule.match.dst_ip}`);
+
+            const matchStr = matchCriteria.length > 0 ? matchCriteria.join(', ') : 'any';
+
+            html += `
+                <tr>
+                    <td>${rule.name}</td>
+                    <td><code>${matchStr}</code></td>
+                    <td><span class="dscp-badge">${rule.dscp}</span></td>
+                    <td>${rule.service_class}</td>
+                    <td>${rule.hit_count.toLocaleString()}</td>
+                </tr>
+            `;
+        }
+
+        container.innerHTML = html;
+    }
+
+    async fetchQoSStatistics() {
+        try {
+            const response = await fetch('/api/qos/statistics');
+            const data = await response.json();
+
+            if (data.error) {
+                console.error('QoS statistics error:', data.error);
+                return;
+            }
+
+            // Store data for markmap visualization
+            this.qosData = {
+                service_classes: data.service_classes || 12,
+                classification_rules: data.rules_count || 0,
+                packets_classified: data.total_classified || 0,
+                egress_marked: data.total_marked || 0,
+                ingress_trusted: data.total_trusted || 0,
+                top_classes: data.per_class ? Object.entries(data.per_class).map(([name, stats]) => ({
+                    name: name,
+                    packets: stats.packets || 0,
+                    bytes: stats.bytes || 0
+                })).sort((a, b) => b.packets - a.packets) : []
+            };
+
+            // Update stats display
+            const classifiedEl = document.getElementById('qos-classified-count');
+            const markedEl = document.getElementById('qos-marked-count');
+            const trustedEl = document.getElementById('qos-trusted-count');
+
+            if (classifiedEl) classifiedEl.textContent = data.total_classified.toLocaleString();
+            if (markedEl) markedEl.textContent = data.total_marked.toLocaleString();
+            if (trustedEl) trustedEl.textContent = (data.total_trusted || 0).toLocaleString();
+
+            // Update per-class statistics in swim lanes
+            if (data.per_class) {
+                for (const [classId, stats] of Object.entries(data.per_class)) {
+                    const laneStats = document.getElementById(`qos-lane-stats-${classId}`);
+                    if (laneStats) {
+                        const total = stats.packets_in + stats.packets_out;
+                        const bytes = stats.bytes_in + stats.bytes_out;
+                        laneStats.innerHTML = `
+                            <span class="lane-stat" title="Packets">${total.toLocaleString()} pkts</span>
+                            <span class="lane-stat" title="Bytes">${this.formatBytes(bytes)}</span>
+                        `;
+                        // Add activity pulse if packets changed
+                        if (total > 0) {
+                            laneStats.classList.add('active');
+                        }
+                    }
+                }
+            }
+
+        } catch (error) {
+            console.error('Error fetching QoS statistics:', error);
+        }
+    }
+
+    formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    async toggleQoS() {
+        const statusEl = document.getElementById('qos-enabled-status');
+        const currentlyEnabled = statusEl && statusEl.textContent === 'ENABLED';
+
+        try {
+            const endpoint = currentlyEnabled ? '/api/qos/disable' : '/api/qos/enable';
+            const response = await fetch(endpoint, { method: 'POST' });
+            const data = await response.json();
+
+            if (data.success) {
+                if (statusEl) {
+                    statusEl.textContent = data.enabled ? 'ENABLED' : 'DISABLED';
+                    statusEl.style.color = data.enabled ? '#22c55e' : '#f87171';
+                }
+            }
+        } catch (error) {
+            console.error('Error toggling QoS:', error);
+        }
+    }
+
+    async applyQoSPolicy() {
+        const btn = document.getElementById('qos-apply-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Applying...';
+        }
+
+        try {
+            const response = await fetch('/api/qos/apply', { method: 'POST' });
+            const data = await response.json();
+
+            if (data.success) {
+                // Update interface count
+                const ifaceEl = document.getElementById('qos-interfaces-count');
+                if (ifaceEl) ifaceEl.textContent = data.interfaces_count;
+
+                // Update status
+                const statusEl = document.getElementById('qos-enabled-status');
+                if (statusEl) {
+                    statusEl.textContent = 'ENABLED';
+                    statusEl.style.color = '#22c55e';
+                }
+
+                // Refresh data
+                await this.fetchQoSSwimLanes();
+            }
+        } catch (error) {
+            console.error('Error applying QoS policy:', error);
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Apply RFC 4594';
+            }
+        }
+    }
+
+    // ==========================================================================
+    // NetFlow Tab - RFC 7011 IPFIX
+    // ==========================================================================
+
+    async initNetFlowTab() {
+        // Fetch initial data
+        await this.fetchNetFlowStatus();
+        await this.fetchNetFlowFlows();
+        await this.fetchNetFlowStatistics();
+        await this.fetchNetFlowTopFlows();
+
+        // Update the last refresh timestamp
+        this.updateNetFlowLastRefresh();
+
+        // Auto-refresh every 3 seconds while on NetFlow tab (faster for dynamic updates)
+        if (this.netflowRefreshInterval) {
+            clearInterval(this.netflowRefreshInterval);
+        }
+        this.netflowRefreshInterval = setInterval(() => {
+            if (this.activeProtocol === 'netflow') {
+                this.fetchNetFlowFlows();
+                this.fetchNetFlowStatistics();
+                this.fetchNetFlowTopFlows();
+                this.updateNetFlowLastRefresh();
+            }
+        }, 3000);
+    }
+
+    updateNetFlowLastRefresh() {
+        const lastRefreshEl = document.getElementById('netflow-last-refresh');
+        if (lastRefreshEl) {
+            lastRefreshEl.textContent = new Date().toLocaleTimeString();
+        }
+    }
+
+    async fetchNetFlowTopFlows() {
+        try {
+            const response = await fetch('/api/netflow/top-flows?limit=10');
+            const data = await response.json();
+
+            if (data.error) {
+                console.error('NetFlow top flows error:', data.error);
+                return;
+            }
+
+            // Store top flows for markmap
+            if (this.netflowData) {
+                this.netflowData.top_flows = data.top_flows || [];
+            } else {
+                this.netflowData = { top_flows: data.top_flows || [] };
+            }
+
+            // Display top flows if there's a container for them
+            this.displayNetFlowTopFlows(data.top_flows);
+        } catch (error) {
+            console.error('Error fetching NetFlow top flows:', error);
+        }
+    }
+
+    displayNetFlowTopFlows(topFlows) {
+        const container = document.getElementById('netflow-top-flows');
+        if (!container || !topFlows) return;
+
+        if (topFlows.length === 0) {
+            container.innerHTML = '<div class="empty-state">No top flows yet</div>';
+            return;
+        }
+
+        let html = '<div class="top-flows-list" style="display: flex; flex-direction: column; gap: 8px;">';
+        for (const flow of topFlows.slice(0, 5)) {
+            const srcIp = flow.src_ip || flow.source_ip || '-';
+            const dstIp = flow.dst_ip || flow.destination_ip || '-';
+            const bytes = flow.bytes || flow.total_bytes || 0;
+            const packets = flow.packets || flow.total_packets || 0;
+            const protocol = flow.protocol || '-';
+            const serviceClass = flow.service_class || 'standard';
+
+            html += `
+                <div class="top-flow-item" style="background: var(--bg-tertiary); padding: 10px; border-radius: 8px; border-left: 3px solid ${this.getServiceClassColor(serviceClass)};">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <span style="color: var(--accent-cyan); font-family: monospace;">${srcIp}</span>
+                            <span style="color: var(--text-secondary);"> → </span>
+                            <span style="color: var(--accent-green); font-family: monospace;">${dstIp}</span>
+                        </div>
+                        <div style="display: flex; gap: 15px; color: var(--text-secondary); font-size: 0.85rem;">
+                            <span title="Protocol">${protocol}</span>
+                            <span title="Packets">${packets.toLocaleString()} pkts</span>
+                            <span title="Bytes">${this.formatBytes(bytes)}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    async fetchNetFlowStatus() {
+        try {
+            const response = await fetch('/api/netflow/status');
+            const data = await response.json();
+
+            if (data.error) {
+                console.error('NetFlow status error:', data.error);
+                return;
+            }
+
+            this.displayNetFlowStatus(data);
+        } catch (error) {
+            console.error('Error fetching NetFlow status:', error);
+        }
+    }
+
+    displayNetFlowStatus(data) {
+        const exporterEl = document.getElementById('netflow-exporter-status');
+        const collectorEl = document.getElementById('netflow-collector-status');
+
+        if (exporterEl && data.exporter) {
+            const e = data.exporter;
+            exporterEl.innerHTML = `
+                <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                    <span>Active Flows: <strong>${e.active_flows}</strong></span>
+                    <span>Total Exported: <strong>${e.total_flows_exported.toLocaleString()}</strong></span>
+                    <span>Domain ID: <code>${e.observation_domain_id}</code></span>
+                </div>
+            `;
+        }
+    }
+
+    async fetchNetFlowFlows() {
+        try {
+            const response = await fetch('/api/netflow/flows');
+            const data = await response.json();
+
+            if (data.error) {
+                console.error('NetFlow flows error:', data.error);
+                return;
+            }
+
+            this.displayNetFlowFlows(data.flows);
+            this.updateNetFlowCounts(data);
+        } catch (error) {
+            console.error('Error fetching NetFlow flows:', error);
+        }
+    }
+
+    displayNetFlowFlows(flows) {
+        const container = document.getElementById('netflow-flows-table');
+        if (!container) return;
+
+        if (!flows || flows.length === 0) {
+            container.innerHTML = '<tr><td colspan="8" class="empty-state">No active flows</td></tr>';
+            return;
+        }
+
+        // Sort by bytes descending
+        flows.sort((a, b) => b.byte_count - a.byte_count);
+
+        let html = '';
+        for (const flow of flows.slice(0, 20)) {  // Show top 20
+            const key = flow.flow_key;
+            const duration = flow.duration_seconds || 0;
+            const rate = flow.bytes_per_second || 0;
+
+            // Color code by service class
+            const classColor = this.getServiceClassColor(flow.service_class);
+
+            html += `
+                <tr>
+                    <td><code style="color: ${classColor};">${key.src_ip}</code></td>
+                    <td><code style="color: ${classColor};">${key.dst_ip}</code></td>
+                    <td>${key.src_port}</td>
+                    <td>${key.dst_port}</td>
+                    <td><span class="protocol-badge">${key.protocol_name}</span></td>
+                    <td>${this.formatBytes(flow.byte_count)}</td>
+                    <td>${flow.packet_count.toLocaleString()}</td>
+                    <td>${this.formatBytes(rate)}/s</td>
+                </tr>
+            `;
+        }
+
+        container.innerHTML = html;
+    }
+
+    getServiceClassColor(serviceClass) {
+        const colors = {
+            'network_control': '#ef4444',
+            'telephony': '#22c55e',
+            'signaling': '#eab308',
+            'multimedia_conferencing': '#8b5cf6',
+            'realtime_interactive': '#ec4899',
+            'multimedia_streaming': '#06b6d4',
+            'broadcast_video': '#3b82f6',
+            'low_latency_data': '#f97316',
+            'oam': '#64748b',
+            'high_throughput_data': '#14b8a6',
+            'standard': '#6b7280',
+            'low_priority': '#9ca3af'
+        };
+        return colors[serviceClass] || '#6b7280';
+    }
+
+    updateNetFlowCounts(data) {
+        const activeEl = document.getElementById('netflow-active-count');
+        const packetsEl = document.getElementById('netflow-packets-count');
+        const bytesEl = document.getElementById('netflow-bytes-count');
+
+        if (activeEl) activeEl.textContent = data.count || 0;
+        if (packetsEl) packetsEl.textContent = (data.total_observed || 0).toLocaleString();
+    }
+
+    async fetchNetFlowStatistics() {
+        try {
+            const response = await fetch('/api/netflow/statistics');
+            const data = await response.json();
+
+            if (data.error) {
+                console.error('NetFlow statistics error:', data.error);
+                return;
+            }
+
+            // Store data for markmap visualization
+            this.netflowData = {
+                active_flows: data.active_flows || 0,
+                total_exported: data.total_exported || 0,
+                total_bytes: data.total_bytes || 0,
+                total_packets: data.total_packets || 0,
+                by_protocol: data.protocol_breakdown || {},
+                top_flows: data.top_flows || []
+            };
+
+            this.displayNetFlowStatistics(data);
+            this.displayProtocolBreakdown(data.protocol_breakdown);
+        } catch (error) {
+            console.error('Error fetching NetFlow statistics:', error);
+        }
+    }
+
+    displayNetFlowStatistics(data) {
+        const bytesEl = document.getElementById('netflow-bytes-count');
+        const exportedEl = document.getElementById('netflow-exported-count');
+
+        if (bytesEl && data.exporter) {
+            bytesEl.textContent = this.formatBytes(data.exporter.total_bytes);
+        }
+        if (exportedEl && data.exporter) {
+            exportedEl.textContent = data.exporter.total_exported.toLocaleString();
+        }
+    }
+
+    displayProtocolBreakdown(breakdown) {
+        const container = document.getElementById('netflow-protocol-breakdown');
+        if (!container || !breakdown) return;
+
+        const protocols = Object.entries(breakdown).sort((a, b) => b[1].bytes - a[1].bytes);
+
+        if (protocols.length === 0) {
+            container.innerHTML = '<div class="empty-state">No protocol data yet</div>';
+            return;
+        }
+
+        // Calculate total for percentages
+        const totalBytes = protocols.reduce((sum, [_, stats]) => sum + stats.bytes, 0);
+
+        let html = '';
+        for (const [proto, stats] of protocols) {
+            const pct = totalBytes > 0 ? (stats.bytes / totalBytes * 100).toFixed(1) : 0;
+            const color = this.getProtocolColor(proto);
+
+            html += `
+                <div class="protocol-bar-item" style="margin-bottom: 10px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: ${color}; font-weight: 600;">${proto}</span>
+                        <span style="color: var(--text-secondary);">
+                            ${stats.flows} flows | ${stats.packets.toLocaleString()} pkts | ${this.formatBytes(stats.bytes)}
+                        </span>
+                    </div>
+                    <div style="background: var(--bg-primary); border-radius: 4px; height: 8px; overflow: hidden;">
+                        <div style="background: ${color}; width: ${pct}%; height: 100%; transition: width 0.3s;"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        container.innerHTML = html;
+    }
+
+    getProtocolColor(proto) {
+        const colors = {
+            'OSPF': '#ef4444',
+            'BGP': '#f97316',
+            'TCP': '#3b82f6',
+            'UDP': '#22c55e',
+            'ICMP': '#8b5cf6',
+            'ISIS': '#ec4899',
+            'LDP': '#06b6d4'
+        };
+        return colors[proto] || '#6b7280';
     }
 
     updateOSPFData(ospf) {
@@ -2275,6 +3249,20 @@ class AgentDashboard {
     updateGAITData(gait) {
         if (!gait) return;
 
+        // Store data for markmap visualization
+        this.gaitData = {
+            test_suites: gait.test_suites || 1,
+            tests_run: gait.total_turns || 0,
+            passed: gait.passed_tests || 0,
+            failed: gait.failed_tests || 0,
+            last_test: gait.last_test || null,
+            recent_tests: gait.recent_tests || (gait.history || []).slice(-5).map(h => ({
+                name: h.action || h.message || 'Test',
+                passed: h.status !== 'error',
+                time: h.timestamp
+            }))
+        };
+
         document.getElementById('gait-turns').textContent = gait.total_turns || 0;
         document.getElementById('gait-user-msgs').textContent = gait.user_messages || 0;
         document.getElementById('gait-agent-msgs').textContent = gait.agent_messages || 0;
@@ -3006,6 +3994,99 @@ class AgentDashboard {
             md += `### No active protocols\n`;
         }
 
+        // ==================== QoS SECTION ====================
+        if (this.qosData) {
+            md += `## QoS (RFC 4594)\n`;
+            md += `### Service Classes: ${this.qosData.service_classes || 0}\n`;
+            md += `### Classification Rules: ${this.qosData.classification_rules || 0}\n`;
+            md += `### Packets Classified: ${this.qosData.packets_classified || 0}\n`;
+            md += `### Egress Marked: ${this.qosData.egress_marked || 0}\n`;
+            md += `### Ingress Trusted: ${this.qosData.ingress_trusted || 0}\n`;
+
+            // Top service classes by traffic
+            if (this.qosData.top_classes && this.qosData.top_classes.length > 0) {
+                md += `### Traffic by Class\n`;
+                for (const cls of this.qosData.top_classes.slice(0, 5)) {
+                    md += `#### ${cls.name}: ${cls.packets || 0} packets\n`;
+                }
+            }
+        }
+
+        // ==================== NETFLOW SECTION ====================
+        if (this.netflowData) {
+            md += `## NetFlow (RFC 7011)\n`;
+            md += `### Active Flows: ${this.netflowData.active_flows || 0}\n`;
+            md += `### Total Exported: ${this.netflowData.total_exported || 0}\n`;
+            md += `### Bytes Tracked: ${this._formatBytes(this.netflowData.total_bytes || 0)}\n`;
+
+            // Flows by protocol
+            if (this.netflowData.by_protocol) {
+                md += `### By Protocol\n`;
+                for (const [proto, count] of Object.entries(this.netflowData.by_protocol)) {
+                    md += `#### ${proto}: ${count} flows\n`;
+                }
+            }
+
+            // Top flows
+            if (this.netflowData.top_flows && this.netflowData.top_flows.length > 0) {
+                md += `### Top Flows\n`;
+                for (const flow of this.netflowData.top_flows.slice(0, 3)) {
+                    md += `#### ${flow.src_ip} → ${flow.dst_ip}\n`;
+                    md += `##### Bytes: ${this._formatBytes(flow.bytes || 0)}\n`;
+                }
+            }
+        }
+
+        // ==================== NETBOX SECTION ====================
+        if (this.netboxConfig) {
+            md += `## NetBox\n`;
+            const deviceName = document.getElementById('netbox-device-name')?.textContent || '-';
+            const siteName = document.getElementById('netbox-device-site')?.textContent || '-';
+            const primaryIP = document.getElementById('netbox-device-primary-ip')?.textContent || '-';
+            const syncStatus = document.getElementById('netbox-sync-status-text')?.textContent || 'Unknown';
+
+            md += `### Device: ${deviceName}\n`;
+            md += `### Site: ${siteName}\n`;
+            md += `### Primary IP: ${primaryIP}\n`;
+            md += `### Sync Status: ${syncStatus}\n`;
+
+            const ifaceCount = document.getElementById('netbox-interface-count')?.textContent || '0';
+            const ipCount = document.getElementById('netbox-ip-count')?.textContent || '0';
+            const svcCount = document.getElementById('netbox-service-count')?.textContent || '0';
+            const cableCount = document.getElementById('netbox-cable-count')?.textContent || '0';
+
+            md += `### Registered Objects\n`;
+            md += `#### Interfaces: ${ifaceCount}\n`;
+            md += `#### IP Addresses: ${ipCount}\n`;
+            md += `#### Services: ${svcCount}\n`;
+            md += `#### Cables: ${cableCount}\n`;
+        }
+
+        // ==================== GAIT SECTION ====================
+        if (this.gaitData) {
+            md += `## GAIT (AI Testing)\n`;
+            md += `### Test Suites: ${this.gaitData.test_suites || 0}\n`;
+            md += `### Tests Run: ${this.gaitData.tests_run || 0}\n`;
+            md += `### Passed: ${this.gaitData.passed || 0}\n`;
+            md += `### Failed: ${this.gaitData.failed || 0}\n`;
+
+            if (this.gaitData.last_test) {
+                md += `### Last Test\n`;
+                md += `#### Name: ${this.gaitData.last_test.name || '-'}\n`;
+                md += `#### Result: ${this.gaitData.last_test.result || '-'}\n`;
+                md += `#### Time: ${this.gaitData.last_test.time || '-'}\n`;
+            }
+
+            // Recent test results
+            if (this.gaitData.recent_tests && this.gaitData.recent_tests.length > 0) {
+                md += `### Recent Tests\n`;
+                for (const test of this.gaitData.recent_tests.slice(0, 5)) {
+                    const icon = test.passed ? '✓' : '✗';
+                    md += `#### ${icon} ${test.name}\n`;
+                }
+            }
+        }
+
         // ==================== STATUS SECTION ====================
         const wsStatus = document.getElementById('connection-text').textContent || 'Unknown';
         md += `## Status\n`;
@@ -3013,6 +4094,14 @@ class AgentDashboard {
         md += `### Last Update: ${new Date().toLocaleTimeString()}\n`;
 
         return md;
+    }
+
+    _formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
 
     _getInterfaceTypeName(type) {
@@ -5196,6 +6285,1878 @@ class AgentDashboard {
                 this.fetchEmailData();
             }
         }, 10000);  // Every 10 seconds
+    }
+
+    // ==================== NETBOX TAB (DCIM/IPAM Integration) ====================
+    // Stored NetBox config for this agent
+    netboxConfig = null;
+
+    async fetchNetBoxData() {
+        // Show loading state
+        const loadingEl = document.getElementById('netbox-loading');
+        const mainEl = document.getElementById('netbox-main-content');
+        const notConfiguredEl = document.getElementById('netbox-not-configured');
+
+        if (loadingEl) loadingEl.style.display = 'block';
+        if (mainEl) mainEl.style.display = 'none';
+        if (notConfiguredEl) notConfiguredEl.style.display = 'none';
+
+        // Try to load config from multiple sources
+        await this.loadNetBoxConfig();
+
+        if (!this.netboxConfig) {
+            // Not configured
+            if (loadingEl) loadingEl.style.display = 'none';
+            if (notConfiguredEl) notConfiguredEl.style.display = 'block';
+            return;
+        }
+
+        // Populate hidden input fields so all methods can use them
+        this.populateNetBoxConfigFields();
+
+        // Auto-sync with NetBox
+        await this.autoSyncNetBox();
+
+        // Add click handler for refresh
+        const syncButton = document.getElementById('netbox-sync-button');
+        if (syncButton) {
+            syncButton.onclick = () => this.autoSyncNetBox();
+        }
+
+        // Show main content
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (mainEl) mainEl.style.display = 'block';
+    }
+
+    async loadNetBoxConfig() {
+        // Try multiple sources for NetBox config
+        console.log('[NetBox] Loading config, agentId:', this.agentId);
+
+        // 1. FIRST: Check URL hash for config (passed by wizard when opening dashboard)
+        // This is the most reliable method - no CORS issues
+        if (window.location.hash && window.location.hash.startsWith('#nb=')) {
+            try {
+                const encoded = window.location.hash.replace('#nb=', '');
+                const nbConfig = JSON.parse(atob(encoded));
+                console.log('[NetBox] Found config in URL hash');
+
+                this.netboxConfig = {
+                    netbox_url: nbConfig.u,
+                    api_token: nbConfig.t,
+                    site_name: nbConfig.s,
+                    device_name: nbConfig.d
+                };
+                if (nbConfig.d) {
+                    this.agentName = nbConfig.d;
+                }
+
+                // Store to local API for future use (so refresh works)
+                try {
+                    await fetch('/api/config/netbox', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(this.netboxConfig)
+                    });
+                    console.log('[NetBox] Stored config from URL to local API');
+                } catch (e) {
+                    console.log('[NetBox] Could not store config to local API:', e.message);
+                }
+
+                // Clear hash from URL (optional - keeps URL clean)
+                // history.replaceState(null, '', window.location.pathname + window.location.search);
+
+                console.log('[NetBox] Loaded config from URL hash');
+                return;
+            } catch (e) {
+                console.log('[NetBox] Failed to parse URL hash config:', e.message);
+            }
+        }
+
+        // 2. Try the local agent's API endpoint (stored from previous URL hash visit)
+        try {
+            console.log('[NetBox] Trying local /api/config/netbox endpoint...');
+            const localResponse = await fetch('/api/config/netbox');
+            console.log('[NetBox] Local API response status:', localResponse.status);
+            if (localResponse.ok) {
+                const data = await localResponse.json();
+                console.log('[NetBox] Local API response data:', data);
+                if (data.status === 'ok' && data.config) {
+                    this.netboxConfig = data.config;
+                    if (data.config.device_name) {
+                        this.agentName = data.config.device_name;
+                    }
+                    console.log('[NetBox] Loaded config from local API endpoint');
+                    return;
+                } else if (data.status === 'not_configured') {
+                    console.log('[NetBox] Local endpoint says not configured');
+                }
+            } else {
+                console.log('[NetBox] Local API returned non-OK status');
+            }
+        } catch (e) {
+            console.log('[NetBox] Local API endpoint not available:', e.message);
+        }
+
+        // 2. Try localStorage with exact agentId (fallback for same-origin wizard)
+        const storedConfig = localStorage.getItem(`netbox_config_${this.agentId}`);
+        if (storedConfig) {
+            try {
+                this.netboxConfig = JSON.parse(storedConfig);
+                console.log('[NetBox] Loaded config from localStorage for agentId:', this.agentId);
+                return;
+            } catch (e) {
+                console.log('[NetBox] Invalid localStorage config');
+            }
+        }
+
+        // 3. Try to get agent name from status API and look for config with that name
+        try {
+            const statusResponse = await fetch('/api/status');
+            if (statusResponse.ok) {
+                const status = await statusResponse.json();
+                const agentName = status.agent_name || status.router_id;
+                if (agentName) {
+                    this.agentName = agentName;
+                    console.log('[NetBox] Got agent name from status:', agentName);
+
+                    // Try localStorage with agent name
+                    const namedConfig = localStorage.getItem(`netbox_config_${agentName}`);
+                    if (namedConfig) {
+                        try {
+                            this.netboxConfig = JSON.parse(namedConfig);
+                            console.log('[NetBox] Loaded config from localStorage for agent name:', agentName);
+                            return;
+                        } catch (e) {
+                            console.log('[NetBox] Invalid named config');
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.log('[NetBox] Could not get agent status:', e.message);
+        }
+
+        // 4. Search all localStorage keys for any netbox_config_* entry with valid config
+        console.log('[NetBox] Searching all localStorage for netbox configs...');
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('netbox_config_') && key !== 'netbox_config') {
+                try {
+                    const config = JSON.parse(localStorage.getItem(key));
+                    if (config && config.netbox_url && config.api_token) {
+                        console.log('[NetBox] Found valid config at key:', key);
+                        this.netboxConfig = config;
+                        // Use device_name from config if available
+                        if (config.device_name) {
+                            this.agentName = config.device_name;
+                        }
+                        console.log('[NetBox] Using device name:', this.agentName || this.agentId);
+                        return;
+                    }
+                } catch (e) {
+                    // Invalid config, continue searching
+                }
+            }
+        }
+
+        // 5. Try global netbox config (from current wizard session)
+        const globalConfig = localStorage.getItem('netbox_config');
+        if (globalConfig) {
+            try {
+                this.netboxConfig = JSON.parse(globalConfig);
+                console.log('[NetBox] Loaded config from global localStorage');
+                // Still need device name - try to get from status
+                if (!this.agentName) {
+                    try {
+                        const statusResponse = await fetch('/api/status');
+                        if (statusResponse.ok) {
+                            const status = await statusResponse.json();
+                            this.agentName = status.agent_name || status.router_id;
+                        }
+                    } catch (e) {}
+                }
+                return;
+            } catch (e) {
+                console.log('[NetBox] Invalid global config');
+            }
+        }
+
+        console.log('[NetBox] No config found after all attempts');
+    }
+
+    /**
+     * Populate the hidden input fields with loaded NetBox config.
+     * This ensures all methods that read from these fields work correctly.
+     */
+    populateNetBoxConfigFields() {
+        if (!this.netboxConfig) return;
+
+        const urlField = document.getElementById('netbox-url');
+        const tokenField = document.getElementById('netbox-api-token');
+        const siteField = document.getElementById('netbox-site');
+
+        if (urlField) urlField.value = this.netboxConfig.netbox_url || '';
+        if (tokenField) tokenField.value = this.netboxConfig.api_token || '';
+        if (siteField) siteField.value = this.netboxConfig.site_name || '';
+
+        console.log('[NetBox] Populated hidden input fields with config');
+    }
+
+    async autoSyncNetBox() {
+        // Show syncing state immediately
+        this.showNetBoxSyncStatus('syncing', 'SYNCING...');
+
+        // Use local API endpoint which has stored NetBox config
+        // This avoids the cross-origin issue with the wizard API
+        try {
+            // First try the local agent API endpoint (uses stored config from wizard)
+            const response = await fetch('/api/netbox/sync');
+
+            if (!response.ok) {
+                // Fallback: If local sync fails and we have config, try wizard API
+                if (this.netboxConfig) {
+                    return this._fallbackSyncNetBox();
+                }
+                this.showNetBoxSyncStatus('error', 'NetBox not configured');
+                return;
+            }
+
+            const data = await response.json();
+
+            if (data.status === 'not_configured') {
+                // Config not pushed yet - show manual setup UI
+                this.showNetBoxSyncStatus('not_configured', 'NOT CONFIGURED');
+                return;
+            }
+
+            if (data.status === 'ok' && data.device) {
+                // Device found - now compare with local config to detect drift
+                const driftResult = await this._detectConfigDrift(data);
+
+                // Update the display with NetBox data regardless of sync status
+                this.updateNetBoxDeviceInfo(data.device);
+                this.updateNetBoxInterfacesList(data.interfaces || []);
+                this.updateNetBoxIPsList(data.ip_addresses || []);
+                this.updateNetBoxServicesList(data.services || []);
+                this.updateNetBoxCablesList(data.cables || []);
+
+                // Update metrics
+                const el = (id, val) => {
+                    const e = document.getElementById(id);
+                    if (e) e.textContent = val;
+                };
+                el('netbox-interface-count', data.device.interface_count || 0);
+                el('netbox-ip-count', data.device.ip_count || 0);
+                el('netbox-service-count', data.device.service_count || 0);
+                el('netbox-cable-count', (data.cables || []).length);
+
+                // Show appropriate sync status based on drift detection
+                if (driftResult.hasDrift) {
+                    this.showNetBoxSyncStatus('out_of_sync', 'OUT OF SYNC');
+                    const driftDetails = driftResult.differences.slice(0, 3).join(', ');
+                    this.addNetBoxChangeLogEntry('sync', 'Drift Detected', driftDetails, 'warning');
+                    // Store drift details for display
+                    this.netboxDriftDetails = driftResult.differences;
+                } else {
+                    this.showNetBoxSyncStatus('synced', 'IN SYNC');
+                    const syncDetails = `Synced: ${data.device.interface_count || 0} interfaces, ${(data.ip_addresses || []).length} IPs, ${(data.cables || []).length} cables`;
+                    this.addNetBoxChangeLogEntry('sync', 'Auto Sync', syncDetails, 'success');
+                }
+
+            } else if (data.status === 'not_found') {
+                // Device not in NetBox
+                this.showNetBoxSyncStatus('not_registered', 'NOT IN NETBOX');
+                this.addNetBoxChangeLogEntry('sync', 'Auto Sync', 'Device not found in NetBox', 'warning');
+            } else {
+                this.showNetBoxSyncStatus('error', data.error || 'Sync failed');
+                this.addNetBoxChangeLogEntry('sync', 'Auto Sync', data.error || 'Sync failed', 'error');
+            }
+
+        } catch (error) {
+            console.error('[NetBox] Sync error:', error);
+            this.showNetBoxSyncStatus('error', 'Connection error');
+            this.addNetBoxChangeLogEntry('sync', 'Auto Sync', `Connection error: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Compare local agent config with NetBox data to detect drift.
+     *
+     * IMPORTANT: We ONLY report drift if we have VALID local data to compare against.
+     * If local data is empty or unavailable, we assume sync is OK to prevent false positives.
+     */
+    async _detectConfigDrift(netboxData) {
+        const differences = [];
+
+        try {
+            // Fetch local agent status/config
+            let localStatus = null;
+            try {
+                const statusResponse = await fetch('/api/status');
+                if (statusResponse.ok) {
+                    localStatus = await statusResponse.json();
+                }
+            } catch (e) {
+                console.log('[NetBox] Could not fetch local status:', e.message);
+            }
+
+            if (!localStatus) {
+                console.log('[NetBox] No local status available - assuming in sync');
+                return { hasDrift: false, differences: [], note: 'Local status unavailable' };
+            }
+
+            // Fetch local interfaces from dedicated endpoint first
+            let localInterfaces = [];
+            try {
+                const ifaceResponse = await fetch('/api/interfaces');
+                if (ifaceResponse.ok) {
+                    const ifaceData = await ifaceResponse.json();
+                    console.log('[NetBox] /api/interfaces response:', ifaceData);
+                    // Handle { interfaces: [...] } format
+                    if (ifaceData.interfaces && Array.isArray(ifaceData.interfaces)) {
+                        localInterfaces = ifaceData.interfaces;
+                    } else if (Array.isArray(ifaceData)) {
+                        localInterfaces = ifaceData;
+                    }
+                }
+            } catch (e) {
+                console.log('[NetBox] Could not fetch /api/interfaces:', e.message);
+            }
+
+            // Fallback to status response interfaces
+            if (localInterfaces.length === 0 && localStatus.interfaces && Array.isArray(localStatus.interfaces)) {
+                localInterfaces = localStatus.interfaces;
+                console.log('[NetBox] Using interfaces from /api/status:', localInterfaces.length);
+            }
+
+            // CRITICAL: If we have NO local interface data, DO NOT report drift
+            // This is the key check to prevent false positives
+            if (!localInterfaces || localInterfaces.length === 0) {
+                console.log('[NetBox] No local interface data available - assuming in sync (no drift)');
+                return { hasDrift: false, differences: [], note: 'Local interface data unavailable - cannot compare' };
+            }
+
+            console.log('[NetBox] Local interfaces found:', localInterfaces.length);
+
+            // Now we have local data, so we can do actual comparison
+            const localIfaceCount = localInterfaces.length;
+            const netboxIfaceCount = netboxData.device?.interface_count || 0;
+
+            if (localIfaceCount !== netboxIfaceCount) {
+                differences.push(`Interface count mismatch: local=${localIfaceCount}, NetBox=${netboxIfaceCount}`);
+            }
+
+            // Extract local IPs from interfaces
+            const localIPs = [];
+            for (const iface of localInterfaces) {
+                const addresses = iface.addresses || iface.ip_addresses || iface.ips || iface.a || [];
+                if (Array.isArray(addresses)) {
+                    for (const addr of addresses) {
+                        const ip = typeof addr === 'string' ? addr : (addr.address || addr.ip);
+                        if (ip) {
+                            localIPs.push(ip.split('/')[0]);
+                        }
+                    }
+                }
+            }
+
+            // Extract NetBox IPs
+            const netboxIPs = (netboxData.ip_addresses || []).map(ip => ip.address?.split('/')[0]).filter(Boolean);
+
+            // Only compare IPs if we have BOTH local and NetBox IP data
+            if (localIPs.length > 0 && netboxIPs.length > 0) {
+                // Check for IPs in local but not in NetBox (skip loopback and link-local)
+                for (const localIP of localIPs) {
+                    if (!netboxIPs.includes(localIP) && !localIP.startsWith('127.') && !localIP.startsWith('fe80:')) {
+                        differences.push(`IP ${localIP} exists locally but not in NetBox`);
+                    }
+                }
+
+                // Check for IPs in NetBox but not local
+                for (const netboxIP of netboxIPs) {
+                    if (!localIPs.includes(netboxIP) && !netboxIP.startsWith('127.') && !netboxIP.startsWith('fe80:')) {
+                        differences.push(`IP ${netboxIP} in NetBox but not configured locally`);
+                    }
+                }
+            } else if (localIPs.length === 0 && netboxIPs.length > 0) {
+                // We have interfaces but no IPs extracted - don't flag as drift
+                console.log('[NetBox] Could not extract local IPs for comparison - skipping IP drift check');
+            }
+
+            // Compare interfaces by name (only if we have valid local names)
+            const netboxIfaceNames = (netboxData.interfaces || []).map(i => i.name);
+            const localIfaceNames = localInterfaces.map(i => i.name || i.n || i.id).filter(Boolean);
+
+            if (localIfaceNames.length > 0 && localIfaceNames[0]) {
+                for (const localName of localIfaceNames) {
+                    if (localName && !netboxIfaceNames.includes(localName) && localName !== 'lo' && localName !== 'lo0') {
+                        differences.push(`Interface ${localName} exists locally but not in NetBox`);
+                    }
+                }
+
+                for (const netboxName of netboxIfaceNames) {
+                    if (!localIfaceNames.includes(netboxName) && netboxName !== 'lo' && netboxName !== 'lo0') {
+                        differences.push(`Interface ${netboxName} in NetBox but not configured locally`);
+                    }
+                }
+            }
+
+            // Compare services - check what protocols are running locally vs registered in NetBox
+            const netboxServices = (netboxData.services || []).map(s => s.name?.toLowerCase());
+            const localServices = [];
+
+            // Check which protocols are running locally
+            if (localStatus.ospf) localServices.push('ospf');
+            if (localStatus.ospfv3) localServices.push('ospfv3');
+            if (localStatus.bgp) localServices.push('bgp');
+            if (localStatus.isis) localServices.push('isis');
+
+            // Services running locally but not in NetBox
+            for (const localSvc of localServices) {
+                if (!netboxServices.includes(localSvc)) {
+                    differences.push(`Service ${localSvc.toUpperCase()} running locally but not registered in NetBox`);
+                }
+            }
+
+            // Services in NetBox but not running locally
+            for (const netboxSvc of netboxServices) {
+                const svcLower = netboxSvc?.toLowerCase();
+                if (svcLower && !localServices.includes(svcLower)) {
+                    differences.push(`Service ${netboxSvc} in NetBox but not running locally`);
+                }
+            }
+
+            // Also check service count mismatch
+            if (localServices.length !== netboxServices.length) {
+                console.log(`[NetBox] Service count: local=${localServices.length}, NetBox=${netboxServices.length}`);
+            }
+
+            console.log(`[NetBox] Drift detection: ${differences.length} differences found`);
+            if (differences.length > 0) {
+                console.log('[NetBox] Differences:', differences);
+            }
+
+        } catch (error) {
+            console.error('[NetBox] Error during drift detection:', error);
+            // On error, assume in sync to avoid false positives
+            return { hasDrift: false, differences: [], error: error.message };
+        }
+
+        return {
+            hasDrift: differences.length > 0,
+            differences
+        };
+    }
+
+    // Fallback sync using config from localStorage (if available from same-origin wizard)
+    async _fallbackSyncNetBox() {
+        if (!this.netboxConfig) return;
+
+        // Show syncing state
+        this.showNetBoxSyncStatus('syncing', 'SYNCING...');
+
+        const { netbox_url, api_token, device_name } = this.netboxConfig;
+        if (!netbox_url || !api_token) return;
+
+        const deviceName = device_name || this.agentName || this.agentId;
+
+        try {
+            // Try wizard API (only works if same origin)
+            const response = await fetch(`/api/wizard/mcps/netbox/device-sync?` + new URLSearchParams({
+                netbox_url,
+                api_token,
+                device_name: deviceName
+            }));
+
+            if (!response.ok) {
+                this.showNetBoxSyncStatus('error', 'Could not connect to NetBox');
+                return;
+            }
+
+            const data = await response.json();
+
+            if (data.status === 'ok' && data.device) {
+                // Detect drift
+                const driftResult = await this._detectConfigDrift(data);
+
+                this.updateNetBoxDeviceInfo(data.device);
+                this.updateNetBoxInterfacesList(data.interfaces || []);
+                this.updateNetBoxIPsList(data.ip_addresses || []);
+                this.updateNetBoxServicesList(data.services || []);
+                this.updateNetBoxCablesList(data.cables || []);
+
+                const el = (id, val) => {
+                    const e = document.getElementById(id);
+                    if (e) e.textContent = val;
+                };
+                el('netbox-interface-count', data.device.interface_count || 0);
+                el('netbox-ip-count', data.device.ip_count || 0);
+                el('netbox-service-count', data.device.service_count || 0);
+                el('netbox-cable-count', (data.cables || []).length);
+
+                // Show appropriate status based on drift
+                if (driftResult.hasDrift) {
+                    this.showNetBoxSyncStatus('out_of_sync', 'OUT OF SYNC');
+                    const driftDetails = driftResult.differences.slice(0, 3).join(', ');
+                    this.addNetBoxChangeLogEntry('sync', 'Drift Detected', driftDetails, 'warning');
+                    this.netboxDriftDetails = driftResult.differences;
+                } else {
+                    this.showNetBoxSyncStatus('synced', 'IN SYNC');
+                    const syncDetails = `Synced: ${data.device.interface_count || 0} interfaces, ${(data.ip_addresses || []).length} IPs, ${(data.cables || []).length} cables`;
+                    this.addNetBoxChangeLogEntry('sync', 'Auto Sync', syncDetails, 'success');
+                }
+
+            } else if (data.status === 'not_found') {
+                this.showNetBoxSyncStatus('not_registered', 'NOT IN NETBOX');
+                this.addNetBoxChangeLogEntry('sync', 'Auto Sync', 'Device not found in NetBox', 'warning');
+            } else {
+                this.showNetBoxSyncStatus('error', data.error || 'Sync failed');
+                this.addNetBoxChangeLogEntry('sync', 'Auto Sync', data.error || 'Sync failed', 'error');
+            }
+        } catch (error) {
+            console.error('[NetBox] Fallback sync error:', error);
+            this.showNetBoxSyncStatus('error', 'Connection error');
+            this.addNetBoxChangeLogEntry('sync', 'Auto Sync', `Connection error: ${error.message}`, 'error');
+        }
+    }
+
+    showNetBoxSyncStatus(status, text) {
+        const iconEl = document.getElementById('netbox-sync-icon');
+        const textEl = document.getElementById('netbox-sync-status-text');
+        const subEl = document.getElementById('netbox-sync-substatus');
+        const lastCheckEl = document.getElementById('netbox-last-check');
+
+        if (lastCheckEl && status !== 'syncing') {
+            lastCheckEl.textContent = new Date().toLocaleTimeString();
+        }
+
+        if (!iconEl || !textEl) return;
+
+        if (status === 'syncing') {
+            iconEl.style.background = 'linear-gradient(135deg, #06b6d4 0%, #0891b2 100%)';
+            iconEl.style.borderColor = '#06b6d4';
+            iconEl.style.boxShadow = '0 0 30px rgba(6, 182, 212, 0.4)';
+            iconEl.innerHTML = '<span style="animation: spin 1s linear infinite; display: inline-block;">↻</span>';
+            iconEl.style.animation = 'pulse 1.5s ease-in-out infinite';
+            textEl.style.color = '#06b6d4';
+            textEl.textContent = text || 'SYNCING...';
+            if (subEl) subEl.textContent = 'Comparing with NetBox...';
+        } else if (status === 'synced') {
+            iconEl.style.background = 'linear-gradient(135deg, #4ade80 0%, #22c55e 100%)';
+            iconEl.style.borderColor = '#4ade80';
+            iconEl.style.boxShadow = '0 0 30px rgba(74, 222, 128, 0.4)';
+            iconEl.style.animation = '';  // Stop any spinning animation
+            iconEl.innerHTML = '✓';
+            textEl.style.color = '#4ade80';
+            textEl.textContent = text;
+            if (subEl) subEl.innerHTML = `Click to refresh • Last checked: <span id="netbox-last-check">${new Date().toLocaleTimeString()}</span>`;
+        } else if (status === 'not_registered') {
+            iconEl.style.background = 'linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%)';
+            iconEl.style.borderColor = '#fbbf24';
+            iconEl.style.boxShadow = '0 0 30px rgba(251, 191, 36, 0.4)';
+            iconEl.innerHTML = '?';
+            textEl.style.color = '#fbbf24';
+            textEl.textContent = text;
+            if (subEl) subEl.textContent = 'Device not found in NetBox';
+        } else if (status === 'out_of_sync') {
+            iconEl.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+            iconEl.style.borderColor = '#ef4444';
+            iconEl.style.boxShadow = '0 0 30px rgba(239, 68, 68, 0.4)';
+            iconEl.style.animation = '';  // Stop any spinning animation
+            iconEl.innerHTML = '✗';
+            textEl.style.color = '#ef4444';
+            textEl.textContent = 'OUT OF SYNC';
+            // Show drift details if available
+            if (subEl) {
+                const driftCount = this.netboxDriftDetails?.length || 0;
+                if (driftCount > 0) {
+                    const firstDiff = this.netboxDriftDetails[0];
+                    subEl.innerHTML = `<span style="color: #f87171;">${driftCount} difference(s) detected</span> • Click to refresh`;
+                } else {
+                    subEl.textContent = 'Configuration drift detected • Click to refresh';
+                }
+            }
+        } else if (status === 'not_configured') {
+            iconEl.style.background = 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
+            iconEl.style.borderColor = '#6b7280';
+            iconEl.style.boxShadow = 'none';
+            iconEl.innerHTML = '⚙';
+            textEl.style.color = '#9ca3af';
+            textEl.textContent = text;
+            if (subEl) subEl.textContent = 'Configure NetBox in the wizard to enable sync';
+        } else {
+            iconEl.style.background = 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
+            iconEl.style.borderColor = '#6b7280';
+            iconEl.style.boxShadow = 'none';
+            iconEl.innerHTML = '!';
+            textEl.style.color = '#ef4444';
+            textEl.textContent = text;
+            if (subEl) subEl.textContent = 'Click to retry';
+        }
+    }
+
+    updateNetBoxDeviceInfo(device) {
+        const el = (id, val) => {
+            const e = document.getElementById(id);
+            if (e) e.textContent = val || '-';
+        };
+
+        el('netbox-device-name', device.name);
+        el('netbox-device-site', device.site);
+        el('netbox-device-primary-ip', device.primary_ip);
+
+        const linkEl = document.getElementById('netbox-device-link');
+        if (linkEl && device.url) {
+            linkEl.href = device.url;
+            linkEl.style.display = 'inline-block';
+        }
+    }
+
+    async testNetBoxConnection() {
+        const url = document.getElementById('netbox-url')?.value;
+        const token = document.getElementById('netbox-api-token')?.value;
+
+        if (!url || !token) {
+            alert('Please enter NetBox URL and API Token');
+            return;
+        }
+
+        const statusEl = document.getElementById('netbox-connection-status');
+        const statusTextEl = document.getElementById('netbox-status-text');
+
+        if (statusEl) statusEl.style.display = 'block';
+        if (statusTextEl) {
+            statusTextEl.textContent = 'Testing connection...';
+            statusTextEl.style.color = 'var(--text-secondary)';
+        }
+
+        try {
+            const response = await fetch('/api/wizard/mcps/netbox/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ netbox_url: url, api_token: token })
+            });
+
+            const data = await response.json();
+
+            if (data.status === 'connected') {
+                if (statusTextEl) {
+                    statusTextEl.textContent = `Connected to NetBox ${data.version || ''}`;
+                    statusTextEl.style.color = 'var(--accent-green)';
+                }
+            } else {
+                if (statusTextEl) {
+                    statusTextEl.textContent = `Connection failed: ${data.error || 'Unknown error'}`;
+                    statusTextEl.style.color = 'var(--accent-red)';
+                }
+            }
+        } catch (error) {
+            if (statusTextEl) {
+                statusTextEl.textContent = `Connection error: ${error.message}`;
+                statusTextEl.style.color = 'var(--accent-red)';
+            }
+        }
+    }
+
+    async registerAgentInNetBox(useSavedConfig = false) {
+        const url = document.getElementById('netbox-url')?.value;
+        const token = document.getElementById('netbox-api-token')?.value;
+        const site = document.getElementById('netbox-site')?.value;
+
+        // If not using saved config, validate form fields
+        if (!useSavedConfig && (!url || !token || !site)) {
+            alert('Please fill in NetBox URL, API Token, and Site, or click "Use Saved Config" to use MCP settings');
+            return;
+        }
+
+        const resultEl = document.getElementById('netbox-register-result');
+        if (resultEl) {
+            resultEl.style.display = 'block';
+            resultEl.innerHTML = `
+                <div style="padding: 15px; background: var(--bg-tertiary); border-radius: 8px; color: var(--text-secondary);">
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <div class="spinner" style="width: 20px; height: 20px; border: 2px solid var(--accent-cyan); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        Registering agent in NetBox...
+                    </div>
+                </div>
+            `;
+        }
+
+        try {
+            const requestBody = useSavedConfig
+                ? { use_saved_config: true }
+                : {
+                    netbox_url: url,
+                    api_token: token,
+                    site_name: site
+                };
+
+            const response = await fetch(`/api/wizard/agents/${this.agentId}/mcps/netbox/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            });
+
+            const data = await response.json();
+
+            // Check for success - API may return success:true or status:ok
+            const isSuccess = data.success || data.status === 'ok';
+            if (isSuccess) {
+                // Count created objects
+                const interfacesCreated = data.interfaces?.length || 0;
+                const ipsCreated = data.ip_addresses?.length || 0;
+                const servicesCreated = data.services?.length || 0;
+
+                if (resultEl) {
+                    resultEl.innerHTML = `
+                        <div style="padding: 15px; background: rgba(74, 222, 128, 0.1); border: 1px solid var(--accent-green); border-radius: 8px;">
+                            <div style="color: var(--accent-green); font-weight: 500; margin-bottom: 10px;">✓ Registration Successful</div>
+                            <div style="color: var(--text-secondary); font-size: 0.9rem;">
+                                Device: ${data.device_name || data.agent_name || 'N/A'}<br>
+                                Device URL: ${data.device_url ? `<a href="${data.device_url}" target="_blank" style="color: var(--accent-cyan);">${data.device_url}</a>` : 'N/A'}<br>
+                                Interfaces: ${interfacesCreated}<br>
+                                IP Addresses: ${ipsCreated}<br>
+                                Services: ${servicesCreated}
+                                ${data.errors?.length ? `<br><span style="color: var(--accent-yellow);">Warnings: ${data.errors.join(', ')}</span>` : ''}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // Update metrics
+                document.getElementById('netbox-device-status').textContent = 'Registered';
+                document.getElementById('netbox-interface-count').textContent = interfacesCreated;
+                document.getElementById('netbox-ip-count').textContent = ipsCreated;
+                document.getElementById('netbox-service-count').textContent = servicesCreated;
+
+                // Update object lists
+                this.updateNetBoxObjectLists({
+                    interfaces: data.interfaces || [],
+                    ip_addresses: data.ip_addresses || [],
+                    services: data.services || []
+                });
+
+                // Add to sync history
+                this.addNetBoxSyncHistory('Register', {
+                    status: 'success',
+                    interfaces_created: interfacesCreated,
+                    ips_created: ipsCreated,
+                    services_created: servicesCreated
+                });
+
+            } else {
+                if (resultEl) {
+                    resultEl.innerHTML = `
+                        <div style="padding: 15px; background: rgba(239, 68, 68, 0.1); border: 1px solid var(--accent-red); border-radius: 8px;">
+                            <div style="color: var(--accent-red); font-weight: 500; margin-bottom: 10px;">✗ Registration Failed</div>
+                            <div style="color: var(--text-secondary); font-size: 0.9rem;">${data.error || 'Unknown error'}</div>
+                        </div>
+                    `;
+                }
+            }
+        } catch (error) {
+            if (resultEl) {
+                resultEl.innerHTML = `
+                    <div style="padding: 15px; background: rgba(239, 68, 68, 0.1); border: 1px solid var(--accent-red); border-radius: 8px;">
+                        <div style="color: var(--accent-red); font-weight: 500; margin-bottom: 10px;">✗ Registration Error</div>
+                        <div style="color: var(--text-secondary); font-size: 0.9rem;">${error.message}</div>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    updateNetBoxObjectLists(data) {
+        // Update interfaces list
+        const ifList = document.getElementById('netbox-interfaces-list');
+        if (ifList && data.interfaces) {
+            ifList.innerHTML = data.interfaces.map(iface => `
+                <div style="padding: 8px; border-bottom: 1px solid var(--border-color);">
+                    <div style="color: var(--text-primary); font-weight: 500;">${iface.name}</div>
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">${iface.type || 'virtual'}</div>
+                </div>
+            `).join('') || '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">No interfaces</div>';
+        }
+
+        // Update IPs list
+        const ipList = document.getElementById('netbox-ips-list');
+        if (ipList && data.ip_addresses) {
+            ipList.innerHTML = data.ip_addresses.map(ip => `
+                <div style="padding: 8px; border-bottom: 1px solid var(--border-color);">
+                    <div style="color: var(--text-primary); font-family: monospace;">${ip.address}</div>
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">${ip.interface || 'N/A'}</div>
+                </div>
+            `).join('') || '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">No IPs</div>';
+        }
+
+        // Update services list
+        const svcList = document.getElementById('netbox-services-list');
+        if (svcList && data.services) {
+            svcList.innerHTML = data.services.map(svc => `
+                <div style="padding: 8px; border-bottom: 1px solid var(--border-color);">
+                    <div style="color: var(--text-primary);">${svc.name}</div>
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">Port: ${svc.port || 'N/A'}</div>
+                </div>
+            `).join('') || '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">No services</div>';
+        }
+    }
+
+    async fetchNetBoxCables() {
+        // Try input fields first, then fall back to this.netboxConfig
+        let url = document.getElementById('netbox-url')?.value;
+        let token = document.getElementById('netbox-api-token')?.value;
+
+        // Fallback to stored config if fields are empty
+        if ((!url || !token) && this.netboxConfig) {
+            url = this.netboxConfig.netbox_url;
+            token = this.netboxConfig.api_token;
+        }
+
+        if (!url || !token) {
+            console.log('[NetBox] Credentials not available for cable fetch');
+            return;
+        }
+
+        try {
+            // Get device name - prefer agentName (from NetBox config), then agentId
+            const deviceName = this.agentName || this.netboxConfig?.device_name || this.agentId || 'local';
+            console.log(`[NetBox] Fetching cables for device: ${deviceName}`);
+
+            // Fetch cables from NetBox via our API
+            const response = await fetch(`/api/wizard/mcps/netbox/device-cables?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}&device_name=${encodeURIComponent(deviceName)}`);
+
+            if (!response.ok) {
+                console.log('[NetBox] Could not fetch cables:', response.status);
+                return;
+            }
+
+            const data = await response.json();
+            console.log(`[NetBox] Cable fetch result: ${data.cable_count || 0} cables`);
+            this.updateNetBoxCablesList(data.cables || []);
+
+            // Update cable count metric
+            const cableCount = document.getElementById('netbox-cable-count');
+            if (cableCount) {
+                cableCount.textContent = (data.cables || []).length;
+            }
+
+        } catch (error) {
+            console.log('[NetBox] Error fetching cables:', error);
+        }
+    }
+
+    updateNetBoxInterfacesList(interfaces) {
+        const list = document.getElementById('netbox-interfaces-list');
+        if (!list) return;
+
+        if (!interfaces || interfaces.length === 0) {
+            list.innerHTML = `<div style="color: var(--text-secondary); text-align: center; padding: 20px;">No interfaces registered</div>`;
+            return;
+        }
+
+        list.innerHTML = interfaces.map(iface => `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid var(--border-color);">
+                <div>
+                    <span style="color: var(--accent-cyan); font-weight: bold;">${iface.name}</span>
+                    <span style="color: var(--text-secondary); font-size: 0.8rem; margin-left: 8px;">${iface.type || ''}</span>
+                </div>
+                <a href="${iface.url}" target="_blank" style="color: #00d9ff; font-size: 0.8rem; text-decoration: none;">
+                    View ↗
+                </a>
+            </div>
+        `).join('');
+    }
+
+    updateNetBoxIPsList(ips) {
+        const list = document.getElementById('netbox-ips-list');
+        if (!list) return;
+
+        if (!ips || ips.length === 0) {
+            list.innerHTML = `<div style="color: var(--text-secondary); text-align: center; padding: 20px;">No IP addresses registered</div>`;
+            return;
+        }
+
+        list.innerHTML = ips.map(ip => `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid var(--border-color);">
+                <div>
+                    <span style="color: var(--accent-green); font-family: monospace;">${ip.address}</span>
+                    ${ip.interface ? `<span style="color: var(--text-secondary); font-size: 0.8rem; margin-left: 8px;">(${ip.interface})</span>` : ''}
+                </div>
+                <a href="${ip.url}" target="_blank" style="color: #00d9ff; font-size: 0.8rem; text-decoration: none;">
+                    View ↗
+                </a>
+            </div>
+        `).join('');
+    }
+
+    updateNetBoxServicesList(services) {
+        const list = document.getElementById('netbox-services-list');
+        if (!list) return;
+
+        if (!services || services.length === 0) {
+            list.innerHTML = `<div style="color: var(--text-secondary); text-align: center; padding: 20px;">No services registered</div>`;
+            return;
+        }
+
+        list.innerHTML = services.map(svc => `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid var(--border-color);">
+                <div>
+                    <span style="color: var(--accent-yellow); font-weight: bold;">${svc.name}</span>
+                    <span style="color: var(--text-secondary); font-size: 0.8rem; margin-left: 8px;">
+                        ${svc.protocol || ''}${svc.ports && svc.ports.length > 0 ? ` :${svc.ports.join(',')}` : ''}
+                    </span>
+                </div>
+                <a href="${svc.url}" target="_blank" style="color: #00d9ff; font-size: 0.8rem; text-decoration: none;">
+                    View ↗
+                </a>
+            </div>
+        `).join('');
+    }
+
+    updateNetBoxCablesList(cables) {
+        const cablesList = document.getElementById('netbox-cables-list');
+        if (!cablesList) return;
+
+        if (!cables || cables.length === 0) {
+            cablesList.innerHTML = `
+                <div style="color: var(--text-secondary); text-align: center; padding: 30px; background: var(--bg-tertiary); border-radius: 8px; grid-column: 1 / -1;">
+                    No cable connections found. Register cables in NetBox to see connections here.
+                </div>
+            `;
+            return;
+        }
+
+        cablesList.innerHTML = cables.map(cable => {
+            const statusColor = cable.status === 'connected' ? 'var(--accent-green)' : 'var(--accent-yellow)';
+            const statusIcon = cable.status === 'connected' ? '🟢' : '🟡';
+
+            return `
+                <div style="background: var(--bg-tertiary); border: 1px solid #9333ea; border-radius: 8px; padding: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <div style="color: var(--accent-cyan); font-weight: bold; font-size: 0.9rem;">
+                            ${cable.local_interface || 'Unknown'}
+                        </div>
+                        <span style="font-size: 0.75rem; color: ${statusColor};">${statusIcon} ${cable.status || 'unknown'}</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="color: #9333ea; font-size: 1.2rem;">↔</span>
+                        <div>
+                            <div style="color: var(--text-primary); font-weight: 500;">${cable.remote_device || 'Unknown Device'}</div>
+                            <div style="color: var(--text-secondary); font-size: 0.85rem; font-family: monospace;">
+                                Interface: ${cable.remote_interface || 'N/A'}
+                            </div>
+                        </div>
+                    </div>
+                    ${cable.url ? `<a href="${cable.url}" target="_blank" style="color: #00d9ff; font-size: 0.75rem; text-decoration: none;">View in NetBox ↗</a>` : ''}
+                    ${cable.label ? `<div style="color: var(--text-secondary); font-size: 0.75rem; border-top: 1px solid var(--border-color); padding-top: 8px; margin-top: 8px;">Label: ${cable.label}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    addNetBoxSyncHistory(action, data) {
+        const tableBody = document.getElementById('netbox-sync-history');
+        if (!tableBody) return;
+
+        const now = new Date().toLocaleString();
+        const objects = `Device: 1, Interfaces: ${data.interfaces_created || 0}, IPs: ${data.ips_created || 0}, Services: ${data.services_created || 0}`;
+        const status = data.status === 'success' ?
+            '<span style="color: var(--accent-green);">✓ Success</span>' :
+            '<span style="color: var(--accent-red);">✗ Failed</span>';
+
+        const newRow = `
+            <tr>
+                <td>${now}</td>
+                <td>${action}</td>
+                <td>${objects}</td>
+                <td>${status}</td>
+            </tr>
+        `;
+
+        // Check if empty state exists
+        const emptyRow = tableBody.querySelector('.empty-state');
+        if (emptyRow) {
+            tableBody.innerHTML = newRow;
+        } else {
+            tableBody.insertAdjacentHTML('afterbegin', newRow);
+        }
+    }
+
+    async fetchNetBoxStatus() {
+        const url = document.getElementById('netbox-url')?.value;
+        const token = document.getElementById('netbox-api-token')?.value;
+
+        if (!url || !token) {
+            alert('Please enter NetBox URL and API Token first');
+            return;
+        }
+
+        // Could implement fetching current device status from NetBox
+        // For now, just refresh the connection test
+        await this.testNetBoxConnection();
+    }
+
+    setupNetBoxEventListeners() {
+        // Only setup once
+        if (this.netboxListenersSetup) return;
+        this.netboxListenersSetup = true;
+
+        // Test connection button
+        const testBtn = document.getElementById('netbox-test-btn');
+        if (testBtn) {
+            testBtn.addEventListener('click', () => this.testNetBoxConnection());
+        }
+
+        // Register button
+        const registerBtn = document.getElementById('netbox-register-btn');
+        if (registerBtn) {
+            registerBtn.addEventListener('click', async () => {
+                await this.registerAgentInNetBox(false);
+                // After registration, update sync status
+                this.netboxSyncState.registered = true;
+                this.netboxSyncState.registeredAt = new Date().toISOString();
+                this.addNetBoxChangeLogEntry('register', 'Register', 'Agent registered in NetBox', 'success');
+                await this.checkNetBoxSyncStatus();
+            });
+        }
+
+        // Register with saved config button
+        const registerSavedBtn = document.getElementById('netbox-register-saved-btn');
+        if (registerSavedBtn) {
+            registerSavedBtn.addEventListener('click', async () => {
+                await this.registerAgentInNetBox(true);
+                this.netboxSyncState.registered = true;
+                this.netboxSyncState.registeredAt = new Date().toISOString();
+                this.addNetBoxChangeLogEntry('register', 'Register', 'Agent registered using saved config', 'success');
+                await this.checkNetBoxSyncStatus();
+            });
+        }
+
+        // Refresh button
+        const refreshBtn = document.getElementById('netbox-refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => this.fetchNetBoxStatus());
+        }
+
+        // Refresh cables button
+        const refreshCablesBtn = document.getElementById('netbox-refresh-cables-btn');
+        if (refreshCablesBtn) {
+            refreshCablesBtn.addEventListener('click', () => this.fetchNetBoxCables());
+        }
+
+        // Load devices button (for import/pull)
+        const loadDevicesBtn = document.getElementById('netbox-load-devices-btn');
+        if (loadDevicesBtn) {
+            loadDevicesBtn.addEventListener('click', () => this.loadNetBoxDevices());
+        }
+
+        // Cancel import button
+        const cancelImportBtn = document.getElementById('netbox-cancel-import-btn');
+        if (cancelImportBtn) {
+            cancelImportBtn.addEventListener('click', () => {
+                document.getElementById('netbox-import-preview').style.display = 'none';
+                this.selectedNetBoxDevice = null;
+            });
+        }
+
+        // Apply import button
+        const applyImportBtn = document.getElementById('netbox-apply-import-btn');
+        if (applyImportBtn) {
+            applyImportBtn.addEventListener('click', () => this.applyNetBoxImport());
+        }
+
+        // Setup sync-related event listeners
+        this.setupNetBoxSyncEventListeners();
+
+        // PUSH button - Agent is master, push to NetBox
+        const pushBtn = document.getElementById('netbox-push-btn');
+        if (pushBtn) {
+            pushBtn.addEventListener('click', () => this.pushToNetBox());
+        }
+
+        // PULL button - NetBox is master, pull from NetBox
+        const pullBtn = document.getElementById('netbox-pull-btn');
+        if (pullBtn) {
+            pullBtn.addEventListener('click', () => this.pullFromNetBox());
+        }
+
+        // Initialize sync banner state
+        this.updateNetBoxSyncBanner('unknown');
+        this.updateNetBoxTimestamps();
+        this.updateNetBoxLogStats();
+    }
+
+    /**
+     * PUSH sync - Agent is master, push local config to NetBox.
+     * Registers/updates device, interfaces, IPs, and ALL running services.
+     */
+    async pushToNetBox() {
+        console.log('[NetBox] PUSH sync started - Agent is Master');
+        this.showNetBoxSyncStatus('syncing', 'PUSHING...');
+
+        try {
+            // Get current agent status to determine running protocols
+            const statusResponse = await fetch('/api/status');
+            let localStatus = null;
+            if (statusResponse.ok) {
+                localStatus = await statusResponse.json();
+            }
+
+            // Build list of running protocols for registration
+            const runningProtocols = [];
+            if (localStatus) {
+                if (localStatus.ospf) runningProtocols.push({ type: 'ospf', area: localStatus.ospf.area || '0.0.0.0' });
+                if (localStatus.ospfv3) runningProtocols.push({ type: 'ospfv3' });
+                if (localStatus.bgp) runningProtocols.push({ type: 'bgp', local_as: localStatus.bgp.local_as });
+                if (localStatus.isis) runningProtocols.push({ type: 'isis' });
+                if (localStatus.ldp) runningProtocols.push({ type: 'ldp' });
+                if (localStatus.mpls) runningProtocols.push({ type: 'mpls' });
+            }
+
+            console.log('[NetBox] PUSH - Running protocols:', runningProtocols);
+
+            // Call the force push endpoint
+            const response = await fetch('/api/netbox/push', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    protocols: runningProtocols,
+                    force: true
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.status === 'ok' || data.success) {
+                this.showNetBoxSyncStatus('synced', 'PUSH COMPLETE');
+                const details = `Pushed: ${data.interfaces?.length || 0} interfaces, ${data.ip_addresses?.length || 0} IPs, ${data.services?.length || 0} services`;
+                this.addNetBoxChangeLogEntry('push', 'Force Push', details, 'success');
+
+                // Refresh display
+                await this.autoSyncNetBox();
+            } else {
+                this.showNetBoxSyncStatus('error', data.error || 'Push failed');
+                this.addNetBoxChangeLogEntry('push', 'Force Push', data.error || 'Push failed', 'error');
+            }
+        } catch (error) {
+            console.error('[NetBox] PUSH error:', error);
+            this.showNetBoxSyncStatus('error', 'Push failed');
+            this.addNetBoxChangeLogEntry('push', 'Force Push', `Error: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * PULL sync - NetBox is master, pull config from NetBox to local agent.
+     * Updates local configuration based on NetBox data.
+     */
+    async pullFromNetBox() {
+        console.log('[NetBox] PULL sync started - NetBox is Master');
+        this.showNetBoxSyncStatus('syncing', 'PULLING...');
+
+        try {
+            // Call the pull endpoint
+            const response = await fetch('/api/netbox/pull', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ force: true })
+            });
+
+            const data = await response.json();
+
+            if (data.status === 'ok' || data.success) {
+                this.showNetBoxSyncStatus('synced', 'PULL COMPLETE');
+                const details = `Imported: ${data.interfaces?.length || 0} interfaces, ${data.ip_addresses?.length || 0} IPs, ${data.services?.length || 0} services`;
+                this.addNetBoxChangeLogEntry('pull', 'Force Pull', details, 'success');
+
+                // Refresh display
+                await this.autoSyncNetBox();
+            } else {
+                this.showNetBoxSyncStatus('error', data.error || 'Pull failed');
+                this.addNetBoxChangeLogEntry('pull', 'Force Pull', data.error || 'Pull failed', 'error');
+            }
+        } catch (error) {
+            console.error('[NetBox] PULL error:', error);
+            this.showNetBoxSyncStatus('error', 'Pull failed');
+            this.addNetBoxChangeLogEntry('pull', 'Force Pull', `Error: ${error.message}`, 'error');
+        }
+    }
+
+    async loadNetBoxDevices() {
+        const url = document.getElementById('netbox-url')?.value;
+        const token = document.getElementById('netbox-api-token')?.value;
+
+        if (!url || !token) {
+            alert('Please enter NetBox URL and API Token first');
+            return;
+        }
+
+        const devicesListEl = document.getElementById('netbox-devices-list');
+        if (devicesListEl) {
+            devicesListEl.innerHTML = `
+                <div style="color: var(--text-secondary); text-align: center; padding: 30px;">
+                    <div class="spinner" style="width: 24px; height: 24px; border: 2px solid var(--accent-cyan); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 10px;"></div>
+                    Loading devices from NetBox...
+                </div>
+            `;
+        }
+
+        try {
+            const response = await fetch(`/api/wizard/mcps/netbox/devices?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}`);
+            const data = await response.json();
+
+            if (data.status === 'ok' && data.devices) {
+                if (data.devices.length === 0) {
+                    devicesListEl.innerHTML = `
+                        <div style="color: var(--text-secondary); text-align: center; padding: 30px;">
+                            No devices found in NetBox
+                        </div>
+                    `;
+                    return;
+                }
+
+                devicesListEl.innerHTML = `
+                    <table class="data-table" style="margin: 0;">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Site</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.devices.map(device => `
+                                <tr>
+                                    <td style="font-weight: 500;">${device.name}</td>
+                                    <td>${device.site?.name || '-'}</td>
+                                    <td>${device.role?.name || device.device_role?.name || '-'}</td>
+                                    <td><span class="status-badge ${device.status === 'active' ? 'success' : 'warning'}">${device.status}</span></td>
+                                    <td>
+                                        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.8rem;"
+                                                onclick="window.agentDashboard.previewNetBoxDevice(${device.id})">
+                                            Preview
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } else {
+                devicesListEl.innerHTML = `
+                    <div style="color: var(--accent-red); text-align: center; padding: 30px;">
+                        Error: ${data.error || 'Failed to load devices'}
+                    </div>
+                `;
+            }
+        } catch (error) {
+            devicesListEl.innerHTML = `
+                <div style="color: var(--accent-red); text-align: center; padding: 30px;">
+                    Error: ${error.message}
+                </div>
+            `;
+        }
+    }
+
+    async previewNetBoxDevice(deviceId) {
+        const url = document.getElementById('netbox-url')?.value;
+        const token = document.getElementById('netbox-api-token')?.value;
+
+        if (!url || !token) {
+            alert('Please enter NetBox URL and API Token first');
+            return;
+        }
+
+        const previewEl = document.getElementById('netbox-import-preview');
+        const configEl = document.getElementById('netbox-import-config');
+
+        if (previewEl) previewEl.style.display = 'block';
+        if (configEl) {
+            configEl.textContent = 'Loading device configuration...';
+        }
+
+        try {
+            const response = await fetch(`/api/wizard/mcps/netbox/devices/${deviceId}/import?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}`);
+            const data = await response.json();
+
+            if (data.status === 'ok' && data.agent_config) {
+                this.selectedNetBoxDevice = data.agent_config;
+
+                // Format the config nicely
+                configEl.textContent = JSON.stringify(data.agent_config, null, 2);
+            } else {
+                configEl.textContent = `Error: ${data.error || 'Failed to load device'}`;
+                this.selectedNetBoxDevice = null;
+            }
+        } catch (error) {
+            configEl.textContent = `Error: ${error.message}`;
+            this.selectedNetBoxDevice = null;
+        }
+    }
+
+    async applyNetBoxImport() {
+        if (!this.selectedNetBoxDevice) {
+            alert('No device selected for import');
+            return;
+        }
+
+        try {
+            // Save the imported config to this agent
+            const response = await fetch(`/api/wizard/agents/${this.agentId}/import`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config: this.selectedNetBoxDevice,
+                    source: 'netbox'
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.status === 'ok' || data.success) {
+                alert(`Configuration imported successfully!\n\nDevice: ${this.selectedNetBoxDevice.name}\nInterfaces: ${this.selectedNetBoxDevice.interfaces?.length || 0}\n\nReload the page to see changes.`);
+
+                // Add to sync history
+                this.addNetBoxSyncHistory('Import', {
+                    status: 'success',
+                    device_name: this.selectedNetBoxDevice.name,
+                    interfaces_created: this.selectedNetBoxDevice.interfaces?.length || 0
+                });
+
+                // Hide preview
+                document.getElementById('netbox-import-preview').style.display = 'none';
+                this.selectedNetBoxDevice = null;
+            } else {
+                alert(`Import failed: ${data.error || 'Unknown error'}`);
+            }
+        } catch (error) {
+            alert(`Import error: ${error.message}`);
+        }
+    }
+
+    // ==================== NETBOX SYNC STATUS & DRIFT DETECTION ====================
+
+    // Initialize NetBox sync state
+    netboxSyncState = {
+        registered: false,
+        deviceUrl: null,
+        deviceId: null,
+        deviceName: null,
+        site: null,
+        role: null,
+        status: null,
+        primaryIp: null,
+        lastCheck: null,
+        lastSync: null,
+        registeredAt: null,
+        syncStatus: 'unknown', // 'in_sync', 'out_of_sync', 'unknown', 'not_registered'
+        driftItems: []
+    };
+
+    // Change log storage
+    netboxChangeLog = [];
+    netboxLogStats = { syncs: 0, errors: 0, drifts: 0, total: 0 };
+
+    // Update the big sync status banner
+    updateNetBoxSyncBanner(status, message = '') {
+        const iconEl = document.getElementById('netbox-sync-icon');
+        const statusTextEl = document.getElementById('netbox-sync-status-text');
+        const substatusEl = document.getElementById('netbox-sync-substatus');
+        const deviceCard = document.getElementById('netbox-device-card');
+        const banner = document.getElementById('netbox-sync-banner');
+
+        const statusConfig = {
+            'in_sync': {
+                icon: '✅',
+                text: 'IN SYNC',
+                color: '#4ade80',
+                bgGradient: 'linear-gradient(135deg, #1a3a2a 0%, #16213e 100%)',
+                borderColor: '#4ade80',
+                substatus: 'Agent configuration matches NetBox'
+            },
+            'out_of_sync': {
+                icon: '⚠️',
+                text: 'OUT OF SYNC',
+                color: '#facc15',
+                bgGradient: 'linear-gradient(135deg, #3a3a1a 0%, #16213e 100%)',
+                borderColor: '#facc15',
+                substatus: 'Configuration drift detected - review changes below'
+            },
+            'error': {
+                icon: '❌',
+                text: 'SYNC ERROR',
+                color: '#ef4444',
+                bgGradient: 'linear-gradient(135deg, #3a1a1a 0%, #16213e 100%)',
+                borderColor: '#ef4444',
+                substatus: message || 'Failed to check sync status'
+            },
+            'checking': {
+                icon: '🔄',
+                text: 'CHECKING...',
+                color: '#06b6d4',
+                bgGradient: 'linear-gradient(135deg, #1a2a3a 0%, #16213e 100%)',
+                borderColor: '#06b6d4',
+                substatus: 'Comparing configurations...'
+            },
+            'not_registered': {
+                icon: '❓',
+                text: 'NOT REGISTERED',
+                color: '#6b7280',
+                bgGradient: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+                borderColor: '#6b7280',
+                substatus: 'Register this agent in NetBox to enable sync'
+            },
+            'unknown': {
+                icon: '❓',
+                text: 'UNKNOWN',
+                color: '#6b7280',
+                bgGradient: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+                borderColor: '#6b7280',
+                substatus: 'Click "Check Sync Now" to verify status'
+            }
+        };
+
+        const config = statusConfig[status] || statusConfig['unknown'];
+
+        if (iconEl) {
+            iconEl.innerHTML = config.icon;
+            iconEl.style.borderColor = config.color;
+        }
+        if (statusTextEl) {
+            statusTextEl.textContent = config.text;
+            statusTextEl.style.color = config.color;
+        }
+        if (substatusEl) {
+            substatusEl.textContent = message || config.substatus;
+        }
+        if (banner) {
+            banner.style.background = config.bgGradient;
+            banner.style.borderColor = config.borderColor;
+        }
+        if (deviceCard) {
+            deviceCard.style.display = this.netboxSyncState.registered ? 'block' : 'none';
+        }
+
+        this.netboxSyncState.syncStatus = status;
+    }
+
+    // Update device info card
+    updateNetBoxDeviceCard() {
+        const state = this.netboxSyncState;
+
+        const nameEl = document.getElementById('netbox-device-name');
+        const linkEl = document.getElementById('netbox-device-link');
+        const siteEl = document.getElementById('netbox-device-site');
+        const roleEl = document.getElementById('netbox-device-role');
+        const statusEl = document.getElementById('netbox-device-nb-status');
+        const ipEl = document.getElementById('netbox-device-primary-ip');
+        const cardEl = document.getElementById('netbox-device-card');
+
+        if (nameEl) nameEl.textContent = state.deviceName || '-';
+        if (linkEl && state.deviceUrl) {
+            linkEl.href = state.deviceUrl;
+            linkEl.style.display = 'inline-block';
+        }
+        if (siteEl) siteEl.textContent = state.site || '-';
+        if (roleEl) roleEl.textContent = state.role || '-';
+        if (statusEl) {
+            statusEl.textContent = state.status || '-';
+            statusEl.style.color = state.status === 'Active' ? 'var(--accent-green)' : 'var(--text-secondary)';
+        }
+        if (ipEl) ipEl.textContent = state.primaryIp || '-';
+        if (cardEl) cardEl.style.display = state.registered ? 'block' : 'none';
+    }
+
+    // Update timestamps display
+    updateNetBoxTimestamps() {
+        const lastCheckEl = document.getElementById('netbox-last-check');
+        const lastSyncEl = document.getElementById('netbox-last-sync');
+        const registeredEl = document.getElementById('netbox-registered-at');
+
+        const formatTime = (date) => {
+            if (!date) return 'Never';
+            const d = new Date(date);
+            return d.toLocaleString();
+        };
+
+        if (lastCheckEl) lastCheckEl.textContent = formatTime(this.netboxSyncState.lastCheck);
+        if (lastSyncEl) lastSyncEl.textContent = formatTime(this.netboxSyncState.lastSync);
+        if (registeredEl) registeredEl.textContent = formatTime(this.netboxSyncState.registeredAt);
+    }
+
+    // Check sync status with NetBox
+    async checkNetBoxSyncStatus() {
+        const url = document.getElementById('netbox-url')?.value;
+        const token = document.getElementById('netbox-api-token')?.value;
+
+        if (!url || !token) {
+            this.updateNetBoxSyncBanner('unknown', 'Enter NetBox URL and API Token to check sync');
+            return;
+        }
+
+        this.updateNetBoxSyncBanner('checking');
+
+        try {
+            // First, verify the device exists in NetBox
+            const verifyResponse = await fetch('/api/wizard/mcps/netbox/verify-device', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    device_url: this.netboxSyncState.deviceUrl || `${url}/dcim/devices/?name=${this.agentId}`,
+                    netbox_url: url,
+                    api_token: token
+                })
+            });
+
+            const verifyData = await verifyResponse.json();
+            this.netboxSyncState.lastCheck = new Date().toISOString();
+
+            if (verifyData.verified) {
+                // Device exists - update state
+                this.netboxSyncState.registered = true;
+                this.netboxSyncState.deviceName = verifyData.device_name;
+                this.netboxSyncState.deviceId = verifyData.device_id;
+                this.netboxSyncState.site = verifyData.site;
+                this.netboxSyncState.status = verifyData.status_label;
+                this.netboxSyncState.primaryIp = verifyData.primary_ip;
+                if (!this.netboxSyncState.registeredAt) {
+                    this.netboxSyncState.registeredAt = new Date().toISOString();
+                }
+
+                this.updateNetBoxDeviceCard();
+                this.updateNetBoxTimestamps();
+
+                // Now check for drift
+                await this.detectNetBoxDrift();
+
+                // Log the check
+                this.addNetBoxChangeLogEntry('check', 'Sync Check', 'Verified device exists in NetBox', 'success');
+            } else {
+                this.netboxSyncState.registered = false;
+                this.updateNetBoxSyncBanner('not_registered', verifyData.error || 'Device not found in NetBox');
+                this.updateNetBoxTimestamps();
+
+                this.addNetBoxChangeLogEntry('check', 'Sync Check', verifyData.error || 'Device not registered', 'warning');
+            }
+
+        } catch (error) {
+            console.error('NetBox sync check failed:', error);
+            this.updateNetBoxSyncBanner('error', error.message);
+            this.addNetBoxChangeLogEntry('check', 'Sync Check', `Error: ${error.message}`, 'error');
+        }
+    }
+
+    // Detect configuration drift
+    async detectNetBoxDrift() {
+        const url = document.getElementById('netbox-url')?.value;
+        const token = document.getElementById('netbox-api-token')?.value;
+        const driftResultsEl = document.getElementById('netbox-drift-results');
+
+        if (!url || !token || !this.netboxSyncState.registered) {
+            if (driftResultsEl) {
+                driftResultsEl.innerHTML = `
+                    <div style="color: var(--text-secondary); text-align: center; padding: 20px;">
+                        ${this.netboxSyncState.registered ? 'Enter credentials to detect drift' : 'Register device first to detect drift'}
+                    </div>
+                `;
+            }
+            return;
+        }
+
+        if (driftResultsEl) {
+            driftResultsEl.innerHTML = `
+                <div style="color: var(--text-secondary); text-align: center; padding: 20px;">
+                    <div class="spinner" style="width: 24px; height: 24px; border: 2px solid var(--accent-cyan); border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 10px;"></div>
+                    Comparing configurations...
+                </div>
+            `;
+        }
+
+        try {
+            // Get local agent config
+            const localResponse = await fetch(`/api/wizard/agents/${this.agentId}`);
+            const localAgent = await localResponse.json();
+
+            // Get NetBox device config
+            const nbResponse = await fetch(`/api/wizard/mcps/netbox/devices/${this.netboxSyncState.deviceId}/import?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}`);
+            const nbData = await nbResponse.json();
+
+            if (!nbData.agent_config) {
+                throw new Error('Could not fetch NetBox device configuration');
+            }
+
+            const nbConfig = nbData.agent_config;
+            const driftItems = [];
+
+            // Compare interfaces
+            const localIfaces = localAgent.interfaces || [];
+            const nbIfaces = nbConfig.interfaces || [];
+
+            // Check for missing interfaces in NetBox
+            for (const localIf of localIfaces) {
+                const localName = localIf.n || localIf.name;
+                const nbIf = nbIfaces.find(i => (i.n || i.name) === localName);
+                if (!nbIf) {
+                    driftItems.push({
+                        type: 'interface',
+                        field: localName,
+                        local: 'Present',
+                        netbox: 'Missing',
+                        severity: 'warning'
+                    });
+                }
+            }
+
+            // Check for extra interfaces in NetBox
+            for (const nbIf of nbIfaces) {
+                const nbName = nbIf.n || nbIf.name;
+                const localIf = localIfaces.find(i => (i.n || i.name) === nbName);
+                if (!localIf) {
+                    driftItems.push({
+                        type: 'interface',
+                        field: nbName,
+                        local: 'Missing',
+                        netbox: 'Present',
+                        severity: 'info'
+                    });
+                }
+            }
+
+            // Compare router ID
+            if (localAgent.router_id !== nbConfig.router_id) {
+                driftItems.push({
+                    type: 'config',
+                    field: 'Router ID',
+                    local: localAgent.router_id || 'Not set',
+                    netbox: nbConfig.router_id || 'Not set',
+                    severity: 'warning'
+                });
+            }
+
+            this.netboxSyncState.driftItems = driftItems;
+
+            // Update UI
+            if (driftItems.length === 0) {
+                this.updateNetBoxSyncBanner('in_sync');
+                this.netboxSyncState.lastSync = new Date().toISOString();
+                if (driftResultsEl) {
+                    driftResultsEl.innerHTML = `
+                        <div style="background: rgba(74, 222, 128, 0.1); border: 1px solid var(--accent-green); border-radius: 8px; padding: 20px; text-align: center;">
+                            <div style="font-size: 2rem; margin-bottom: 10px;">✅</div>
+                            <div style="color: var(--accent-green); font-weight: bold; font-size: 1.1rem;">No Configuration Drift Detected</div>
+                            <div style="color: var(--text-secondary); margin-top: 5px;">Local agent matches NetBox device</div>
+                        </div>
+                    `;
+                }
+                this.addNetBoxChangeLogEntry('drift', 'Drift Check', 'No drift detected - configurations match', 'success');
+            } else {
+                this.updateNetBoxSyncBanner('out_of_sync', `${driftItems.length} difference(s) found`);
+                this.netboxLogStats.drifts++;
+                if (driftResultsEl) {
+                    driftResultsEl.innerHTML = `
+                        <div style="background: rgba(250, 204, 21, 0.1); border: 1px solid var(--accent-yellow); border-radius: 8px; padding: 15px; margin-bottom: 15px;">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                <span style="font-size: 1.5rem;">⚠️</span>
+                                <span style="color: var(--accent-yellow); font-weight: bold;">${driftItems.length} Configuration Difference(s) Found</span>
+                            </div>
+                        </div>
+                        <table class="data-table" style="margin: 0;">
+                            <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>Field</th>
+                                    <th>Local Agent</th>
+                                    <th>NetBox</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${driftItems.map(item => `
+                                    <tr>
+                                        <td><span class="status-badge ${item.severity}">${item.type}</span></td>
+                                        <td style="font-weight: 500;">${item.field}</td>
+                                        <td style="color: ${item.local === 'Missing' ? 'var(--accent-red)' : 'var(--text-primary)'};">${item.local}</td>
+                                        <td style="color: ${item.netbox === 'Missing' ? 'var(--accent-red)' : 'var(--text-primary)'};">${item.netbox}</td>
+                                        <td>
+                                            <button class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem;" disabled>Resolve</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                        <div style="margin-top: 15px; display: flex; gap: 10px;">
+                            <button class="btn btn-primary" onclick="window.agentDashboard.pushToNetBox()">Push Local → NetBox</button>
+                            <button class="btn btn-secondary" onclick="window.agentDashboard.pullFromNetBox()">Pull NetBox → Local</button>
+                        </div>
+                    `;
+                }
+                this.addNetBoxChangeLogEntry('drift', 'Drift Check', `${driftItems.length} differences found`, 'warning');
+            }
+
+            this.updateNetBoxTimestamps();
+            this.updateNetBoxLogStats();
+
+        } catch (error) {
+            console.error('Drift detection failed:', error);
+            if (driftResultsEl) {
+                driftResultsEl.innerHTML = `
+                    <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid var(--accent-red); border-radius: 8px; padding: 20px; text-align: center;">
+                        <div style="color: var(--accent-red); font-weight: bold;">Drift Detection Failed</div>
+                        <div style="color: var(--text-secondary); margin-top: 5px;">${error.message}</div>
+                    </div>
+                `;
+            }
+            this.addNetBoxChangeLogEntry('drift', 'Drift Check', `Error: ${error.message}`, 'error');
+        }
+    }
+
+    // Add entry to change log
+    addNetBoxChangeLogEntry(type, action, details, status) {
+        const entry = {
+            timestamp: new Date().toISOString(),
+            type: type,
+            action: action,
+            details: details,
+            status: status
+        };
+
+        this.netboxChangeLog.unshift(entry);
+        this.netboxLogStats.total++;
+
+        if (status === 'success' && (type === 'sync' || type === 'register')) {
+            this.netboxLogStats.syncs++;
+        } else if (status === 'error') {
+            this.netboxLogStats.errors++;
+        }
+
+        // Keep only last 100 entries
+        if (this.netboxChangeLog.length > 100) {
+            this.netboxChangeLog = this.netboxChangeLog.slice(0, 100);
+        }
+
+        this.renderNetBoxChangeLog();
+        this.updateNetBoxLogStats();
+    }
+
+    // Render change log table
+    renderNetBoxChangeLog() {
+        const tableBody = document.getElementById('netbox-sync-history');
+        if (!tableBody) return;
+
+        if (this.netboxChangeLog.length === 0) {
+            tableBody.innerHTML = `<tr><td colspan="5" class="empty-state">No sync history yet. Register or sync with NetBox to see activity.</td></tr>`;
+            return;
+        }
+
+        const statusColors = {
+            'success': 'var(--accent-green)',
+            'warning': 'var(--accent-yellow)',
+            'error': 'var(--accent-red)',
+            'info': 'var(--accent-cyan)'
+        };
+
+        const statusIcons = {
+            'success': '✓',
+            'warning': '⚠',
+            'error': '✗',
+            'info': 'ℹ'
+        };
+
+        tableBody.innerHTML = this.netboxChangeLog.map(entry => {
+            const time = new Date(entry.timestamp).toLocaleString();
+            const color = statusColors[entry.status] || 'var(--text-secondary)';
+            const icon = statusIcons[entry.status] || '•';
+
+            return `
+                <tr>
+                    <td style="font-family: monospace; font-size: 0.8rem;">${time}</td>
+                    <td><span class="status-badge ${entry.status}">${entry.action}</span></td>
+                    <td style="text-transform: capitalize;">${entry.type}</td>
+                    <td style="color: var(--text-secondary); max-width: 300px; overflow: hidden; text-overflow: ellipsis;">${entry.details}</td>
+                    <td style="color: ${color}; font-weight: bold;">${icon} ${entry.status.toUpperCase()}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    // Update log statistics
+    updateNetBoxLogStats() {
+        const syncsEl = document.getElementById('netbox-log-syncs');
+        const errorsEl = document.getElementById('netbox-log-errors');
+        const driftsEl = document.getElementById('netbox-log-drifts');
+        const totalEl = document.getElementById('netbox-log-total');
+
+        if (syncsEl) syncsEl.textContent = this.netboxLogStats.syncs;
+        if (errorsEl) errorsEl.textContent = this.netboxLogStats.errors;
+        if (driftsEl) driftsEl.textContent = this.netboxLogStats.drifts;
+        if (totalEl) totalEl.textContent = this.netboxLogStats.total;
+    }
+
+    // Export change log
+    exportNetBoxLog() {
+        const data = JSON.stringify(this.netboxChangeLog, null, 2);
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `netbox-changelog-${this.agentId}-${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+
+    // Clear change log
+    clearNetBoxLog() {
+        if (confirm('Clear all NetBox change log entries?')) {
+            this.netboxChangeLog = [];
+            this.netboxLogStats = { syncs: 0, errors: 0, drifts: 0, total: 0 };
+            this.renderNetBoxChangeLog();
+            this.updateNetBoxLogStats();
+        }
+    }
+
+    // Push local config to NetBox
+    async pushToNetBox() {
+        if (confirm('Push local agent configuration to NetBox?\n\nThis will update the NetBox device to match the local agent.')) {
+            await this.registerAgentInNetBox(false);
+            await this.checkNetBoxSyncStatus();
+        }
+    }
+
+    // Pull config from NetBox
+    async pullFromNetBox() {
+        if (confirm('Pull configuration from NetBox?\n\nThis will update the local agent to match NetBox.')) {
+            if (this.netboxSyncState.deviceId) {
+                await this.previewNetBoxDevice(this.netboxSyncState.deviceId);
+            }
+        }
+    }
+
+    // Enhanced setup for NetBox event listeners
+    setupNetBoxSyncEventListeners() {
+        // Check sync button
+        const checkSyncBtn = document.getElementById('netbox-check-sync-btn');
+        if (checkSyncBtn) {
+            checkSyncBtn.addEventListener('click', () => this.checkNetBoxSyncStatus());
+        }
+
+        // Detect drift button
+        const detectDriftBtn = document.getElementById('netbox-detect-drift-btn');
+        if (detectDriftBtn) {
+            detectDriftBtn.addEventListener('click', () => this.detectNetBoxDrift());
+        }
+
+        // Export log button
+        const exportLogBtn = document.getElementById('netbox-export-log-btn');
+        if (exportLogBtn) {
+            exportLogBtn.addEventListener('click', () => this.exportNetBoxLog());
+        }
+
+        // Clear log button
+        const clearLogBtn = document.getElementById('netbox-clear-log-btn');
+        if (clearLogBtn) {
+            clearLogBtn.addEventListener('click', () => this.clearNetBoxLog());
+        }
     }
 
     // ==================== FIREWALL TAB (ACLs) ====================

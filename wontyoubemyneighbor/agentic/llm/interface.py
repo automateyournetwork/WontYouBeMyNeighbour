@@ -254,6 +254,117 @@ class LLMInterface:
             context_parts.append(f"  OSPF Stability: {metrics.get('ospf_neighbor_stability', 0)*100:.0f}%")
             context_parts.append(f"  BGP Stability: {metrics.get('bgp_peer_stability', 0)*100:.0f}%")
 
+        # LLDP Neighbors (from dashboard)
+        if "lldp" in self.network_context and self.network_context["lldp"]:
+            lldp = self.network_context["lldp"]
+            neighbors = lldp.get("neighbors", [])
+            context_parts.append(f"\n### LLDP NEIGHBORS ({len(neighbors)} discovered):")
+            if neighbors:
+                for n in neighbors:
+                    local_port = n.get('local_port', 'unknown')
+                    remote_name = n.get('remote_system_name', n.get('remote_chassis_id', 'unknown'))
+                    remote_port = n.get('remote_port_id', 'unknown')
+                    context_parts.append(f"  - {local_port} <-> {remote_name}:{remote_port}")
+            else:
+                context_parts.append("    (No LLDP neighbors discovered)")
+
+        # LACP State (from dashboard)
+        if "lacp" in self.network_context and self.network_context["lacp"]:
+            lacp = self.network_context["lacp"]
+            aggregates = lacp.get("aggregates", [])
+            context_parts.append(f"\n### LACP AGGREGATES ({len(aggregates)} total):")
+            if aggregates:
+                for agg in aggregates:
+                    name = agg.get('name', 'unknown')
+                    state = agg.get('state', 'unknown')
+                    members = agg.get('members', [])
+                    member_str = ', '.join(members) if members else 'none'
+                    context_parts.append(f"  - {name}: State={state}, Members=[{member_str}]")
+            else:
+                context_parts.append("    (No LACP aggregates configured)")
+
+        # NetBox Device Info (from dashboard)
+        if "netbox" in self.network_context and self.network_context["netbox"]:
+            netbox = self.network_context["netbox"]
+            context_parts.append(f"\n### NETBOX DEVICE REGISTRATION:")
+            context_parts.append(f"  Device Name: {netbox.get('device_name', 'unknown')}")
+            context_parts.append(f"  Site: {netbox.get('site', 'unknown')}")
+            context_parts.append(f"  Status: {netbox.get('status', 'unknown')}")
+
+            # Interfaces registered in NetBox
+            nb_interfaces = netbox.get("interfaces", [])
+            if nb_interfaces:
+                context_parts.append(f"  Registered Interfaces ({len(nb_interfaces)}):")
+                for iface in nb_interfaces[:10]:  # Limit display
+                    context_parts.append(f"    - {iface.get('name', 'unknown')}")
+                if len(nb_interfaces) > 10:
+                    context_parts.append(f"    ... and {len(nb_interfaces) - 10} more")
+
+            # Cables in NetBox
+            nb_cables = netbox.get("cables", [])
+            if nb_cables:
+                context_parts.append(f"  Connected Cables ({len(nb_cables)}):")
+                for cable in nb_cables[:10]:
+                    a_term = cable.get('a_terminations', [{}])[0].get('object', {}).get('display', 'unknown') if cable.get('a_terminations') else 'unknown'
+                    b_term = cable.get('b_terminations', [{}])[0].get('object', {}).get('display', 'unknown') if cable.get('b_terminations') else 'unknown'
+                    context_parts.append(f"    - {a_term} <-> {b_term}")
+                if len(nb_cables) > 10:
+                    context_parts.append(f"    ... and {len(nb_cables) - 10} more")
+
+        # Test Results (from dashboard)
+        if "test_results" in self.network_context and self.network_context["test_results"]:
+            test_results = self.network_context["test_results"]
+            context_parts.append(f"\n### CONNECTIVITY TEST RESULTS ({len(test_results)} tests):")
+            passed = sum(1 for t in test_results if t.get('status') == 'passed')
+            failed = sum(1 for t in test_results if t.get('status') == 'failed')
+            context_parts.append(f"  Summary: {passed} passed, {failed} failed")
+
+            # Show failed tests first
+            for test in test_results:
+                if test.get('status') == 'failed':
+                    test_name = test.get('name', 'unknown')
+                    target = test.get('target', 'unknown')
+                    error = test.get('error', 'unknown error')
+                    context_parts.append(f"  - FAILED: {test_name} to {target} ({error})")
+
+            # Then show some passed tests
+            passed_tests = [t for t in test_results if t.get('status') == 'passed']
+            for test in passed_tests[:5]:
+                test_name = test.get('name', 'unknown')
+                target = test.get('target', 'unknown')
+                context_parts.append(f"  - PASSED: {test_name} to {target}")
+            if len(passed_tests) > 5:
+                context_parts.append(f"  ... and {len(passed_tests) - 5} more passed tests")
+
+        # Prometheus Metrics (from dashboard)
+        if "prometheus_metrics" in self.network_context and self.network_context["prometheus_metrics"]:
+            prom = self.network_context["prometheus_metrics"]
+            context_parts.append(f"\n### PROMETHEUS METRICS:")
+
+            # Interface stats
+            if "interface_stats" in prom:
+                stats = prom["interface_stats"]
+                context_parts.append(f"  Interface Statistics:")
+                for iface_name, iface_stats in list(stats.items())[:5]:
+                    rx = iface_stats.get('rx_bytes', 0)
+                    tx = iface_stats.get('tx_bytes', 0)
+                    context_parts.append(f"    - {iface_name}: RX={rx} bytes, TX={tx} bytes")
+                if len(stats) > 5:
+                    context_parts.append(f"    ... and {len(stats) - 5} more interfaces")
+
+            # Protocol metrics
+            if "ospf_metrics" in prom:
+                ospf_m = prom["ospf_metrics"]
+                context_parts.append(f"  OSPF Metrics:")
+                context_parts.append(f"    - SPF Runs: {ospf_m.get('spf_runs', 0)}")
+                context_parts.append(f"    - LSA Count: {ospf_m.get('lsa_count', 0)}")
+
+            if "bgp_metrics" in prom:
+                bgp_m = prom["bgp_metrics"]
+                context_parts.append(f"  BGP Metrics:")
+                context_parts.append(f"    - Prefixes Received: {bgp_m.get('prefixes_received', 0)}")
+                context_parts.append(f"    - Prefixes Advertised: {bgp_m.get('prefixes_advertised', 0)}")
+
         context_parts.append("\n" + "=" * 60)
         context_parts.append(f"Turn {self.current_turn + 1} of {self.max_turns}")
         context_parts.append("=" * 60)

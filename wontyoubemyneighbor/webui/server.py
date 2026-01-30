@@ -19,6 +19,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Import wizard router
@@ -31,6 +32,9 @@ except ImportError:
 
 
 # Log buffer for streaming to web clients
+# Storage for NetBox configuration (received from wizard during deployment)
+_netbox_config_storage: Dict[str, Any] = {}
+
 class LogBuffer:
     """Thread-safe circular buffer for log messages"""
 
@@ -134,6 +138,15 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
     app = FastAPI(
         title="ASI Dashboard",
         description="Web UI for Won't You Be My Neighbor routing agent"
+    )
+
+    # Add CORS middleware to allow wizard (port 5111) to push config to agents (ports 8801+)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins for local development
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # Track app startup time for uptime display
@@ -252,6 +265,67 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
                         interface_count = len(asi_app.interfaces) if asi_app and hasattr(asi_app, 'interfaces') else 0
                         exporter.set_gauge("agent_interfaces_total", float(interface_count))
 
+                        # Update QoS statistics from ALL protocols in the stack
+                        try:
+                            from agentic.protocols.qos import get_qos_manager
+                            qos = get_qos_manager(agent_id)
+
+                            # Get primary interface for QoS
+                            interfaces = list(qos.interface_policies.keys())
+                            if not interfaces and asi_app and hasattr(asi_app, 'interfaces'):
+                                for iface in asi_app.interfaces:
+                                    iface_name = iface.get('name') or iface.get('n')
+                                    if iface_name:
+                                        interfaces.append(iface_name)
+                            iface = interfaces[0] if interfaces else 'eth0'
+
+                            # Update QoS from ALL protocol stats (OSPF, OSPFv3, BGP, ISIS, LDP, LLDP, BFD)
+                            qos.update_from_protocol_stats(asi_app, iface)
+
+                            # Log current QoS state
+                            if qos.total_classified > 0:
+                                logging.getLogger("WebUI").debug(
+                                    f"QoS: classified={qos.total_classified}, marked={qos.total_marked}"
+                                )
+
+                        except Exception as qos_err:
+                            logging.getLogger("WebUI").debug(f"QoS tracking: {qos_err}")
+
+                        # Update NetFlow from protocol activity
+                        try:
+                            from agentic.protocols.netflow import get_flow_exporter
+
+                            netflow = get_flow_exporter(agent_id, router_id)
+                            local_ip = router_id  # Use router ID as source
+
+                            # Record OSPF flows
+                            if ospf_stats:
+                                hello_count = ospf_stats.get('hello_sent', 0) + ospf_stats.get('hello_recv', 0)
+                                if hello_count > 0:
+                                    netflow.record_protocol_flow(
+                                        "ospf", local_ip, "224.0.0.5",  # OSPF multicast
+                                        hello_count * 64, iface, "egress", 48, "network_control"
+                                    )
+
+                            # Record BGP flows
+                            if bgp_stats:
+                                bgp_count = sum([
+                                    bgp_stats.get('keepalive_sent', 0),
+                                    bgp_stats.get('update_sent', 0),
+                                    bgp_stats.get('open_sent', 0)
+                                ])
+                                if bgp_count > 0:
+                                    # Get BGP peers if available
+                                    if asi_app.bgp_speaker and hasattr(asi_app.bgp_speaker, 'agent'):
+                                        for peer_ip in asi_app.bgp_speaker.agent.sessions.keys():
+                                            netflow.record_protocol_flow(
+                                                "bgp", local_ip, peer_ip,
+                                                bgp_count * 64, iface, "egress", 48, "network_control"
+                                            )
+
+                        except Exception as nf_err:
+                            logging.getLogger("WebUI").debug(f"NetFlow tracking: {nf_err}")
+
                         logging.getLogger("WebUI").debug(f"Collected metrics: OSPF neighbors={ospf_neighbors}, BGP peers={bgp_peers}")
                     except Exception as e:
                         logging.getLogger("WebUI").warning(f"Metrics collection error: {e}")
@@ -261,6 +335,44 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             logging.getLogger("WebUI").info(f"Prometheus metrics collection started for agent {agent_id}")
         except Exception as e:
             logging.getLogger("WebUI").warning(f"Prometheus metrics not started: {e}")
+
+        # Initialize QoS (RFC 4594) - always enabled, auto-apply to all interfaces
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            agent_id = os.environ.get("ASI_AGENT_ID", "local")
+            qos = get_qos_manager(agent_id)
+
+            # Get interfaces and apply QoS policy
+            interfaces = []
+            if asi_app and hasattr(asi_app, 'interfaces') and asi_app.interfaces:
+                interfaces = [iface.get('n') or iface.get('name', 'eth0') for iface in asi_app.interfaces]
+            if not interfaces:
+                interfaces = ['eth0', 'eth1', 'lo0']  # Defaults
+
+            qos.apply_to_all_interfaces(interfaces)
+            logging.getLogger("WebUI").info(f"QoS (RFC 4594) enabled on {len(interfaces)} interfaces - DSCP marking active")
+        except Exception as e:
+            logging.getLogger("WebUI").warning(f"QoS initialization: {e}")
+
+        # Initialize SLAAC (RFC 4862) for IPv6 overlay addresses
+        try:
+            from agentic.protocols.slaac import initialize_agent_slaac
+            agent_id = os.environ.get("ASI_AGENT_ID", "local")
+            slaac_result = initialize_agent_slaac(agent_id)
+            logging.getLogger("WebUI").info(f"SLAAC assigned mesh address: {slaac_result.get('mesh_address')}")
+        except Exception as e:
+            logging.getLogger("WebUI").warning(f"SLAAC initialization: {e}")
+
+        # Initialize NetFlow/IPFIX (RFC 7011) for flow tracking
+        try:
+            from agentic.protocols.netflow import get_flow_exporter
+            agent_id = os.environ.get("ASI_AGENT_ID", "local")
+            router_id = os.environ.get("ASI_ROUTER_ID", "0.0.0.0")
+            netflow = get_flow_exporter(agent_id, router_id)
+            netflow.export_interval = 30  # Export every 30 seconds
+            logging.getLogger("WebUI").info(f"NetFlow (RFC 7011) exporter initialized - tracking flows")
+        except Exception as e:
+            logging.getLogger("WebUI").warning(f"NetFlow initialization: {e}")
 
     # Include wizard router if available
     if WIZARD_AVAILABLE and wizard_router:
@@ -389,31 +501,44 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             "agentic": None
         }
 
-        # Collect interface information
+        # Collect interface information from multiple sources
+        def add_interface(iface):
+            status["interfaces"].append({
+                "id": iface.get('id') or iface.get('n'),
+                "name": iface.get('n') or iface.get('name'),
+                "type": iface.get('t') or iface.get('type', 'eth'),
+                "addresses": iface.get('a') or iface.get('addresses', []),
+                "status": iface.get('s') or iface.get('status', 'up'),
+                "mtu": iface.get('mtu', 1500),
+                "description": iface.get('description', '')
+            })
+
+        # Source 1: asi_app.interfaces
         if hasattr(asi_app, 'interfaces') and asi_app.interfaces:
             for iface in asi_app.interfaces:
-                status["interfaces"].append({
-                    "id": iface.get('id') or iface.get('n'),
-                    "name": iface.get('n') or iface.get('name'),
-                    "type": iface.get('t') or iface.get('type', 'eth'),
-                    "addresses": iface.get('a') or iface.get('addresses', []),
-                    "status": iface.get('s') or iface.get('status', 'up'),
-                    "mtu": iface.get('mtu', 1500),
-                    "description": iface.get('description', '')
-                })
+                add_interface(iface)
+        # Source 2: asi_app.config
         elif hasattr(asi_app, 'config') and asi_app.config:
-            # Try getting from config
             config_ifs = asi_app.config.get('ifs') or asi_app.config.get('interfaces', [])
             for iface in config_ifs:
-                status["interfaces"].append({
-                    "id": iface.get('id') or iface.get('n'),
-                    "name": iface.get('n') or iface.get('name'),
-                    "type": iface.get('t') or iface.get('type', 'eth'),
-                    "addresses": iface.get('a') or iface.get('addresses', []),
-                    "status": iface.get('s') or iface.get('status', 'up'),
-                    "mtu": iface.get('mtu', 1500),
-                    "description": iface.get('description', '')
-                })
+                add_interface(iface)
+
+        # Source 3: State manager interfaces (fallback)
+        if not status["interfaces"] and agentic_bridge:
+            try:
+                if hasattr(agentic_bridge, 'state_manager'):
+                    state_manager = agentic_bridge.state_manager
+                    if hasattr(state_manager, '_interfaces') and state_manager._interfaces:
+                        for iface in state_manager._interfaces:
+                            add_interface(iface)
+            except Exception:
+                pass
+
+        # Source 4: Original config (last resort)
+        if not status["interfaces"] and hasattr(asi_app, '_original_config'):
+            orig_ifs = asi_app._original_config.get('ifs') or asi_app._original_config.get('interfaces', [])
+            for iface in orig_ifs:
+                add_interface(iface)
 
         # OSPF status
         if asi_app.ospf_interface:
@@ -597,6 +722,505 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             pass
 
         return status
+
+    @app.get("/api/interfaces")
+    async def get_interfaces() -> Dict[str, Any]:
+        """
+        Get all interfaces configured on this agent.
+
+        Returns interfaces from multiple sources:
+        1. asi_app.interfaces (config)
+        2. asi_app.config.ifs
+        3. State manager _interfaces
+        """
+        interfaces = []
+
+        # Source 1: asi_app.interfaces
+        if hasattr(asi_app, 'interfaces') and asi_app.interfaces:
+            for iface in asi_app.interfaces:
+                interfaces.append({
+                    "id": iface.get('id') or iface.get('n'),
+                    "name": iface.get('n') or iface.get('name'),
+                    "type": iface.get('t') or iface.get('type', 'eth'),
+                    "addresses": iface.get('a') or iface.get('addresses', []),
+                    "status": iface.get('s') or iface.get('status', 'up'),
+                    "mtu": iface.get('mtu', 1500),
+                    "description": iface.get('description', '')
+                })
+
+        # Source 2: asi_app.config
+        if not interfaces and hasattr(asi_app, 'config') and asi_app.config:
+            config_ifs = asi_app.config.get('ifs') or asi_app.config.get('interfaces', [])
+            for iface in config_ifs:
+                interfaces.append({
+                    "id": iface.get('id') or iface.get('n'),
+                    "name": iface.get('n') or iface.get('name'),
+                    "type": iface.get('t') or iface.get('type', 'eth'),
+                    "addresses": iface.get('a') or iface.get('addresses', []),
+                    "status": iface.get('s') or iface.get('status', 'up'),
+                    "mtu": iface.get('mtu', 1500),
+                    "description": iface.get('description', '')
+                })
+
+        # Source 3: State manager (agentic_bridge.state_manager._interfaces)
+        if not interfaces and agentic_bridge:
+            try:
+                if hasattr(agentic_bridge, 'state_manager'):
+                    state_manager = agentic_bridge.state_manager
+                    if hasattr(state_manager, '_interfaces') and state_manager._interfaces:
+                        for iface in state_manager._interfaces:
+                            interfaces.append({
+                                "id": iface.get('id') or iface.get('n'),
+                                "name": iface.get('n') or iface.get('name'),
+                                "type": iface.get('t') or iface.get('type', 'eth'),
+                                "addresses": iface.get('a') or iface.get('addresses', []),
+                                "status": iface.get('s') or iface.get('status', 'up'),
+                                "mtu": iface.get('mtu', 1500),
+                                "description": iface.get('description', '')
+                            })
+            except Exception as e:
+                logger.debug(f"Error getting state manager interfaces: {e}")
+
+        # Source 4: Original config passed to ASIApp
+        if not interfaces and hasattr(asi_app, '_original_config'):
+            orig_ifs = asi_app._original_config.get('ifs') or asi_app._original_config.get('interfaces', [])
+            for iface in orig_ifs:
+                interfaces.append({
+                    "id": iface.get('id') or iface.get('n'),
+                    "name": iface.get('n') or iface.get('name'),
+                    "type": iface.get('t') or iface.get('type', 'eth'),
+                    "addresses": iface.get('a') or iface.get('addresses', []),
+                    "status": iface.get('s') or iface.get('status', 'up'),
+                    "mtu": iface.get('mtu', 1500),
+                    "description": iface.get('description', '')
+                })
+
+        return {
+            "interfaces": interfaces,
+            "count": len(interfaces)
+        }
+
+    # ========================================
+    # NetBox Configuration Storage
+    # (Received from wizard during deployment)
+    # ========================================
+
+    @app.get("/api/config/netbox")
+    async def get_netbox_config() -> Dict[str, Any]:
+        """Get stored NetBox configuration for this agent"""
+        global _netbox_config_storage
+        if _netbox_config_storage:
+            return {
+                "status": "ok",
+                "config": _netbox_config_storage
+            }
+        return {
+            "status": "not_configured",
+            "config": None
+        }
+
+    @app.post("/api/config/netbox")
+    async def set_netbox_config(request: Request) -> Dict[str, Any]:
+        """Store NetBox configuration for this agent (called by wizard during deployment)"""
+        global _netbox_config_storage
+        try:
+            data = await request.json()
+            # Validate required fields
+            if not data.get('netbox_url') or not data.get('api_token'):
+                return {"status": "error", "message": "Missing netbox_url or api_token"}
+
+            _netbox_config_storage = {
+                "netbox_url": data.get('netbox_url'),
+                "api_token": data.get('api_token'),
+                "site_name": data.get('site_name'),
+                "device_name": data.get('device_name')
+            }
+
+            logging.getLogger("WebUI").info(f"[NetBox] Stored config for device: {_netbox_config_storage.get('device_name')}")
+            return {"status": "ok", "message": "NetBox config stored"}
+        except Exception as e:
+            logging.getLogger("WebUI").error(f"[NetBox] Failed to store config: {e}")
+            return {"status": "error", "message": str(e)}
+
+    @app.get("/api/netbox/sync")
+    async def sync_netbox_device() -> Dict[str, Any]:
+        """
+        Get full device sync status from NetBox using stored config.
+        Fetches device info, interfaces, IPs, services, and cables.
+        """
+        global _netbox_config_storage
+
+        if not _netbox_config_storage:
+            return {"status": "not_configured", "error": "NetBox not configured for this agent"}
+
+        netbox_url = _netbox_config_storage.get("netbox_url")
+        api_token = _netbox_config_storage.get("api_token")
+        device_name = _netbox_config_storage.get("device_name")
+
+        if not all([netbox_url, api_token, device_name]):
+            return {"status": "error", "error": "Missing required NetBox configuration (url, token, or device_name)"}
+
+        try:
+            from agentic.mcp.netbox_mcp import NetBoxClient, NetBoxConfig
+
+            config = NetBoxConfig(url=netbox_url, api_token=api_token)
+            client = NetBoxClient(config)
+
+            # Get device by name
+            device = await client.get_device(device_name)
+            if not device:
+                await client.close()
+                return {
+                    "status": "not_found",
+                    "error": f"Device '{device_name}' not found in NetBox"
+                }
+
+            device_id = device["id"]
+
+            # Get the underlying HTTP client for direct API calls
+            http_client = await client._get_client()
+
+            # Get interfaces with full details
+            interfaces_raw = await client.get_interfaces(device_id)
+            interfaces = []
+            for iface in (interfaces_raw or []):
+                interfaces.append({
+                    "id": iface.get("id"),
+                    "name": iface.get("name"),
+                    "type": iface.get("type", {}).get("value") if isinstance(iface.get("type"), dict) else iface.get("type"),
+                    "enabled": iface.get("enabled", True),
+                    "url": f"{netbox_url.rstrip('/')}/dcim/interfaces/{iface.get('id')}/"
+                })
+            interface_count = len(interfaces)
+
+            # Get IP addresses for the device
+            ip_addresses = []
+            try:
+                ip_response = await http_client.get(
+                    "/api/ipam/ip-addresses/",
+                    params={"device_id": device_id, "limit": 100}
+                )
+                logging.getLogger("WebUI").info(f"[NetBox] IP query for device_id={device_id}, status={ip_response.status_code}")
+                if ip_response.status_code == 200:
+                    ip_data = ip_response.json()
+                    logging.getLogger("WebUI").info(f"[NetBox] IP results count: {ip_data.get('count', 0)}, results: {len(ip_data.get('results', []))}")
+                    for ip in ip_data.get("results", []):
+                        ip_addresses.append({
+                            "id": ip.get("id"),
+                            "address": ip.get("address"),
+                            "status": ip.get("status", {}).get("value") if isinstance(ip.get("status"), dict) else ip.get("status"),
+                            "interface": ip.get("assigned_object", {}).get("name") if ip.get("assigned_object") else None,
+                            "url": f"{netbox_url.rstrip('/')}/ipam/ip-addresses/{ip.get('id')}/"
+                        })
+                else:
+                    logging.getLogger("WebUI").warning(f"[NetBox] IP query failed: {ip_response.text[:200]}")
+            except Exception as e:
+                logging.getLogger("WebUI").warning(f"[NetBox] Could not get IP addresses: {e}")
+            ip_count = len(ip_addresses)
+
+            # Get services for the device
+            services = []
+            try:
+                svc_response = await http_client.get(
+                    "/api/ipam/services/",
+                    params={"device_id": device_id, "limit": 100}
+                )
+                if svc_response.status_code == 200:
+                    svc_data = svc_response.json()
+                    for svc in svc_data.get("results", []):
+                        services.append({
+                            "id": svc.get("id"),
+                            "name": svc.get("name"),
+                            "protocol": svc.get("protocol", {}).get("value") if isinstance(svc.get("protocol"), dict) else svc.get("protocol"),
+                            "ports": svc.get("ports", []),
+                            "url": f"{netbox_url.rstrip('/')}/ipam/services/{svc.get('id')}/"
+                        })
+            except Exception as e:
+                logging.getLogger("WebUI").warning(f"[NetBox] Could not get services: {e}")
+            service_count = len(services)
+
+            # Get cable connections
+            connections = await client.get_interface_connections(device_id)
+            logging.getLogger("WebUI").info(f"[NetBox] Cable connections for device_id={device_id}: {len(connections)} found")
+            if connections:
+                logging.getLogger("WebUI").info(f"[NetBox] First connection: {connections[0]}")
+            cables = []
+            for conn in connections:
+                cable_id = conn.get("cable_id")
+                cables.append({
+                    "local_interface": conn.get("local_interface"),
+                    "remote_device": conn.get("remote_device"),
+                    "remote_interface": conn.get("remote_interface"),
+                    "cable_id": cable_id,
+                    "status": "connected",
+                    "url": f"{netbox_url.rstrip('/')}/dcim/cables/{cable_id}/" if cable_id else None
+                })
+
+            await client.close()
+
+            # Build NetBox URL for the device
+            device_url = f"{netbox_url.rstrip('/')}/dcim/devices/{device_id}/"
+
+            # Extract site name
+            site_name = None
+            if device.get("site"):
+                site_name = device["site"].get("name") if isinstance(device["site"], dict) else str(device["site"])
+
+            # Extract primary IP
+            primary_ip = None
+            if device.get("primary_ip4"):
+                primary_ip = device["primary_ip4"].get("address") if isinstance(device["primary_ip4"], dict) else str(device["primary_ip4"])
+            elif device.get("primary_ip"):
+                primary_ip = device["primary_ip"].get("address") if isinstance(device["primary_ip"], dict) else str(device["primary_ip"])
+
+            return {
+                "status": "ok",
+                "device": {
+                    "id": device_id,
+                    "name": device.get("name"),
+                    "site": site_name,
+                    "primary_ip": primary_ip,
+                    "url": device_url,
+                    "interface_count": interface_count,
+                    "ip_count": ip_count,
+                    "service_count": service_count,
+                    "status": device.get("status", {}).get("value") if isinstance(device.get("status"), dict) else device.get("status"),
+                    "role": device.get("role", {}).get("name") if isinstance(device.get("role"), dict) else device.get("role")
+                },
+                "interfaces": interfaces,
+                "ip_addresses": ip_addresses,
+                "services": services,
+                "cables": cables
+            }
+        except ImportError:
+            return {"status": "error", "error": "NetBox client module not available"}
+        except Exception as e:
+            logging.getLogger("WebUI").error(f"[NetBox] Sync error: {e}")
+            return {"status": "error", "error": str(e)}
+
+    @app.post("/api/netbox/push")
+    async def push_to_netbox(request: Request) -> Dict[str, Any]:
+        """
+        PUSH sync - Agent is Master.
+        Push local agent configuration to NetBox, registering/updating:
+        - Device
+        - All interfaces
+        - All IP addresses
+        - ALL running services (OSPF, BGP, IS-IS, etc.)
+
+        This ensures NetBox reflects the current agent state.
+        """
+        global _netbox_config_storage
+
+        if not _netbox_config_storage:
+            return {"status": "error", "error": "NetBox not configured for this agent"}
+
+        netbox_url = _netbox_config_storage.get("netbox_url")
+        api_token = _netbox_config_storage.get("api_token")
+        device_name = _netbox_config_storage.get("device_name")
+        site_name = _netbox_config_storage.get("site_name", "Default")
+
+        if not all([netbox_url, api_token, device_name]):
+            return {"status": "error", "error": "Missing required NetBox configuration"}
+
+        try:
+            body = await request.json()
+            provided_protocols = body.get("protocols", [])
+        except:
+            provided_protocols = []
+
+        try:
+            from agentic.mcp.netbox_mcp import (
+                NetBoxClient, NetBoxConfig, configure_netbox, auto_register_agent
+            )
+
+            # Build agent config from current local state
+            agent_config = {
+                "router_id": getattr(asi_app, 'router_id', device_name),
+                "interfaces": [],
+                "protocols": []
+            }
+
+            # Get interfaces from local state
+            if hasattr(asi_app, 'interfaces') and asi_app.interfaces:
+                for iface in asi_app.interfaces.values():
+                    iface_data = {
+                        "name": getattr(iface, 'name', str(iface)),
+                        "type": getattr(iface, 'type', 'ethernet'),
+                        "enabled": getattr(iface, 'enabled', True),
+                    }
+                    # Get IP from interface
+                    if hasattr(iface, 'ip_address') and iface.ip_address:
+                        iface_data["ip"] = iface.ip_address
+                    elif hasattr(iface, 'addresses') and iface.addresses:
+                        iface_data["ip"] = iface.addresses[0] if iface.addresses else None
+                    agent_config["interfaces"].append(iface_data)
+
+            # Detect running protocols from asi_app
+            if asi_app.ospf_interface:
+                area = getattr(asi_app.ospf_interface, 'area_id', '0.0.0.0')
+                agent_config["protocols"].append({"type": "ospf", "area": area})
+                logging.getLogger("WebUI").info(f"[NetBox PUSH] Detected OSPF Area {area}")
+
+            if hasattr(asi_app, 'bgp_speaker') and asi_app.bgp_speaker:
+                local_as = getattr(asi_app.bgp_speaker, 'local_as', None)
+                agent_config["protocols"].append({"type": "bgp", "local_as": local_as})
+                logging.getLogger("WebUI").info(f"[NetBox PUSH] Detected BGP AS {local_as}")
+
+            if hasattr(asi_app, 'isis_instance') and asi_app.isis_instance:
+                agent_config["protocols"].append({"type": "isis"})
+                logging.getLogger("WebUI").info("[NetBox PUSH] Detected IS-IS")
+
+            if hasattr(asi_app, 'ldp_session') and asi_app.ldp_session:
+                agent_config["protocols"].append({"type": "ldp"})
+                logging.getLogger("WebUI").info("[NetBox PUSH] Detected LDP")
+
+            if hasattr(asi_app, 'mpls_manager') and asi_app.mpls_manager:
+                agent_config["protocols"].append({"type": "mpls"})
+                logging.getLogger("WebUI").info("[NetBox PUSH] Detected MPLS")
+
+            # Also include any protocols explicitly provided in request
+            for proto in provided_protocols:
+                proto_type = proto.get("type", "").lower()
+                if proto_type and not any(p.get("type") == proto_type for p in agent_config["protocols"]):
+                    agent_config["protocols"].append(proto)
+                    logging.getLogger("WebUI").info(f"[NetBox PUSH] Added provided protocol: {proto_type}")
+
+            logging.getLogger("WebUI").info(f"[NetBox PUSH] Registering device '{device_name}' with {len(agent_config['protocols'])} protocols: {[p.get('type') for p in agent_config['protocols']]}")
+
+            # Configure and register
+            config = NetBoxConfig(
+                url=netbox_url,
+                api_token=api_token,
+                site_name=site_name,
+                auto_register=True
+            )
+            configure_netbox(config)
+
+            result = await auto_register_agent(device_name, agent_config)
+
+            # Close client
+            from agentic.mcp.netbox_mcp import get_netbox_client
+            client = get_netbox_client()
+            if client:
+                await client.close()
+
+            return {
+                "status": "ok" if result.get("success") else "error",
+                "success": result.get("success", False),
+                "device_name": device_name,
+                "interfaces": result.get("interfaces", []),
+                "ip_addresses": result.get("ip_addresses", []),
+                "services": result.get("services", []),
+                "errors": result.get("errors", [])
+            }
+
+        except ImportError as e:
+            return {"status": "error", "error": f"NetBox client module not available: {e}"}
+        except Exception as e:
+            logging.getLogger("WebUI").error(f"[NetBox PUSH] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "error": str(e)}
+
+    @app.post("/api/netbox/pull")
+    async def pull_from_netbox(request: Request) -> Dict[str, Any]:
+        """
+        PULL sync - NetBox is Master.
+        Pull device configuration from NetBox to local agent.
+
+        This imports the NetBox device's interfaces, IPs, and services
+        to update the local agent configuration.
+        """
+        global _netbox_config_storage
+
+        if not _netbox_config_storage:
+            return {"status": "error", "error": "NetBox not configured for this agent"}
+
+        netbox_url = _netbox_config_storage.get("netbox_url")
+        api_token = _netbox_config_storage.get("api_token")
+        device_name = _netbox_config_storage.get("device_name")
+
+        if not all([netbox_url, api_token, device_name]):
+            return {"status": "error", "error": "Missing required NetBox configuration"}
+
+        try:
+            from agentic.mcp.netbox_mcp import NetBoxClient, NetBoxConfig
+
+            config = NetBoxConfig(url=netbox_url, api_token=api_token)
+            client = NetBoxClient(config)
+
+            # Get device from NetBox
+            device = await client.get_device(device_name)
+            if not device:
+                await client.close()
+                return {"status": "error", "error": f"Device '{device_name}' not found in NetBox"}
+
+            device_id = device["id"]
+            http_client = await client._get_client()
+
+            # Get interfaces
+            interfaces_raw = await client.get_interfaces(device_id)
+            interfaces = []
+            for iface in (interfaces_raw or []):
+                interfaces.append({
+                    "id": iface.get("id"),
+                    "name": iface.get("name"),
+                    "type": iface.get("type", {}).get("value") if isinstance(iface.get("type"), dict) else iface.get("type"),
+                    "enabled": iface.get("enabled", True)
+                })
+
+            # Get IP addresses
+            ip_addresses = []
+            try:
+                ip_response = await http_client.get("/api/ipam/ip-addresses/", params={"device_id": device_id, "limit": 100})
+                if ip_response.status_code == 200:
+                    for ip in ip_response.json().get("results", []):
+                        ip_addresses.append({
+                            "id": ip.get("id"),
+                            "address": ip.get("address"),
+                            "interface": ip.get("assigned_object", {}).get("name") if ip.get("assigned_object") else None
+                        })
+            except Exception as e:
+                logging.getLogger("WebUI").warning(f"[NetBox PULL] Could not get IPs: {e}")
+
+            # Get services
+            services = []
+            try:
+                svc_response = await http_client.get("/api/ipam/services/", params={"device_id": device_id, "limit": 100})
+                if svc_response.status_code == 200:
+                    for svc in svc_response.json().get("results", []):
+                        services.append({
+                            "id": svc.get("id"),
+                            "name": svc.get("name"),
+                            "protocol": svc.get("protocol", {}).get("value") if isinstance(svc.get("protocol"), dict) else svc.get("protocol"),
+                            "ports": svc.get("ports", [])
+                        })
+            except Exception as e:
+                logging.getLogger("WebUI").warning(f"[NetBox PULL] Could not get services: {e}")
+
+            await client.close()
+
+            logging.getLogger("WebUI").info(f"[NetBox PULL] Imported from NetBox: {len(interfaces)} interfaces, {len(ip_addresses)} IPs, {len(services)} services")
+
+            # Note: Actual local agent update logic would go here
+            # For now, we just return what was fetched for display
+
+            return {
+                "status": "ok",
+                "success": True,
+                "device_name": device_name,
+                "interfaces": interfaces,
+                "ip_addresses": ip_addresses,
+                "services": services,
+                "message": "Configuration imported from NetBox (read-only preview)"
+            }
+
+        except ImportError as e:
+            return {"status": "error", "error": f"NetBox client module not available: {e}"}
+        except Exception as e:
+            logging.getLogger("WebUI").error(f"[NetBox PULL] Error: {e}")
+            return {"status": "error", "error": str(e)}
 
     @app.get("/api/nd/neighbors")
     async def get_nd_neighbors() -> Dict[str, Any]:
@@ -3581,6 +4205,630 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
         except Exception as e:
             logger.error(f"RESTCONF GET error: {e}")
             return {"error": str(e)}
+
+    # ==========================================================================
+    # Subnet Calculator API Endpoints (Foundational MCP)
+    # ==========================================================================
+
+    @app.get("/api/subnet/calculate")
+    async def api_calculate_subnet(cidr: str) -> Dict[str, Any]:
+        """
+        Calculate subnet details for IPv4 or IPv6 CIDR (auto-detect).
+
+        Args:
+            cidr: Network in CIDR notation (e.g., '192.168.1.0/24' or '2001:db8::/32')
+
+        Returns:
+            Comprehensive subnet information
+        """
+        try:
+            from agentic.mcp.subnet_mcp import get_calculator
+            calc = get_calculator()
+            return calc.calculate_auto(cidr)
+        except Exception as e:
+            logger.error(f"Subnet calculation error: {e}")
+            return {"error": str(e), "input_cidr": cidr}
+
+    @app.get("/api/subnet/ipv4")
+    async def api_calculate_ipv4(cidr: str) -> Dict[str, Any]:
+        """
+        Calculate IPv4 subnet details.
+
+        Args:
+            cidr: IPv4 network in CIDR notation (e.g., '192.168.1.0/24')
+
+        Returns:
+            IPv4 subnet information
+        """
+        try:
+            from agentic.mcp.subnet_mcp import get_calculator
+            calc = get_calculator()
+            return calc.calculate_ipv4(cidr)
+        except Exception as e:
+            logger.error(f"IPv4 calculation error: {e}")
+            return {"error": str(e), "input_cidr": cidr}
+
+    @app.get("/api/subnet/ipv6")
+    async def api_calculate_ipv6(cidr: str) -> Dict[str, Any]:
+        """
+        Calculate IPv6 subnet details.
+
+        Args:
+            cidr: IPv6 network in CIDR notation (e.g., '2001:db8::/32')
+
+        Returns:
+            IPv6 subnet information
+        """
+        try:
+            from agentic.mcp.subnet_mcp import get_calculator
+            calc = get_calculator()
+            return calc.calculate_ipv6(cidr)
+        except Exception as e:
+            logger.error(f"IPv6 calculation error: {e}")
+            return {"error": str(e), "input_cidr": cidr}
+
+    @app.get("/api/subnet/analyze")
+    async def api_analyze_ip(ip_address: str) -> Dict[str, Any]:
+        """
+        Analyze a single IP address.
+
+        Args:
+            ip_address: IP address to analyze (IPv4 or IPv6)
+
+        Returns:
+            IP address analysis including classification
+        """
+        try:
+            from agentic.mcp.subnet_mcp import get_calculator
+            calc = get_calculator()
+            return calc.analyze_ip(ip_address)
+        except Exception as e:
+            logger.error(f"IP analysis error: {e}")
+            return {"error": str(e), "input": ip_address}
+
+    @app.get("/api/subnet/agent-ips")
+    async def api_get_agent_ips() -> Dict[str, Any]:
+        """
+        Get all IP addresses configured on this agent with analysis.
+
+        Returns:
+            List of IPs with their subnet analysis
+        """
+        try:
+            from agentic.mcp.subnet_mcp import get_calculator
+            calc = get_calculator()
+
+            # Get interfaces from the agent
+            interfaces = []
+            if agentic_bridge and hasattr(agentic_bridge, 'state_manager'):
+                state = agentic_bridge.state_manager
+                if hasattr(state, '_interfaces'):
+                    interfaces = state._interfaces
+
+            # Analyze each IP
+            analyzed_ips = []
+            for iface in interfaces:
+                for addr in iface.get('addresses', []):
+                    analysis = calc.calculate_auto(addr)
+                    analysis['interface'] = iface.get('name', iface.get('id', 'unknown'))
+                    analyzed_ips.append(analysis)
+
+            return {
+                "agent_ips": analyzed_ips,
+                "count": len(analyzed_ips)
+            }
+        except Exception as e:
+            logger.error(f"Agent IPs error: {e}")
+            return {"agent_ips": [], "error": str(e)}
+
+    # ==========================================================================
+    # SLAAC (IPv6 Stateless Address Autoconfiguration) API Endpoints
+    # ==========================================================================
+
+    @app.get("/api/slaac/status")
+    async def api_get_slaac_status() -> Dict[str, Any]:
+        """
+        Get current SLAAC status and configured addresses.
+
+        Returns:
+            SLAAC manager status with all addresses
+        """
+        try:
+            from agentic.protocols.slaac import get_slaac_manager
+            agent_id = "local"
+            if agentic_bridge and hasattr(agentic_bridge, 'agent_id'):
+                agent_id = agentic_bridge.agent_id
+            slaac = get_slaac_manager(agent_id)
+            return slaac.get_status()
+        except Exception as e:
+            logger.error(f"SLAAC status error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/slaac/initialize")
+    async def api_initialize_slaac() -> Dict[str, Any]:
+        """
+        Initialize SLAAC and auto-configure IPv6 addresses for the agent.
+
+        Generates:
+        - Link-local address (fe80::EUI-64)
+        - Mesh ULA address (fd00:10::EUI-64)
+
+        Returns:
+            Generated addresses and configuration status
+        """
+        try:
+            from agentic.protocols.slaac import initialize_agent_slaac
+            agent_id = "local"
+            if agentic_bridge and hasattr(agentic_bridge, 'agent_id'):
+                agent_id = agentic_bridge.agent_id
+            result = initialize_agent_slaac(agent_id)
+            return result
+        except Exception as e:
+            logger.error(f"SLAAC initialize error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/slaac/mesh-address")
+    async def api_get_mesh_address() -> Dict[str, Any]:
+        """
+        Get the agent's mesh network address (ULA).
+
+        This is the primary address for agent-to-agent communication.
+
+        Returns:
+            Mesh address details
+        """
+        try:
+            from agentic.protocols.slaac import get_slaac_manager
+            agent_id = "local"
+            if agentic_bridge and hasattr(agentic_bridge, 'agent_id'):
+                agent_id = agentic_bridge.agent_id
+            slaac = get_slaac_manager(agent_id)
+
+            # Initialize if not already done
+            if not slaac.mesh_address:
+                slaac.auto_configure()
+
+            addr = slaac.mesh_address
+            if addr:
+                return {
+                    "address": addr.address,
+                    "full_cidr": addr.full_cidr,
+                    "prefix": addr.prefix,
+                    "state": addr.state.value,
+                    "is_preferred": addr.is_preferred,
+                    "eui64": slaac.eui64
+                }
+            return {"address": None, "error": "No mesh address configured"}
+        except Exception as e:
+            logger.error(f"SLAAC mesh address error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/slaac/generate-privacy")
+    async def api_generate_privacy_address() -> Dict[str, Any]:
+        """
+        Generate a temporary privacy address per RFC 4941.
+
+        Returns:
+            Generated privacy address details
+        """
+        try:
+            from agentic.protocols.slaac import get_slaac_manager
+            agent_id = "local"
+            if agentic_bridge and hasattr(agentic_bridge, 'agent_id'):
+                agent_id = agentic_bridge.agent_id
+            slaac = get_slaac_manager(agent_id)
+            addr = slaac.generate_privacy_address()
+            return {
+                "success": True,
+                "address": addr.to_dict()
+            }
+        except Exception as e:
+            logger.error(f"SLAAC privacy address error: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ==========================================================================
+    # QoS (Quality of Service) API Endpoints - RFC 4594
+    # ==========================================================================
+
+    # Get agent_id for QoS - used by all QoS endpoints
+    qos_agent_id = os.environ.get("ASI_AGENT_ID", "local")
+
+    @app.get("/api/qos/classes")
+    async def api_get_qos_classes() -> Dict[str, Any]:
+        """
+        Get all RFC 4594 DiffServ service classes.
+
+        Returns:
+            List of service class configurations with DSCP, PHB, tolerances
+        """
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+            return {
+                "classes": qos.get_all_service_classes(),
+                "count": len(qos.service_classes)
+            }
+        except Exception as e:
+            logger.error(f"QoS classes error: {e}")
+            return {"classes": [], "error": str(e)}
+
+    @app.get("/api/qos/swim-lanes")
+    async def api_get_qos_swim_lanes() -> Dict[str, Any]:
+        """
+        Get QoS swim lane visualization data.
+
+        Returns:
+            Ordered list of service classes from highest to lowest priority
+        """
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+            return {
+                "swim_lanes": qos.get_swim_lanes(),
+                "enabled": qos.enabled
+            }
+        except Exception as e:
+            logger.error(f"QoS swim lanes error: {e}")
+            return {"swim_lanes": [], "error": str(e)}
+
+    @app.get("/api/qos/rules")
+    async def api_get_qos_rules() -> Dict[str, Any]:
+        """
+        Get all traffic classification rules.
+
+        Returns:
+            List of classification rules with match criteria and actions
+        """
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+            return {
+                "rules": qos.get_classification_rules(),
+                "count": len(qos.global_rules)
+            }
+        except Exception as e:
+            logger.error(f"QoS rules error: {e}")
+            return {"rules": [], "error": str(e)}
+
+    @app.get("/api/qos/policies")
+    async def api_get_qos_policies() -> Dict[str, Any]:
+        """
+        Get QoS policies applied to interfaces.
+
+        Returns:
+            Per-interface QoS policy configurations and statistics
+        """
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+            return {
+                "policies": qos.get_all_policies(),
+                "interfaces_count": len(qos.interface_policies)
+            }
+        except Exception as e:
+            logger.error(f"QoS policies error: {e}")
+            return {"policies": {}, "error": str(e)}
+
+    @app.get("/api/qos/statistics")
+    async def api_get_qos_statistics() -> Dict[str, Any]:
+        """
+        Get QoS classification and marking statistics.
+
+        Returns:
+            Overall QoS statistics and per-class counters
+        """
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+            return qos.get_statistics()
+        except Exception as e:
+            logger.error(f"QoS statistics error: {e}")
+            return {"error": str(e)}
+
+    @app.get("/api/debug/protocol-stats")
+    async def api_debug_protocol_stats() -> Dict[str, Any]:
+        """
+        Debug endpoint: Show raw protocol message statistics from ALL protocols.
+        Helps diagnose why QoS counters may not be incrementing.
+        """
+        result = {
+            "protocols": {
+                "ospf": {"exists": False, "stats": {}},
+                "ospfv3": {"exists": False, "stats": {}},
+                "bgp": {"exists": False, "stats": {}},
+                "isis": {"exists": False, "stats": {}},
+                "ldp": {"exists": False, "stats": {}},
+                "lldp": {"exists": False, "stats": {}}
+            },
+            "qos_totals": {},
+            "qos_per_class": {}
+        }
+
+        # OSPF stats
+        if asi_app.ospf_interface:
+            result["protocols"]["ospf"]["exists"] = True
+            ospf = asi_app.ospf_interface
+            if hasattr(ospf, 'stats'):
+                result["protocols"]["ospf"]["stats"] = dict(ospf.stats)
+                result["protocols"]["ospf"]["source"] = "ospf.stats"
+
+        # OSPFv3 stats
+        if hasattr(asi_app, 'ospfv3_speaker') and asi_app.ospfv3_speaker:
+            result["protocols"]["ospfv3"]["exists"] = True
+            ospfv3 = asi_app.ospfv3_speaker
+            if hasattr(ospfv3, 'stats'):
+                result["protocols"]["ospfv3"]["stats"] = dict(ospfv3.stats)
+            elif hasattr(ospfv3, 'interfaces'):
+                # Aggregate from interfaces
+                agg = {"hello_sent": 0, "hello_received": 0}
+                for iface in ospfv3.interfaces.values():
+                    if hasattr(iface, 'stats'):
+                        agg["hello_sent"] += iface.stats.get('hello_sent', 0)
+                        agg["hello_received"] += iface.stats.get('hello_received', 0)
+                result["protocols"]["ospfv3"]["stats"] = agg
+                result["protocols"]["ospfv3"]["source"] = "ospfv3.interfaces[].stats"
+
+        # BGP stats
+        if asi_app.bgp_speaker:
+            result["protocols"]["bgp"]["exists"] = True
+            bgp = asi_app.bgp_speaker
+            if hasattr(bgp, 'stats'):
+                result["protocols"]["bgp"]["stats"] = dict(bgp.stats)
+                result["protocols"]["bgp"]["source"] = "bgp.stats"
+
+        # IS-IS stats
+        if hasattr(asi_app, 'isis_speaker') and asi_app.isis_speaker:
+            result["protocols"]["isis"]["exists"] = True
+            isis = asi_app.isis_speaker
+            if hasattr(isis, 'stats'):
+                result["protocols"]["isis"]["stats"] = dict(isis.stats)
+
+        # LDP stats
+        if hasattr(asi_app, 'ldp_speaker') and asi_app.ldp_speaker:
+            result["protocols"]["ldp"]["exists"] = True
+            ldp = asi_app.ldp_speaker
+            if hasattr(ldp, 'stats'):
+                result["protocols"]["ldp"]["stats"] = dict(ldp.stats)
+
+        # LLDP stats
+        try:
+            from agentic.discovery.lldp import get_lldp_daemon
+            lldp = get_lldp_daemon()
+            if lldp:
+                result["protocols"]["lldp"]["exists"] = True
+                if hasattr(lldp, 'stats'):
+                    result["protocols"]["lldp"]["stats"] = dict(lldp.stats)
+        except:
+            pass
+
+        # Get QoS totals and per-class stats
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+            result["qos_totals"] = {
+                "total_classified": qos.total_classified,
+                "total_marked": qos.total_marked,
+                "interfaces_with_qos": len(qos.interface_policies),
+                "interfaces": list(qos.interface_policies.keys()),
+                "enabled": qos.enabled
+            }
+
+            # Get per-class packet counts
+            stats = qos.get_statistics()
+            result["qos_per_class"] = stats.get("per_class", {})
+
+            # Also collect all protocol stats via QoS
+            all_stats = qos.collect_all_protocol_stats(asi_app)
+            result["qos_protocol_totals"] = all_stats
+
+        except Exception as e:
+            result["qos_error"] = str(e)
+
+        return result
+
+    @app.post("/api/qos/enable")
+    async def api_enable_qos() -> Dict[str, Any]:
+        """
+        Enable QoS processing on the agent.
+
+        Returns:
+            Status of QoS enablement
+        """
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+            qos.enable()
+            return {"success": True, "enabled": True}
+        except Exception as e:
+            logger.error(f"QoS enable error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/qos/disable")
+    async def api_disable_qos() -> Dict[str, Any]:
+        """
+        Disable QoS processing on the agent.
+
+        Returns:
+            Status of QoS disablement
+        """
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+            qos.disable()
+            return {"success": True, "enabled": False}
+        except Exception as e:
+            logger.error(f"QoS disable error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/qos/apply")
+    async def api_apply_qos_to_interfaces() -> Dict[str, Any]:
+        """
+        Apply RFC 4594 QoS policy to all agent interfaces.
+
+        Returns:
+            Status and list of interfaces with applied policies
+        """
+        try:
+            from agentic.protocols.qos import get_qos_manager
+            qos = get_qos_manager(qos_agent_id)
+
+            # Get interfaces from agent
+            interfaces = []
+            if agentic_bridge and hasattr(agentic_bridge, 'state_manager'):
+                state = agentic_bridge.state_manager
+                if hasattr(state, '_interfaces'):
+                    interfaces = [iface.get('name', iface.get('id', 'unknown'))
+                                  for iface in state._interfaces]
+
+            if not interfaces:
+                # Default to common interface names
+                interfaces = ['eth0', 'lo']
+
+            results = qos.apply_to_all_interfaces(interfaces)
+            return {
+                "success": True,
+                "enabled": qos.enabled,
+                "interfaces": list(results.keys()),
+                "interfaces_count": len(results)
+            }
+        except Exception as e:
+            logger.error(f"QoS apply error: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ==========================================================================
+    # NetFlow/IPFIX API Endpoints (RFC 7011)
+    # ==========================================================================
+
+    # Get agent_id for NetFlow
+    netflow_agent_id = os.environ.get("ASI_AGENT_ID", "local")
+
+    @app.get("/api/netflow/status")
+    async def api_get_netflow_status() -> Dict[str, Any]:
+        """Get NetFlow exporter and collector status"""
+        try:
+            from agentic.protocols.netflow import get_flow_exporter, get_flow_collector
+            exporter = get_flow_exporter(netflow_agent_id)
+            collector = get_flow_collector(netflow_agent_id)
+
+            return {
+                "exporter": exporter.get_statistics(),
+                "collector": collector.get_statistics()
+            }
+        except Exception as e:
+            logger.error(f"NetFlow status error: {e}")
+            return {"error": str(e)}
+
+    @app.get("/api/netflow/flows")
+    async def api_get_netflow_flows() -> Dict[str, Any]:
+        """Get all active flows from the exporter"""
+        try:
+            from agentic.protocols.netflow import get_flow_exporter
+            exporter = get_flow_exporter(netflow_agent_id)
+
+            return {
+                "flows": exporter.get_active_flows(),
+                "count": len(exporter.active_flows),
+                "total_observed": exporter.total_packets_observed
+            }
+        except Exception as e:
+            logger.error(f"NetFlow flows error: {e}")
+            return {"flows": [], "error": str(e)}
+
+    @app.get("/api/netflow/top-flows")
+    async def api_get_top_flows(n: int = 10, sort_by: str = "bytes") -> Dict[str, Any]:
+        """Get top N flows by bytes, packets, or rate"""
+        try:
+            from agentic.protocols.netflow import get_flow_exporter
+            exporter = get_flow_exporter(netflow_agent_id)
+
+            return {
+                "top_flows": exporter.get_top_flows(n, sort_by),
+                "sort_by": sort_by
+            }
+        except Exception as e:
+            logger.error(f"NetFlow top flows error: {e}")
+            return {"top_flows": [], "error": str(e)}
+
+    @app.get("/api/netflow/by-protocol")
+    async def api_get_flows_by_protocol() -> Dict[str, Any]:
+        """Get flows grouped by protocol"""
+        try:
+            from agentic.protocols.netflow import get_flow_exporter
+            exporter = get_flow_exporter(netflow_agent_id)
+
+            flows_by_proto = exporter.get_flows_by_protocol()
+            return {
+                "by_protocol": flows_by_proto,
+                "protocol_stats": exporter.protocol_stats
+            }
+        except Exception as e:
+            logger.error(f"NetFlow by protocol error: {e}")
+            return {"by_protocol": {}, "error": str(e)}
+
+    @app.get("/api/netflow/by-service-class")
+    async def api_get_flows_by_service_class() -> Dict[str, Any]:
+        """Get flows grouped by QoS service class"""
+        try:
+            from agentic.protocols.netflow import get_flow_exporter
+            exporter = get_flow_exporter(netflow_agent_id)
+
+            return {
+                "by_service_class": exporter.get_flows_by_service_class()
+            }
+        except Exception as e:
+            logger.error(f"NetFlow by service class error: {e}")
+            return {"by_service_class": {}, "error": str(e)}
+
+    @app.get("/api/netflow/statistics")
+    async def api_get_netflow_statistics() -> Dict[str, Any]:
+        """Get detailed NetFlow statistics"""
+        try:
+            from agentic.protocols.netflow import get_flow_exporter, get_flow_collector
+            exporter = get_flow_exporter(netflow_agent_id)
+            collector = get_flow_collector(netflow_agent_id)
+
+            # Get protocol breakdown
+            proto_breakdown = {}
+            for proto, stats in exporter.protocol_stats.items():
+                from agentic.protocols.netflow import FlowKey
+                proto_name = FlowKey("", "", 0, 0, proto)._get_protocol_name()
+                proto_breakdown[proto_name] = stats
+
+            return {
+                "exporter": {
+                    "active_flows": len(exporter.active_flows),
+                    "expired_flows": len(exporter.expired_flows),
+                    "total_packets": exporter.total_packets_observed,
+                    "total_bytes": exporter.total_bytes_observed,
+                    "total_exported": exporter.total_flows_exported,
+                    "collectors": len(exporter.collectors)
+                },
+                "collector": {
+                    "messages_received": collector.total_messages_received,
+                    "flows_received": collector.total_flows_received,
+                    "exporters_seen": len(collector.exporters_seen)
+                },
+                "protocol_breakdown": proto_breakdown
+            }
+        except Exception as e:
+            logger.error(f"NetFlow statistics error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/netflow/collector/add")
+    async def api_add_netflow_collector(ip: str, port: int = 4739) -> Dict[str, Any]:
+        """Add a NetFlow collector to export to"""
+        try:
+            from agentic.protocols.netflow import get_flow_exporter
+            exporter = get_flow_exporter(netflow_agent_id)
+            exporter.add_collector(ip, port)
+
+            return {
+                "success": True,
+                "collectors": [f"{c[0]}:{c[1]}" for c in exporter.collectors]
+            }
+        except Exception as e:
+            logger.error(f"NetFlow add collector error: {e}")
+            return {"success": False, "error": str(e)}
 
     # ==========================================================================
     # MCP External Access API Endpoints

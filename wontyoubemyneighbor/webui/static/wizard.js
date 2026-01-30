@@ -362,7 +362,7 @@ let mcpConfigurations = {};
 let customMcps = [];
 
 // Mandatory MCP types (always included, can't be deselected)
-const MANDATORY_MCP_TYPES = ['gait', 'pyats', 'rfc', 'markmap', 'prometheus', 'grafana'];
+const MANDATORY_MCP_TYPES = ['gait', 'pyats', 'rfc', 'markmap', 'prometheus', 'grafana', 'subnet'];
 
 // Optional MCP types (can be enabled/disabled)
 const OPTIONAL_MCP_TYPES = ['servicenow', 'netbox', 'slack', 'github', 'smtp'];
@@ -586,11 +586,20 @@ function toggleMcp(mcpId) {
 
 function openMcpConfig(mcpId) {
     const mcp = defaultMcps.find(m => m.id === mcpId);
-    if (!mcp) return;
+    if (!mcp) {
+        console.error('[Wizard] MCP not found:', mcpId);
+        return;
+    }
 
     currentMcpConfig = mcp;
     const configFields = mcp.c?._config_fields || [];
     const savedConfig = mcpConfigurations[mcpId] || {};
+
+    // Debug logging
+    console.log('[Wizard] Opening config for MCP:', mcpId);
+    console.log('[Wizard] MCP config object:', mcp.c);
+    console.log('[Wizard] Config fields count:', configFields.length);
+    console.log('[Wizard] Config fields:', configFields);
 
     // Set modal title and description
     document.getElementById('mcp-modal-title').textContent = `Configure ${mcp.n}`;
@@ -664,23 +673,47 @@ function openMcpConfig(mcpId) {
                     </div>
                 `;
             }
+            // Handle button type - action buttons within MCP config
+            if (field.type === 'button') {
+                const dependsOn = field.depends_on ? `data-depends-on="${field.depends_on}"` : '';
+                const action = field.action || '';
+                return `
+                    <div class="form-group mcp-dependent-field" ${dependsOn} style="margin-bottom: 15px;">
+                        <button type="button"
+                                id="mcp-field-${field.id}"
+                                onclick="${action}()"
+                                class="btn btn-primary"
+                                style="width: 100%; padding: 12px; font-size: 1rem;">
+                            ${field.label}
+                        </button>
+                        ${field.hint ? `<div class="hint" style="font-size: 0.8rem; color: #666; margin-top: 4px;">${field.hint}</div>` : ''}
+                    </div>
+                `;
+            }
             // Default: text, password, email, url types
             // Check if this is a credential field that needs emphasis
             const isCredentialField = field.type === 'password' || field.id.includes('username') || field.id.includes('email');
+            const isUrlField = field.type === 'url';
             const hintStyle = isCredentialField
                 ? 'font-size: 0.8rem; color: #f59e0b; margin-top: 4px; padding: 6px 8px; background: rgba(245, 158, 11, 0.1); border-radius: 4px; border-left: 3px solid #f59e0b;'
                 : 'font-size: 0.8rem; color: #666; margin-top: 4px;';
             const dependsOn = field.depends_on ? `data-depends-on="${field.depends_on}"` : '';
             const defaultValue = savedConfig[field.id] || field.default || '';
+            // Disable browser autofill for sensitive/URL fields to prevent wrong values
+            const autocomplete = (isCredentialField || isUrlField) ? 'autocomplete="off"' : '';
+            // URL fields get a special warning
+            const urlWarning = isUrlField ? `<div style="font-size: 0.75rem; color: #06b6d4; margin-top: 2px;">Include https:// (e.g., https://demo.netbox.dev)</div>` : '';
             return `
                 <div class="form-group mcp-dependent-field" ${dependsOn} style="margin-bottom: 15px;">
                     <label for="mcp-field-${field.id}">${field.label}${field.required ? ' *' : ''}</label>
-                    <input type="${field.type}"
+                    <input type="${isUrlField ? 'text' : field.type}"
                            id="mcp-field-${field.id}"
                            placeholder="${field.placeholder || ''}"
                            value="${defaultValue}"
                            ${field.required ? 'required' : ''}
+                           ${autocomplete}
                            style="width: 100%; padding: 10px; background: #1a1a2e; border: 1px solid #2a2a4e; border-radius: 6px; color: #eee;">
+                    ${urlWarning}
                     ${field.hint ? `<div class="hint" style="${hintStyle}">${field.hint}</div>` : ''}
                 </div>
             `;
@@ -739,8 +772,8 @@ function saveMcpConfig() {
     let hasError = false;
 
     for (const field of configFields) {
-        // Skip separator fields - they are just visual dividers
-        if (field.type === 'separator') {
+        // Skip separator and button fields - they are just UI elements
+        if (field.type === 'separator' || field.type === 'button') {
             continue;
         }
 
@@ -774,7 +807,15 @@ function saveMcpConfig() {
             continue;
         }
 
-        const value = input?.value?.trim() || '';
+        let value = input?.value?.trim() || '';
+
+        // Validate URL fields have a protocol
+        if (field.type === 'url' && value && !value.startsWith('http://') && !value.startsWith('https://')) {
+            // Try to fix by prepending https://
+            value = 'https://' + value;
+            if (input) input.value = value;
+            console.log(`[Wizard] Auto-fixed URL field ${field.id}: added https:// prefix`);
+        }
 
         if (field.required && !value) {
             input.style.borderColor = '#ef4444';
@@ -811,6 +852,12 @@ function saveMcpConfig() {
 
     closeMcpModal();
     renderMcpGrid();
+
+    // Update NetBox quick build section if we just configured NetBox
+    if (mcpId === 'netbox') {
+        updateNetBoxQuickBuild();
+    }
+
     showAlert(`${currentMcpConfig.n} configured and enabled!`, 'success');
 }
 
@@ -851,6 +898,256 @@ function showAgentTab(tab) {
 // Store loaded devices and current preview
 let netboxDevices = [];
 let netboxImportConfig = null;
+
+// Build agents from NetBox site (PULL operation)
+// Queries all devices in a site and creates agent configs for each
+// NOW INCLUDES TOPOLOGY - links/cables between devices!
+async function buildAgentsFromNetBoxSite() {
+    const netboxConfig = mcpConfigurations['netbox'];
+    if (!netboxConfig) {
+        alert('Please configure NetBox MCP first (URL, Token, Site)');
+        return;
+    }
+
+    const url = netboxConfig.netbox_url;
+    const token = netboxConfig.api_token;
+    const site = netboxConfig.site_name;
+
+    if (!url || !token || !site) {
+        alert('Please configure NetBox URL, API Token, and Site in the NetBox MCP settings');
+        return;
+    }
+
+    // Show loading state
+    const statusDiv = document.getElementById('netbox-build-status') || document.getElementById('netbox-connection-status');
+    if (statusDiv) {
+        statusDiv.innerHTML = '<span style="color: #888;"><span class="spinner" style="display: inline-block; width: 12px; height: 12px; margin-right: 8px;"></span>Querying NetBox site topology (devices + links)...</span>';
+        statusDiv.style.display = 'block';
+    }
+
+    try {
+        // Use the TOPOLOGY endpoint to get devices AND their interconnections
+        const response = await fetch(`/api/wizard/mcps/netbox/site/${encodeURIComponent(site)}/topology?netbox_url=${encodeURIComponent(url)}&api_token=${encodeURIComponent(token)}`);
+        const result = await response.json();
+
+        if (result.status !== 'ok') {
+            if (statusDiv) {
+                statusDiv.innerHTML = `<span style="color: #ef4444;">✗ Error: ${result.error}</span>`;
+            }
+            return;
+        }
+
+        if (!result.devices || result.devices.length === 0) {
+            if (statusDiv) {
+                statusDiv.innerHTML = `<span style="color: #f59e0b;">⚠ No devices found in site '${site}'</span>`;
+            }
+            return;
+        }
+
+        // Initialize wizard state if needed
+        if (!wizardState.agents) {
+            wizardState.agents = [];
+        }
+        if (!wizardState.topology) {
+            wizardState.topology = { links: [], auto_generate: false };
+        }
+        if (!wizardState.topology.links) {
+            wizardState.topology.links = [];
+        }
+
+        // Build a map of device names to agent IDs
+        const deviceToAgentId = {};
+
+        // Add each device as an agent
+        for (const agentConfig of result.devices) {
+            const agentId = `netbox-${agentConfig.netbox_id || agentConfig.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+            deviceToAgentId[agentConfig.name] = agentId;
+
+            // Convert NetBox interfaces to wizard format
+            const wizardInterfaces = (agentConfig.interfaces || []).map(iface => {
+                // Extract first IP address
+                const ipAddresses = iface.ip_addresses || [];
+                const firstIp = ipAddresses.length > 0 ? ipAddresses[0].address : '';
+
+                return {
+                    id: iface.name.toLowerCase().replace(/[^a-z0-9]/g, ''),
+                    n: iface.name,
+                    t: iface.type || 'ethernet',
+                    a: ipAddresses.map(ip => ip.address),  // addresses array
+                    s: iface.enabled ? 'up' : 'down',
+                    e: iface.enabled,
+                    mac: iface.mac_address || '',
+                    mtu: iface.mtu || 1500,
+                    desc: iface.description || ''
+                };
+            });
+
+            // Convert protocols to wizard format
+            const wizardProtocols = (agentConfig.protocols || []).map(proto => ({
+                p: proto.type,  // protocol type
+                a: proto.area || '0.0.0.0',  // OSPF area
+                asn: proto.local_as || '',  // BGP AS number
+                enabled: proto.enabled !== false
+            }));
+
+            wizardState.agents.push({
+                id: agentId,
+                name: agentConfig.name,
+                router_id: agentConfig.router_id || '',
+                ifs: wizardInterfaces,  // wizard uses 'ifs' for interfaces
+                interfaces: wizardInterfaces,  // also keep as 'interfaces' for compatibility
+                protos: wizardProtocols,  // wizard uses 'protos' for protocols
+                protocols: wizardProtocols,  // also keep as 'protocols' for compatibility
+                source: 'netbox',
+                netbox_url: agentConfig.netbox_url,
+                netbox_id: agentConfig.netbox_id,
+                neighbors: result.neighbors ? result.neighbors[agentConfig.name] || [] : []
+            });
+        }
+
+        // Process links/connections from topology
+        if (result.links && result.links.length > 0) {
+            console.log(`[NetBox PULL] Processing ${result.links.length} links from topology`);
+
+            for (const link of result.links) {
+                const sourceAgentId = deviceToAgentId[link.source_device];
+                const targetAgentId = deviceToAgentId[link.target_device];
+
+                if (sourceAgentId && targetAgentId) {
+                    // Add to topology.links using the wizard's format
+                    wizardState.topology.links.push({
+                        id: `link-${link.cable_id || Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                        agent1_id: sourceAgentId,
+                        interface1: link.source_interface,
+                        agent2_id: targetAgentId,
+                        interface2: link.target_interface,
+                        link_type: 'ethernet',
+                        status: link.status || 'connected',
+                        label: link.label || '',
+                        source: 'netbox'
+                    });
+
+                    // Also annotate the interfaces with their connection info
+                    const sourceAgent = wizardState.agents.find(a => a.id === sourceAgentId);
+                    const targetAgent = wizardState.agents.find(a => a.id === targetAgentId);
+
+                    if (sourceAgent) {
+                        const srcIface = (sourceAgent.ifs || sourceAgent.interfaces || [])
+                            .find(i => i.n === link.source_interface || i.name === link.source_interface);
+                        if (srcIface) {
+                            srcIface.connected_to = {
+                                agent: targetAgentId,
+                                agent_name: link.target_device,
+                                interface: link.target_interface
+                            };
+                        }
+                    }
+
+                    if (targetAgent) {
+                        const tgtIface = (targetAgent.ifs || targetAgent.interfaces || [])
+                            .find(i => i.n === link.target_interface || i.name === link.target_interface);
+                        if (tgtIface) {
+                            tgtIface.connected_to = {
+                                agent: sourceAgentId,
+                                agent_name: link.source_device,
+                                interface: link.source_interface
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update the agent list display
+        if (typeof renderAgentList === 'function') {
+            renderAgentList();
+        }
+
+        // Build summary message
+        const linkInfo = result.link_count > 0 ? `, ${result.link_count} links` : ' (no cable data)';
+        const successMsg = `✓ Imported ${result.device_count} devices${linkInfo} from site '${site}'`;
+
+        if (statusDiv) {
+            statusDiv.innerHTML = `<span style="color: #4ade80;">${successMsg}</span>`;
+        }
+
+        // Build detailed alert message
+        let alertMsg = `Successfully imported from NetBox site '${site}'!\n\n`;
+        alertMsg += `📦 Devices: ${result.device_count}\n`;
+        alertMsg += `🔗 Links/Cables: ${result.link_count || 0}\n\n`;
+        alertMsg += `Agents created:\n${result.devices.map(a => '• ' + a.name).join('\n')}`;
+
+        if (result.links && result.links.length > 0) {
+            alertMsg += `\n\nConnections:\n`;
+            alertMsg += result.links.slice(0, 10).map(l =>
+                `• ${l.source_device}:${l.source_interface} ↔ ${l.target_device}:${l.target_interface}`
+            ).join('\n');
+            if (result.links.length > 10) {
+                alertMsg += `\n... and ${result.links.length - 10} more`;
+            }
+        }
+
+        alert(alertMsg);
+
+        // Update the link list display if on topology step
+        if (typeof renderLinkList === 'function') {
+            renderLinkList();
+        }
+
+        // IMPORTANT: Also save agents to the backend session so launch knows about them
+        console.log('[NetBox PULL] Saving agents to backend session...');
+        for (const agent of wizardState.agents.filter(a => a.source === 'netbox')) {
+            try {
+                const saveResponse = await fetch(`/api/wizard/session/${sessionId}/step3/agent`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: agent.id,
+                        name: agent.name,
+                        router_id: agent.router_id,
+                        protocols: agent.protocols || agent.protos || [],
+                        interfaces: agent.interfaces || agent.ifs || [],
+                        source: 'netbox',
+                        netbox_id: agent.netbox_id,
+                        netbox_url: agent.netbox_url
+                    })
+                });
+                if (saveResponse.ok) {
+                    console.log(`[NetBox PULL] Saved agent ${agent.name} to session`);
+                } else {
+                    console.warn(`[NetBox PULL] Failed to save agent ${agent.name}: ${saveResponse.status}`);
+                }
+            } catch (err) {
+                console.warn(`[NetBox PULL] Error saving agent ${agent.name}:`, err);
+            }
+        }
+
+        // Mark that this network was pulled from NetBox (skip duplicate check on deploy)
+        wizardState.pulledFromNetBox = true;
+
+        console.log('[NetBox PULL] Import complete:', {
+            devices: result.device_count,
+            links: result.link_count,
+            agents: wizardState.agents.length,
+            wizardLinks: wizardState.topology.links.length
+        });
+
+    } catch (e) {
+        console.error('[NetBox PULL] Error:', e);
+        if (statusDiv) {
+            statusDiv.innerHTML = `<span style="color: #ef4444;">✗ Error: ${e.message}</span>`;
+        }
+    }
+}
+
+// Check if NetBox auto-build is enabled and trigger it
+function checkNetBoxAutoBuild() {
+    const netboxConfig = mcpConfigurations['netbox'];
+    if (netboxConfig && netboxConfig.auto_build) {
+        console.log('[Wizard] NetBox auto-build enabled, building agents from site...');
+        buildAgentsFromNetBoxSite();
+    }
+}
 
 async function testNetBoxConnection() {
     const url = document.getElementById('netbox-import-url').value.trim();
@@ -2957,8 +3254,8 @@ async function nextStep(currentStep) {
                 overlay: {
                     enabled: true,
                     subnet: 'fd00:a510::/48',
-                    enable_nd: document.getElementById('enable-nd').checked,
-                    enable_routes: document.getElementById('enable-overlay-routes').checked
+                    enable_nd: true,  // Always enabled - SLAAC automatic
+                    enable_routes: true  // Always enabled - SLAAC automatic
                 },
                 docker_ipv6: {
                     enabled: isDockerIpv6,
@@ -3012,9 +3309,35 @@ function goToStep(step) {
     // Update network name badge (ensure it shows on all steps)
     updateNetworkNameBadge();
 
+    // Step 3 (Agent Builder) - check NetBox quick build
+    if (step === 3) {
+        updateNetBoxQuickBuild();
+    }
+
     // Update preview on last step (now step 5)
     if (step === 5) {
         updatePreview();
+    }
+}
+
+// Show/hide NetBox Quick Build section based on MCP config
+// ONLY shows when user explicitly checks "Pull: Build agents from NetBox"
+function updateNetBoxQuickBuild() {
+    const quickBuildDiv = document.getElementById('netbox-quick-build');
+    const siteDisplay = document.getElementById('netbox-site-display');
+
+    if (!quickBuildDiv) return;
+
+    const netboxConfig = mcpConfigurations['netbox'];
+
+    // ONLY show if auto_build is explicitly enabled (user checked the checkbox)
+    if (netboxConfig && netboxConfig.auto_build === true && netboxConfig.site_name && netboxConfig.netbox_url) {
+        quickBuildDiv.style.display = 'block';
+        if (siteDisplay) {
+            siteDisplay.textContent = netboxConfig.site_name;
+        }
+    } else {
+        quickBuildDiv.style.display = 'none';
     }
 }
 
@@ -3130,6 +3453,11 @@ async function launchNetwork() {
     else if (provider === 'gemini') apiKeys.google = apiKey;
 
     try {
+        // Show deployment progress overlay
+        showDeployProgress();
+        setDeployStatus('Deploying Network...', 'Starting containers and configuring agents...');
+        updateDeployStep('containers', 'active');
+
         showAlert('Launching network... Please wait for containers to start.', 'info');
         console.log('Launching network with session:', sessionId);
 
@@ -3144,28 +3472,258 @@ async function launchNetwork() {
 
         if (!response.ok) {
             const error = await response.json();
+            hideDeployProgress();  // Hide progress overlay on error
             throw new Error(error.detail || 'Launch failed');
         }
 
         const data = await response.json();
         console.log('Launch response:', JSON.stringify(data, null, 2));
 
-        // Always show the summary if we got a response (even partial success)
+        // Containers launched successfully
+        updateDeployStep('containers', 'complete');
         showAlert('Network launched! Showing results...', 'success');
+
+        // NetBox Auto-Registration (PUSH) - if enabled
+        let netboxResults = [];
+        const netboxConfig = mcpConfigurations['netbox'];
+        console.log('[NetBox] MCP Configuration:', JSON.stringify(netboxConfig, null, 2));
+        if (netboxConfig && netboxConfig.auto_register === true && netboxConfig.netbox_url && netboxConfig.api_token && netboxConfig.site_name) {
+            console.log('[NetBox] Auto-register enabled, registering agents in NetBox...');
+            console.log('[NetBox] Using URL:', netboxConfig.netbox_url);
+            console.log('[NetBox] Using Site:', netboxConfig.site_name);
+
+            // Check if network was pulled from NetBox - if so, skip duplicate check and just sync
+            const pulledFromNetBox = wizardState.pulledFromNetBox ||
+                wizardState.agents.every(a => a.source === 'netbox');
+
+            // Update progress overlay for NetBox
+            if (pulledFromNetBox) {
+                setDeployStatus('Syncing with NetBox...', 'Verifying devices match...');
+                updateDeployStep('netbox-check', 'skipped');
+            } else {
+                setDeployStatus('Registering in NetBox...', 'Checking for existing devices...');
+                updateDeployStep('netbox-check', 'active');
+            }
+
+            // Build list of agents to check
+            const agentsToRegister = [];
+            for (const agentId of Object.keys(data.agents || {})) {
+                const agentConfig = wizardState.agents.find(a => a.id === agentId);
+                if (agentConfig) {
+                    agentsToRegister.push({ id: agentId, name: agentConfig.name || agentId, config: agentConfig });
+                }
+            }
+
+            let agentsToSkip = new Set();
+            let shouldProceed = true;
+
+            // Skip duplicate check if pulled from NetBox - devices already exist there
+            if (pulledFromNetBox) {
+                console.log('[NetBox] Skipping duplicate check - network was pulled from NetBox');
+                showAlert('Syncing with NetBox (pulled from existing site)...', 'info');
+                updateDeployStep('netbox-register', 'active');
+            } else {
+                // Check for duplicates first (only for manually created networks)
+                showAlert('Checking for existing devices in NetBox...', 'info');
+                const duplicateCheck = await checkNetBoxDuplicates(netboxConfig, agentsToRegister);
+
+                if (duplicateCheck.status === 'ok' && duplicateCheck.duplicates_found > 0) {
+                    console.log('[NetBox] Found duplicates:', duplicateCheck.duplicates);
+                    const userChoice = await showNetBoxDuplicateModal(duplicateCheck.duplicates);
+                    console.log('[NetBox] User choice for duplicates:', userChoice);
+
+                    if (userChoice === 'cancel') {
+                        shouldProceed = false;
+                        showAlert('NetBox registration cancelled. Network still launched.', 'warning');
+                        // Progress overlay is already hidden, no need to update steps
+                    } else if (userChoice === 'skip') {
+                        // Mark duplicate device names to skip
+                        duplicateCheck.duplicates.forEach(d => agentsToSkip.add(d.name));
+                        showAlert(`Skipping ${agentsToSkip.size} existing device(s)...`, 'info');
+                        // Steps already updated by closeNetBoxDuplicateModal
+                    } else if (userChoice === 'update') {
+                        // User chose to update existing
+                        // Steps already updated by closeNetBoxDuplicateModal
+                    }
+                    // 'update' - proceed with registration (will update existing)
+                } else {
+                    // No duplicates found
+                    updateDeployStep('netbox-check', 'complete');
+                    updateDeployStep('netbox-register', 'active');
+                }
+            }
+
+            if (shouldProceed) {
+                showAlert('Registering agents in NetBox...', 'info');
+                setDeployStatus('Registering in NetBox...', `Processing ${agentsToRegister.length} agent(s)...`);
+
+                // Register each agent in NetBox using the wizard session endpoint
+                let processedCount = 0;
+                for (const agent of agentsToRegister) {
+                    const agentId = agent.id;
+                    const agentConfig = agent.config;
+                    const agentName = agentConfig.name || agentId;
+                    processedCount++;
+
+                    // Update current agent being processed
+                    setDeployCurrentAgent(agentName);
+                    setDeployStatus('Registering in NetBox...', `Processing agent ${processedCount} of ${agentsToRegister.length}...`);
+
+                    // Skip if user chose to skip duplicates
+                    if (agentsToSkip.has(agentName)) {
+                        console.log(`[NetBox] Skipping duplicate: ${agentName}`);
+                        netboxResults.push({
+                            agent_id: agentId,
+                            success: true,
+                            skipped: true,
+                            device_name: agentName,
+                            device_url: duplicateCheck.duplicates.find(d => d.name === agentName)?.device_url
+                        });
+                        continue;
+                    }
+
+                    try {
+                        const regResponse = await fetch(`/api/wizard/session/${sessionId}/agents/${agentId}/mcps/netbox/register`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                netbox_url: netboxConfig.netbox_url,
+                                api_token: netboxConfig.api_token,
+                                site_name: netboxConfig.site_name,
+                                agent_name: agentName,
+                                agent_config: agentConfig
+                            })
+                        });
+                        const regResult = await regResponse.json();
+                        netboxResults.push({
+                            agent_id: agentId,
+                            success: regResult.success || regResult.status === 'ok',
+                            device_url: regResult.device_url,
+                            device_name: regResult.device_name || agentName,
+                            error: regResult.errors?.join(', ') || (regResult.detail ? regResult.detail : null)
+                        });
+                        console.log(`[NetBox] Registered ${agentId}:`, regResult.success ? 'SUCCESS' : 'FAILED', regResult.device_url);
+                    } catch (err) {
+                        console.error(`[NetBox] Failed to register ${agentId}:`, err);
+                        netboxResults.push({
+                            agent_id: agentId,
+                            success: false,
+                            error: err.message
+                        });
+                    }
+                }
+                console.log('[NetBox] Registration complete:', netboxResults);
+                setDeployCurrentAgent(null);
+                updateDeployStep('netbox-register', 'complete');
+
+                // Now register cables/topology links if we have any
+                const topologyLinks = wizardState.topology?.links || [];
+                if (topologyLinks.length > 0) {
+                    console.log(`[NetBox] Registering ${topologyLinks.length} topology cables...`);
+                    showAlert(`Registering ${topologyLinks.length} cable connections...`, 'info');
+                    updateDeployStep('cables', 'active');
+                    setDeployStatus('Registering Cables...', `Creating ${topologyLinks.length} cable connection(s)...`);
+
+                    try {
+                        // Build links array with device names (not agent IDs)
+                        const cablesPayload = topologyLinks.map(link => {
+                            // Get device names from agent IDs
+                            const agent1 = wizardState.agents.find(a => a.id === link.agent1_id);
+                            const agent2 = wizardState.agents.find(a => a.id === link.agent2_id);
+
+                            return {
+                                a_device: agent1?.name || link.agent1_id,
+                                a_interface: link.interface1,
+                                b_device: agent2?.name || link.agent2_id,
+                                b_interface: link.interface2,
+                                status: link.status || 'connected',
+                                label: link.label || ''
+                            };
+                        });
+
+                        const cablesResponse = await fetch('/api/wizard/mcps/netbox/register-cables', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                netbox_url: netboxConfig.netbox_url,
+                                api_token: netboxConfig.api_token,
+                                site_name: netboxConfig.site_name,
+                                links: cablesPayload
+                            })
+                        });
+
+                        const cablesResult = await cablesResponse.json();
+                        console.log('[NetBox] Cables registration result:', cablesResult);
+
+                        // Store cable results for display
+                        window.netboxCablesResult = cablesResult;
+
+                        if (cablesResult.created > 0) {
+                            showAlert(`Created ${cablesResult.created} cable connections in NetBox`, 'success');
+                            updateDeployStep('cables', 'complete');
+                        }
+                        if (cablesResult.failed > 0) {
+                            console.warn('[NetBox] Some cables failed:', cablesResult.errors);
+                            updateDeployStep('cables', cablesResult.created > 0 ? 'complete' : 'error');
+                        }
+                        if (cablesResult.created === 0 && cablesResult.failed === 0) {
+                            updateDeployStep('cables', 'complete');
+                        }
+                    } catch (cableErr) {
+                        console.error('[NetBox] Failed to register cables:', cableErr);
+                        updateDeployStep('cables', 'error');
+                    }
+                } else {
+                    // No cables to register
+                    updateDeployStep('cables', 'skipped');
+                }
+            }
+        } else {
+            // NetBox not enabled - mark all NetBox steps as skipped
+            updateDeployStep('netbox-check', 'skipped');
+            updateDeployStep('netbox-register', 'skipped');
+            updateDeployStep('cables', 'skipped');
+        }
+
+        // Hide deployment progress overlay before showing summary
+        setDeployStatus('Complete!', 'Preparing summary...');
+        hideDeployProgress();
 
         // Build launch summary page - include ALL agents (even without ports for debugging)
         const allAgents = Object.entries(data.agents || {});
         console.log('All agents in response:', allAgents.length);
 
+        // Build NetBox config hash for URL (avoids CORS issues)
+        let netboxHash = '';
+        if (netboxConfig && netboxConfig.netbox_url && netboxConfig.api_token) {
+            const nbConfig = {
+                u: netboxConfig.netbox_url,
+                t: netboxConfig.api_token,
+                s: netboxConfig.site_name || ''
+            };
+            netboxHash = '#nb=' + btoa(JSON.stringify(nbConfig));
+        }
+
         const agentsWithWebUI = allAgents
             .filter(([_, agent]) => agent.webui_port)
-            .map(([agentId, agent]) => ({
-                id: agentId,
-                port: agent.webui_port,
-                ip: agent.ip_address,
-                status: agent.status,
-                url: `http://localhost:${agent.webui_port}/dashboard`
-            }));
+            .map(([agentId, agent]) => {
+                const agentConfig = wizardState.agents.find(a => a.id === agentId);
+                const deviceName = agentConfig?.name || agentId;
+                // Include device name in the hash
+                let hash = netboxHash;
+                if (hash && deviceName) {
+                    const nbConfig = JSON.parse(atob(hash.replace('#nb=', '')));
+                    nbConfig.d = deviceName;  // device name
+                    hash = '#nb=' + btoa(JSON.stringify(nbConfig));
+                }
+                return {
+                    id: agentId,
+                    port: agent.webui_port,
+                    ip: agent.ip_address,
+                    status: agent.status,
+                    url: `http://localhost:${agent.webui_port}/dashboard?agent_id=${encodeURIComponent(agentId)}${hash}`
+                };
+            });
 
         console.log('Agents with WebUI ports:', agentsWithWebUI.length, agentsWithWebUI);
 
@@ -3174,18 +3732,65 @@ async function launchNetwork() {
             console.warn('No agents have webui_port! Raw agents:', allAgents);
             // Create entries anyway for display
             allAgents.forEach(([agentId, agent]) => {
+                const agentConfig = wizardState.agents.find(a => a.id === agentId);
+                const deviceName = agentConfig?.name || agentId;
+                let hash = netboxHash;
+                if (hash && deviceName) {
+                    const nbConfig = JSON.parse(atob(hash.replace('#nb=', '')));
+                    nbConfig.d = deviceName;
+                    hash = '#nb=' + btoa(JSON.stringify(nbConfig));
+                }
                 agentsWithWebUI.push({
                     id: agentId,
                     port: agent.webui_port || 'N/A',
                     ip: agent.ip_address || 'N/A',
                     status: agent.status || 'unknown',
-                    url: agent.webui_port ? `http://localhost:${agent.webui_port}/dashboard` : '#'
+                    url: agent.webui_port ? `http://localhost:${agent.webui_port}/dashboard?agent_id=${encodeURIComponent(agentId)}${hash}` : '#'
                 });
             });
         }
 
             // Store agents globally for the open all function
             window.launchedAgents = agentsWithWebUI;
+
+            // Push NetBox config to each agent's API for dashboard auto-sync
+            // (localStorage doesn't work across different ports/origins)
+            if (netboxConfig && netboxConfig.netbox_url && netboxConfig.api_token) {
+                console.log('[NetBox] Pushing config to', agentsWithWebUI.length, 'agents...');
+                for (const agent of agentsWithWebUI) {
+                    if (!agent.port || agent.port === 'N/A') continue;
+
+                    const agentConfig = wizardState.agents.find(a => a.id === agent.id);
+                    const agentName = agentConfig?.name || agent.id;
+
+                    try {
+                        const pushResponse = await fetch(`http://localhost:${agent.port}/api/config/netbox`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                netbox_url: netboxConfig.netbox_url,
+                                api_token: netboxConfig.api_token,
+                                site_name: netboxConfig.site_name,
+                                device_name: agentName
+                            })
+                        });
+                        if (pushResponse.ok) {
+                            console.log(`[NetBox] Config pushed to ${agentName} (port ${agent.port})`);
+                        } else {
+                            console.warn(`[NetBox] Failed to push config to ${agentName}: ${pushResponse.status}`);
+                        }
+                    } catch (err) {
+                        console.warn(`[NetBox] Could not push config to ${agentName}:`, err.message);
+                    }
+                }
+                // Also save to localStorage as fallback (for wizard's own port)
+                localStorage.setItem('netbox_config', JSON.stringify({
+                    netbox_url: netboxConfig.netbox_url,
+                    api_token: netboxConfig.api_token,
+                    site_name: netboxConfig.site_name
+                }));
+                console.log('[NetBox] Config pushed to all agents');
+            }
 
             // Log detailed info for debugging
             console.log('=== LAUNCH SUMMARY ===');
@@ -3232,7 +3837,168 @@ async function launchNetwork() {
             summaryHTML += `
                     </div>
                 </div>
+            `;
 
+            // Add NetBox Registration Results section (if registration was performed)
+            if (netboxResults.length > 0) {
+                const registeredCount = netboxResults.filter(r => r.success && !r.skipped).length;
+                const skippedCount = netboxResults.filter(r => r.skipped).length;
+                const failCount = netboxResults.filter(r => !r.success).length;
+
+                // Determine overall status color
+                let statusColor = '#4ade80'; // green
+                if (failCount > 0 && registeredCount === 0 && skippedCount === 0) {
+                    statusColor = '#ef4444'; // red - all failed
+                } else if (failCount > 0) {
+                    statusColor = '#facc15'; // yellow - partial
+                }
+
+                // Build status text
+                let statusText = `${registeredCount}/${netboxResults.length} REGISTERED`;
+                if (skippedCount > 0) {
+                    statusText = `${registeredCount} NEW, ${skippedCount} SKIPPED`;
+                }
+
+                // Store results globally for verification
+                window.netboxRegistrationResults = netboxResults;
+                window.netboxConfig = netboxConfig;
+
+                summaryHTML += `
+                <div style="background: #1a1a2e; border-radius: 8px; padding: 20px; margin-bottom: 20px; border: 1px solid #06b6d4;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="color: #06b6d4; display: flex; align-items: center; gap: 10px; margin: 0;">
+                            📦 NetBox Registration
+                            <span style="background: ${statusColor}; color: #1a1a2e; padding: 2px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: bold;">
+                                ${statusText}
+                            </span>
+                            <span id="netbox-verify-status" style="font-size: 0.8rem; color: #888;"></span>
+                        </h3>
+                        <button onclick="verifyAllNetBoxDevices()" id="verify-all-btn" style="background: #06b6d4; color: #1a1a2e; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 0.85rem;">
+                            🔍 Verify All in NetBox
+                        </button>
+                    </div>
+                    <div id="netbox-results-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px;">
+                `;
+
+                for (const result of netboxResults) {
+                    const isSuccess = result.success;
+                    const isSkipped = result.skipped;
+
+                    // Determine colors and status text based on state
+                    let borderColor, statusIcon, statusLabel;
+                    if (isSkipped) {
+                        borderColor = '#6b7280'; // gray
+                        statusIcon = '⏭️';
+                        statusLabel = 'SKIPPED (exists)';
+                    } else if (isSuccess) {
+                        borderColor = '#4ade80'; // green
+                        statusIcon = '✅';
+                        statusLabel = 'REGISTERED';
+                    } else {
+                        borderColor = '#ef4444'; // red
+                        statusIcon = '❌';
+                        statusLabel = 'FAILED';
+                    }
+
+                    const cardId = `netbox-card-${result.agent_id.replace(/[^a-zA-Z0-9]/g, '-')}`;
+
+                    summaryHTML += `
+                        <div id="${cardId}" style="background: #16213e; border: 2px solid ${borderColor}; border-radius: 8px; padding: 12px;" data-device-url="${result.device_url || ''}" data-agent-id="${result.agent_id}">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                <span style="font-weight: bold; color: #00d9ff;">${result.device_name || result.agent_id}</span>
+                                <span class="reg-status" style="color: ${borderColor}; font-size: 0.75rem;">${statusIcon} ${statusLabel}</span>
+                            </div>
+                    `;
+
+                    if ((isSuccess || isSkipped) && result.device_url) {
+                        summaryHTML += `
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <a href="${result.device_url}" target="_blank" style="display: inline-flex; align-items: center; gap: 5px; color: #06b6d4; text-decoration: none; font-size: 0.85rem;">
+                                    🔗 View in NetBox
+                                </a>
+                                <span class="verify-status" style="font-size: 0.75rem; color: #888;"></span>
+                            </div>
+                        `;
+                    } else if (result.error) {
+                        summaryHTML += `
+                            <div style="color: #ef4444; font-size: 0.8rem; word-break: break-word;">${result.error}</div>
+                        `;
+                    }
+
+                    summaryHTML += `</div>`;
+                }
+
+                summaryHTML += `
+                    </div>
+                </div>
+                `;
+
+                // Add cables/topology section if cables were registered
+                const cablesResult = window.netboxCablesResult;
+                if (cablesResult && cablesResult.total > 0) {
+                    const cableStatusColor = cablesResult.failed === 0 ? '#4ade80' :
+                                             (cablesResult.created > 0 ? '#facc15' : '#ef4444');
+                    summaryHTML += `
+                    <div style="background: #1a1a2e; border-radius: 8px; padding: 20px; margin-bottom: 20px; border: 1px solid #9333ea;">
+                        <h3 style="color: #9333ea; display: flex; align-items: center; gap: 10px; margin: 0 0 15px 0;">
+                            🔗 NetBox Topology (Cables)
+                            <span style="background: ${cableStatusColor}; color: #1a1a2e; padding: 2px 10px; border-radius: 12px; font-size: 0.8rem; font-weight: bold;">
+                                ${cablesResult.created} CREATED, ${cablesResult.existing} EXISTING
+                            </span>
+                        </h3>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 10px;">
+                    `;
+
+                    // Show created cables
+                    for (const cable of (cablesResult.cables || []).slice(0, 10)) {
+                        const statusIcon = cable.action === 'created' ? '✅' : '📎';
+                        const statusText = cable.action === 'created' ? 'NEW' : 'EXISTS';
+                        const cableLink = cable.url ? `<a href="${cable.url}" target="_blank" style="color: #06b6d4; font-size: 0.7rem; text-decoration: none; margin-left: 8px;" title="View in NetBox">🔗 NetBox</a>` : '';
+                        summaryHTML += `
+                            <div style="background: #16213e; border: 1px solid #9333ea; border-radius: 6px; padding: 10px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span style="font-family: monospace; color: #00d9ff; font-size: 0.85rem;">
+                                        ${cable.a_device}:${cable.a_interface}
+                                        <span style="color: #9333ea;"> ↔ </span>
+                                        ${cable.b_device}:${cable.b_interface}
+                                    </span>
+                                    <span style="font-size: 0.7rem; color: ${cable.action === 'created' ? '#4ade80' : '#888'};">
+                                        ${statusIcon} ${statusText}${cableLink}
+                                    </span>
+                                </div>
+                            </div>
+                        `;
+                    }
+
+                    if ((cablesResult.cables || []).length > 10) {
+                        summaryHTML += `
+                            <div style="color: #888; font-size: 0.85rem; padding: 10px;">
+                                ... and ${cablesResult.cables.length - 10} more cables
+                            </div>
+                        `;
+                    }
+
+                    // Show errors if any
+                    if (cablesResult.failed > 0 && cablesResult.errors?.length > 0) {
+                        summaryHTML += `
+                            <div style="grid-column: 1 / -1; background: #2d1f1f; border: 1px solid #ef4444; border-radius: 6px; padding: 10px; margin-top: 10px;">
+                                <div style="color: #ef4444; font-weight: bold; margin-bottom: 5px;">⚠️ ${cablesResult.failed} cables failed:</div>
+                                <div style="color: #f87171; font-size: 0.8rem;">
+                                    ${cablesResult.errors.slice(0, 3).join('<br>')}
+                                    ${cablesResult.errors.length > 3 ? '<br>...' : ''}
+                                </div>
+                            </div>
+                        `;
+                    }
+
+                    summaryHTML += `
+                        </div>
+                    </div>
+                    `;
+                }
+            }
+
+            summaryHTML += `
                 <div style="background: #1a1a2e; border-radius: 8px; padding: 20px; margin-bottom: 20px;">
                     <h3 style="color: #00d9ff; margin-bottom: 15px;">Quick Links</h3>
                     <div style="display: flex; gap: 15px; flex-wrap: wrap;">
@@ -3297,6 +4063,7 @@ async function launchNetwork() {
 
     } catch (error) {
         console.error('Launch exception:', error);
+        hideDeployProgress();  // Hide progress overlay on error
         showAlert(`Failed to launch network: ${error.message}`, 'error');
     }
 }
@@ -3324,6 +4091,116 @@ function openAllAgentDashboards() {
             }
         }, index * 500); // 500ms between each to avoid blocking
     });
+}
+
+// Verify all NetBox device registrations
+async function verifyAllNetBoxDevices() {
+    const results = window.netboxRegistrationResults || [];
+    const config = window.netboxConfig;
+
+    if (results.length === 0 || !config) {
+        alert('No NetBox registrations to verify');
+        return;
+    }
+
+    const verifyBtn = document.getElementById('verify-all-btn');
+    const statusSpan = document.getElementById('netbox-verify-status');
+
+    if (verifyBtn) {
+        verifyBtn.disabled = true;
+        verifyBtn.textContent = '⏳ Verifying...';
+    }
+    if (statusSpan) {
+        statusSpan.textContent = '';
+    }
+
+    console.log('[NetBox Verify] Starting verification of', results.length, 'devices');
+
+    let verifiedCount = 0;
+    let failedCount = 0;
+
+    for (const result of results) {
+        if (!result.success || !result.device_url) {
+            // Skip failed registrations
+            failedCount++;
+            continue;
+        }
+
+        const cardId = `netbox-card-${result.agent_id.replace(/[^a-zA-Z0-9]/g, '-')}`;
+        const card = document.getElementById(cardId);
+        const verifyStatus = card?.querySelector('.verify-status');
+
+        if (verifyStatus) {
+            verifyStatus.textContent = '⏳ Checking...';
+            verifyStatus.style.color = '#facc15';
+        }
+
+        try {
+            const response = await fetch('/api/wizard/mcps/netbox/verify-device', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    device_url: result.device_url,
+                    netbox_url: config.netbox_url,
+                    api_token: config.api_token
+                })
+            });
+
+            const verifyResult = await response.json();
+            console.log(`[NetBox Verify] ${result.agent_id}:`, verifyResult);
+
+            if (verifyResult.verified) {
+                verifiedCount++;
+                if (verifyStatus) {
+                    verifyStatus.textContent = `✅ Verified (${verifyResult.status_label || 'Active'})`;
+                    verifyStatus.style.color = '#4ade80';
+                }
+                if (card) {
+                    card.style.borderColor = '#4ade80';
+                }
+            } else {
+                failedCount++;
+                if (verifyStatus) {
+                    verifyStatus.textContent = `❌ ${verifyResult.error || 'Not found'}`;
+                    verifyStatus.style.color = '#ef4444';
+                }
+                if (card) {
+                    card.style.borderColor = '#ef4444';
+                }
+            }
+        } catch (err) {
+            console.error(`[NetBox Verify] Error verifying ${result.agent_id}:`, err);
+            failedCount++;
+            if (verifyStatus) {
+                verifyStatus.textContent = `❌ ${err.message}`;
+                verifyStatus.style.color = '#ef4444';
+            }
+        }
+
+        // Small delay between requests to be nice to NetBox
+        await new Promise(r => setTimeout(r, 200));
+    }
+
+    // Update summary
+    if (verifyBtn) {
+        verifyBtn.disabled = false;
+        verifyBtn.textContent = '🔍 Verify All in NetBox';
+    }
+    if (statusSpan) {
+        const totalChecked = verifiedCount + failedCount;
+        if (failedCount === 0) {
+            statusSpan.textContent = `✅ All ${verifiedCount} verified!`;
+            statusSpan.style.color = '#4ade80';
+        } else if (verifiedCount === 0) {
+            statusSpan.textContent = `❌ ${failedCount} failed verification`;
+            statusSpan.style.color = '#ef4444';
+        } else {
+            statusSpan.textContent = `⚠️ ${verifiedCount}/${totalChecked} verified`;
+            statusSpan.style.color = '#facc15';
+        }
+    }
+
+    console.log(`[NetBox Verify] Complete: ${verifiedCount} verified, ${failedCount} failed`);
 }
 
 // Close builder function
@@ -3435,4 +4312,206 @@ function showAlert(message, type) {
     setTimeout(() => {
         alert.remove();
     }, 5000);
+}
+
+// =============================================================================
+// NetBox Duplicate Detection
+// =============================================================================
+
+let netboxDuplicateResolver = null;
+
+/**
+ * Check for duplicate devices in NetBox before registration
+ * @param {Object} netboxConfig - NetBox MCP configuration
+ * @param {Array} agents - Array of agent objects with names
+ * @returns {Promise<Object>} - Result with duplicates array
+ */
+async function checkNetBoxDuplicates(netboxConfig, agents) {
+    const deviceNames = agents.map(a => a.name || a.id);
+    console.log('[NetBox] Checking for duplicates:', deviceNames);
+
+    try {
+        const response = await fetch('/api/wizard/mcps/netbox/check-duplicates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                netbox_url: netboxConfig.netbox_url,
+                api_token: netboxConfig.api_token,
+                device_names: deviceNames
+            })
+        });
+
+        const result = await response.json();
+        console.log('[NetBox] Duplicate check result:', result);
+        return result;
+    } catch (err) {
+        console.error('[NetBox] Error checking duplicates:', err);
+        return { status: 'error', error: err.message, duplicates: [] };
+    }
+}
+
+/**
+ * Show the duplicate detection modal and wait for user choice
+ * @param {Array} duplicates - Array of duplicate device info
+ * @returns {Promise<string>} - User choice: 'cancel', 'skip', or 'update'
+ */
+function showNetBoxDuplicateModal(duplicates) {
+    return new Promise((resolve) => {
+        // Store resolver for use in closeNetBoxDuplicateModal
+        netboxDuplicateResolver = resolve;
+
+        // Hide the progress overlay so modal is clickable
+        hideDeployProgress();
+
+        // Populate the duplicates list
+        const listEl = document.getElementById('duplicate-devices-list');
+        listEl.innerHTML = duplicates.map(d => `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #2a2a4e;">
+                <div>
+                    <strong style="color: #ffc107;">${d.name}</strong>
+                    <div style="font-size: 0.85rem; color: #888;">
+                        Site: ${d.site || 'Unknown'} | Status: ${d.status || 'unknown'}
+                    </div>
+                </div>
+                <a href="${d.device_url}" target="_blank" style="color: #00d9ff; font-size: 0.85rem;">
+                    View in NetBox &#8599;
+                </a>
+            </div>
+        `).join('');
+
+        // Show modal
+        const modal = document.getElementById('netbox-duplicate-modal');
+        modal.style.display = 'flex';
+    });
+}
+
+/**
+ * Close the duplicate modal and resolve with user choice
+ * @param {string} choice - 'cancel', 'skip', or 'update'
+ */
+function closeNetBoxDuplicateModal(choice) {
+    const modal = document.getElementById('netbox-duplicate-modal');
+    modal.style.display = 'none';
+
+    // Show progress overlay again (unless cancelled - it will be hidden at summary)
+    if (choice !== 'cancel') {
+        showDeployProgress();
+        // Update status based on choice
+        if (choice === 'skip') {
+            setDeployStatus('Registering in NetBox...', 'Skipping existing devices...');
+        } else if (choice === 'update') {
+            setDeployStatus('Updating Devices...', 'Syncing existing devices with new configuration...');
+        }
+        updateDeployStep('netbox-check', 'complete');
+        updateDeployStep('netbox-register', 'active');
+    }
+
+    if (netboxDuplicateResolver) {
+        netboxDuplicateResolver(choice);
+        netboxDuplicateResolver = null;
+    }
+}
+
+// ============================================================================
+// Deployment Progress Overlay Functions
+// ============================================================================
+
+/**
+ * Show the deployment progress overlay
+ */
+function showDeployProgress() {
+    const overlay = document.getElementById('deploy-progress-overlay');
+    if (overlay) {
+        overlay.style.display = 'flex';
+        // Reset all steps to initial state
+        updateDeployStep('containers', 'active');
+        updateDeployStep('netbox-check', 'pending');
+        updateDeployStep('netbox-register', 'pending');
+        updateDeployStep('cables', 'pending');
+        setDeployCurrentAgent(null);
+    }
+}
+
+/**
+ * Hide the deployment progress overlay
+ */
+function hideDeployProgress() {
+    const overlay = document.getElementById('deploy-progress-overlay');
+    if (overlay) {
+        overlay.style.display = 'none';
+    }
+}
+
+/**
+ * Update deployment status message
+ * @param {string} title - Main status title
+ * @param {string} message - Detailed status message
+ */
+function setDeployStatus(title, message) {
+    const titleEl = document.getElementById('deploy-status-title');
+    const messageEl = document.getElementById('deploy-status-message');
+    if (titleEl) titleEl.textContent = title;
+    if (messageEl) messageEl.textContent = message;
+}
+
+/**
+ * Update a deployment step's visual state
+ * @param {string} stepId - Step identifier (containers, netbox-check, netbox-register, cables)
+ * @param {string} state - State: 'pending', 'active', 'complete', 'error', 'skipped'
+ */
+function updateDeployStep(stepId, state) {
+    const step = document.getElementById(`deploy-step-${stepId}`);
+    if (!step) return;
+
+    const iconSpan = step.querySelector('.step-icon span');
+    const textSpan = step.querySelector('span:last-child');
+
+    // Reset opacity
+    step.style.opacity = state === 'pending' ? '0.5' : '1';
+
+    // Update icon and colors based on state
+    switch (state) {
+        case 'pending':
+            iconSpan.textContent = '○';
+            iconSpan.style.color = '#666';
+            textSpan.style.color = '#888';
+            break;
+        case 'active':
+            iconSpan.textContent = '⏳';
+            iconSpan.style.color = '#ffc107';
+            textSpan.style.color = '#ccc';
+            break;
+        case 'complete':
+            iconSpan.textContent = '✓';
+            iconSpan.style.color = '#4ade80';
+            textSpan.style.color = '#4ade80';
+            break;
+        case 'error':
+            iconSpan.textContent = '✗';
+            iconSpan.style.color = '#ef4444';
+            textSpan.style.color = '#ef4444';
+            break;
+        case 'skipped':
+            iconSpan.textContent = '–';
+            iconSpan.style.color = '#6c757d';
+            textSpan.style.color = '#6c757d';
+            break;
+    }
+}
+
+/**
+ * Show the current agent being processed
+ * @param {string|null} agentName - Agent name or null to hide
+ */
+function setDeployCurrentAgent(agentName) {
+    const container = document.getElementById('deploy-current-agent');
+    const nameSpan = document.getElementById('deploy-agent-name');
+    if (container && nameSpan) {
+        if (agentName) {
+            nameSpan.textContent = agentName;
+            container.style.display = 'block';
+        } else {
+            container.style.display = 'none';
+        }
+    }
 }

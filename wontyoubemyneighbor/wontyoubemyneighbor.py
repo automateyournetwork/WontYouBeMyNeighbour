@@ -618,14 +618,29 @@ class OSPFAgent:
         """
         while self.running:
             try:
-                # Receive packet
-                result = self.socket.receive(timeout=0.5)
+                # Receive packet with DSCP value for QoS ingress trust
+                result = self.socket.receive_with_dscp(timeout=0.5)
                 if not result:
                     # Yield control to event loop to allow other tasks to run
                     await asyncio.sleep(0)
                     continue
 
-                data, source_ip = result
+                data, source_ip, dscp_value = result
+
+                # QoS Ingress Trust - respect DSCP marking from other agents
+                try:
+                    from agentic.protocols.qos import get_qos_manager
+                    import os
+                    qos_agent_id = os.environ.get("ASI_AGENT_ID", "local")
+                    qos_mgr = get_qos_manager(qos_agent_id)
+                    if qos_mgr and qos_mgr.enabled and dscp_value > 0:
+                        service_class, trusted = qos_mgr.trust_ingress(dscp_value, self.interface)
+                        if trusted:
+                            self.logger.debug(f"[QoS] Ingress trust: DSCP={dscp_value} -> {service_class.value} from {source_ip}")
+                except ImportError:
+                    pass  # QoS module not available
+                except Exception as qos_err:
+                    self.logger.debug(f"[QoS] Ingress trust error: {qos_err}")
 
                 # Process packet
                 await self._process_packet(data, source_ip)
