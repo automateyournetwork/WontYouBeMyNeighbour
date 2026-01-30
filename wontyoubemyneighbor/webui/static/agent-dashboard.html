@@ -222,6 +222,8 @@
         .protocol-tab.apikeys.active { color: #a855f7; }
         .protocol-tab.sessions.active { color: #64748b; }
         .protocol-tab.tenancy.active { color: #0d9488; }
+        .protocol-tab.subnet.active { color: #22d3ee; }
+        .protocol-tab.qos.active { color: #8b5cf6; }
         .protocol-tab.plugins.active { color: #ec4899; }
         .protocol-tab.ratelimit.active { color: #f97316; }
         .protocol-tab.events.active { color: #6366f1; }
@@ -3152,6 +3154,24 @@
                             Click to refresh • Last checked: <span id="netbox-last-check">just now</span>
                         </div>
                     </button>
+
+                    <!-- PUSH/PULL Sync Direction Controls -->
+                    <div id="netbox-sync-direction" style="display: flex; justify-content: center; gap: 15px; margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1);">
+                        <button id="netbox-push-btn" class="btn" style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; padding: 12px 24px; border-radius: 8px; font-weight: bold; display: flex; align-items: center; gap: 8px; border: none; cursor: pointer;" title="Push local config to NetBox (Agent is Master)">
+                            <span style="font-size: 1.2rem;">⬆️</span>
+                            PUSH to NetBox
+                            <span style="font-size: 0.7rem; opacity: 0.8;">(Agent Master)</span>
+                        </button>
+                        <button id="netbox-pull-btn" class="btn" style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); color: white; padding: 12px 24px; border-radius: 8px; font-weight: bold; display: flex; align-items: center; gap: 8px; border: none; cursor: pointer;" title="Pull config from NetBox (NetBox is Master)">
+                            <span style="font-size: 1.2rem;">⬇️</span>
+                            PULL from NetBox
+                            <span style="font-size: 0.7rem; opacity: 0.8;">(NetBox Master)</span>
+                        </button>
+                    </div>
+                    <div style="text-align: center; margin-top: 10px; font-size: 0.8rem; color: var(--text-secondary);">
+                        <strong>PUSH</strong>: Updates NetBox with local agent config (interfaces, IPs, services) |
+                        <strong>PULL</strong>: Imports NetBox device config to local agent
+                    </div>
 
                     <!-- Device Quick Info -->
                     <div id="netbox-device-quick-info" style="display: flex; justify-content: center; gap: 30px; margin-top: 20px; flex-wrap: wrap;">
@@ -11503,6 +11523,479 @@ agent-router-1> exit
                 <div class="modal-footer">
                     <button class="btn btn-secondary" onclick="dashboard.hideCreateFlowModal()">Cancel</button>
                     <button class="btn btn-primary" onclick="dashboard.createFlow()">Create Flow</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Subnet Calculator Content -->
+        <div class="protocol-content" id="subnet-content">
+            <div class="metrics-row">
+                <div class="metric-card" style="--metric-color: #22d3ee;">
+                    <div class="metric-label">IPv4 Calculated</div>
+                    <div class="metric-value" id="subnet-ipv4-count">0</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #06b6d4;">
+                    <div class="metric-label">IPv6 Calculated</div>
+                    <div class="metric-value" id="subnet-ipv6-count">0</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #14b8a6;">
+                    <div class="metric-label">Agent IPs</div>
+                    <div class="metric-value" id="subnet-agent-ips">0</div>
+                </div>
+            </div>
+
+            <!-- Calculator Input -->
+            <div class="section" style="margin-bottom: 20px;">
+                <div class="section-header">
+                    <h3>🧮 Subnet Calculator</h3>
+                </div>
+                <div style="padding: 20px; background: var(--bg-tertiary); border-radius: 8px;">
+                    <div style="display: flex; gap: 15px; margin-bottom: 15px; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 250px;">
+                            <label style="color: var(--text-secondary); display: block; margin-bottom: 5px; font-size: 0.85rem;">CIDR Notation or IP Address</label>
+                            <input type="text" id="subnet-input" placeholder="192.168.1.0/24 or 2001:db8::/32"
+                                   style="width: 100%; padding: 12px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-primary); font-family: monospace; font-size: 1rem;">
+                        </div>
+                        <div style="display: flex; gap: 10px; align-items: flex-end;">
+                            <button class="btn btn-primary" onclick="dashboard.calculateSubnet()" style="padding: 12px 24px;">
+                                Calculate
+                            </button>
+                            <button class="btn btn-secondary" onclick="dashboard.clearSubnetResult()" style="padding: 12px 16px;">
+                                Clear
+                            </button>
+                        </div>
+                    </div>
+                    <div style="color: var(--text-secondary); font-size: 0.8rem;">
+                        Supports both IPv4 (e.g., 10.0.0.0/8, 192.168.1.1) and IPv6 (e.g., 2001:db8::/32, fe80::1)
+                    </div>
+                </div>
+            </div>
+
+            <!-- Calculation Result -->
+            <div class="section" id="subnet-result-section" style="margin-bottom: 20px; display: none;">
+                <div class="section-header">
+                    <h3 id="subnet-result-title">📊 Calculation Result</h3>
+                </div>
+                <div id="subnet-result" style="padding: 15px;">
+                    <!-- Result will be populated here -->
+                </div>
+            </div>
+
+            <!-- IPv6 SLAAC Status - Auto-configured -->
+            <div class="section" style="margin-bottom: 20px;">
+                <div class="section-header">
+                    <h3>🌐 ASI Agent Overlay (IPv6)</h3>
+                    <span style="font-size: 0.75rem; color: var(--text-muted); background: var(--bg-primary); padding: 4px 8px; border-radius: 4px;">AUTOMATIC</span>
+                </div>
+                <div id="slaac-status" style="padding: 15px;">
+                    <div style="color: var(--text-secondary); text-align: center; padding: 20px;">
+                        <span style="animation: pulse 1.5s ease-in-out infinite;">●</span> Auto-configuring...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agent's Configured IPs -->
+            <div class="section">
+                <div class="section-header">
+                    <h3>🔍 Agent IP Analysis</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="dashboard.refreshAgentIPs()">Refresh</button>
+                </div>
+                <div id="agent-ips-list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 15px; padding: 15px;">
+                    <div style="color: var(--text-secondary); text-align: center; padding: 30px;">
+                        Click "Refresh" to analyze agent IPs
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- QoS Content (RFC 4594 DiffServ) -->
+        <div class="protocol-content" id="qos-content">
+            <style>
+                /* QoS Swim Lane Styles */
+                .qos-swim-lane {
+                    background: var(--bg-tertiary);
+                    border-radius: 8px;
+                    border-left: 4px solid var(--lane-color, #6b7280);
+                    margin-bottom: 12px;
+                    overflow: hidden;
+                    transition: transform 0.2s, box-shadow 0.2s;
+                }
+                .qos-swim-lane:hover {
+                    transform: translateX(4px);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                }
+                .qos-lane-header {
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                    padding: 12px 16px;
+                    background: var(--bg-secondary);
+                    border-bottom: 1px solid var(--border-color);
+                }
+                .qos-lane-priority {
+                    width: 32px;
+                    height: 32px;
+                    border-radius: 6px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-weight: 700;
+                    font-size: 0.85rem;
+                    color: white;
+                }
+                .qos-lane-name {
+                    flex: 1;
+                    font-weight: 600;
+                    color: var(--text-primary);
+                }
+                .qos-dscp-badge {
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    padding: 4px 10px;
+                    background: var(--bg-primary);
+                    border-radius: 20px;
+                    font-family: monospace;
+                    font-size: 0.85rem;
+                }
+                .dscp-name {
+                    color: var(--accent-cyan);
+                    font-weight: 600;
+                }
+                .dscp-value {
+                    color: var(--text-secondary);
+                }
+                .dscp-binary {
+                    color: var(--text-muted);
+                    font-size: 0.75rem;
+                }
+                .qos-lane-stats {
+                    display: flex;
+                    gap: 10px;
+                    align-items: center;
+                    margin-left: auto;
+                    padding: 4px 10px;
+                    background: var(--bg-primary);
+                    border-radius: 6px;
+                    transition: background 0.3s;
+                }
+                .qos-lane-stats.active {
+                    background: rgba(34, 197, 94, 0.15);
+                }
+                .lane-stat {
+                    font-family: monospace;
+                    font-size: 0.8rem;
+                    color: var(--accent-cyan);
+                }
+                .qos-lane-body {
+                    display: flex;
+                    align-items: center;
+                    gap: 20px;
+                    padding: 12px 16px;
+                    flex-wrap: wrap;
+                }
+                .qos-lane-info {
+                    display: flex;
+                    gap: 8px;
+                    flex-shrink: 0;
+                }
+                .qos-phb, .qos-traffic-type {
+                    padding: 3px 8px;
+                    border-radius: 4px;
+                    font-size: 0.75rem;
+                    font-weight: 500;
+                    text-transform: uppercase;
+                }
+                .qos-phb {
+                    background: var(--bg-primary);
+                    color: var(--accent-purple);
+                }
+                .qos-traffic-type {
+                    background: rgba(34, 197, 94, 0.1);
+                    color: #22c55e;
+                }
+                .qos-lane-bandwidth {
+                    flex: 1;
+                    min-width: 150px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 4px;
+                }
+                .bandwidth-bar {
+                    height: 8px;
+                    background: var(--bg-primary);
+                    border-radius: 4px;
+                    display: flex;
+                    overflow: hidden;
+                }
+                .bw-min, .bw-max {
+                    height: 100%;
+                }
+                .bandwidth-label {
+                    font-size: 0.7rem;
+                    color: var(--text-secondary);
+                    text-align: right;
+                }
+                .qos-tolerances {
+                    display: flex;
+                    gap: 8px;
+                    flex-wrap: wrap;
+                }
+                .qos-tolerance {
+                    padding: 3px 8px;
+                    background: var(--bg-primary);
+                    border-radius: 4px;
+                    font-size: 0.7rem;
+                    color: var(--text-secondary);
+                    white-space: nowrap;
+                }
+                .dscp-badge {
+                    display: inline-block;
+                    padding: 2px 8px;
+                    background: rgba(139, 92, 246, 0.2);
+                    color: #a78bfa;
+                    border-radius: 4px;
+                    font-family: monospace;
+                    font-size: 0.8rem;
+                }
+                #qos-rules-table tr:hover {
+                    background: var(--bg-secondary);
+                }
+            </style>
+
+            <div class="metrics-row">
+                <div class="metric-card" style="--metric-color: #8b5cf6;">
+                    <div class="metric-label">Service Classes</div>
+                    <div class="metric-value" id="qos-classes-count">12</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #22c55e;">
+                    <div class="metric-label">Classification Rules</div>
+                    <div class="metric-value" id="qos-rules-count">0</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #06b6d4;">
+                    <div class="metric-label">Packets Classified</div>
+                    <div class="metric-value" id="qos-classified-count">0</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #f97316;">
+                    <div class="metric-label">Egress Marked</div>
+                    <div class="metric-value" id="qos-marked-count">0</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #a855f7;">
+                    <div class="metric-label">Ingress Trusted</div>
+                    <div class="metric-value" id="qos-trusted-count">0</div>
+                </div>
+            </div>
+
+            <!-- QoS Control Panel - Always Active -->
+            <div class="section" style="margin-bottom: 20px;">
+                <div class="section-header">
+                    <h3>📊 RFC 4594 DiffServ QoS - End-to-End</h3>
+                    <span style="font-size: 0.75rem; color: #1a1a2e; background: #22c55e; padding: 4px 8px; border-radius: 4px; font-weight: 600;">ALWAYS ON</span>
+                </div>
+                <div style="padding: 15px; background: var(--bg-tertiary); border-radius: 8px;">
+                    <p style="color: var(--text-secondary); margin: 0; font-size: 0.9rem;">
+                        <strong>End-to-End QoS:</strong> This agent marks egress traffic with DSCP at the source and trusts ingress DSCP markings from other agents.
+                        Each hop maintains QoS treatment for consistent service quality across the network.
+                    </p>
+                    <div style="margin-top: 12px; display: flex; gap: 25px; flex-wrap: wrap; align-items: center;">
+                        <span style="color: #22c55e; font-size: 0.85rem;">✓ Egress DSCP marking</span>
+                        <span style="color: #a855f7; font-size: 0.85rem;">✓ Ingress DSCP trust</span>
+                        <span style="color: #06b6d4; font-size: 0.85rem;">✓ All protocols</span>
+                        <span style="color: #f97316; font-size: 0.85rem;">✓ All interfaces</span>
+                        <a href="https://tools.ietf.org/html/rfc4594" target="_blank" style="color: var(--accent-cyan); font-size: 0.85rem;">RFC 4594 ↗</a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Swim Lanes Visualization -->
+            <div class="section" style="margin-bottom: 20px;">
+                <div class="section-header">
+                    <h3>🏊 Service Class Swim Lanes</h3>
+                </div>
+                <div id="qos-swim-lanes" style="padding: 15px;">
+                    <div style="color: var(--text-secondary); text-align: center; padding: 30px;">
+                        Loading swim lanes...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Classification Rules -->
+            <div class="section">
+                <div class="section-header">
+                    <h3>📋 Classification Rules</h3>
+                </div>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Rule Name</th>
+                                <th>Match Criteria</th>
+                                <th>DSCP</th>
+                                <th>Service Class</th>
+                                <th>Hits</th>
+                            </tr>
+                        </thead>
+                        <tbody id="qos-rules-table">
+                            <tr><td colspan="5" class="empty-state">Loading rules...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- NetFlow Content (RFC 7011 IPFIX) -->
+        <div class="protocol-content" id="netflow-content">
+            <style>
+                /* NetFlow Styles */
+                .netflow-flow-card {
+                    background: var(--bg-tertiary);
+                    border-radius: 8px;
+                    padding: 15px;
+                    margin-bottom: 10px;
+                    border-left: 3px solid var(--accent-cyan);
+                }
+                .netflow-arrow {
+                    color: var(--accent-cyan);
+                    font-size: 1.2rem;
+                    margin: 0 10px;
+                }
+                .protocol-badge {
+                    display: inline-block;
+                    padding: 2px 8px;
+                    background: rgba(59, 130, 246, 0.2);
+                    color: #60a5fa;
+                    border-radius: 4px;
+                    font-family: monospace;
+                    font-size: 0.8rem;
+                }
+                .flow-visualization {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 15px;
+                    margin-top: 15px;
+                }
+                .flow-node {
+                    background: var(--bg-secondary);
+                    border: 2px solid var(--accent-cyan);
+                    border-radius: 50%;
+                    width: 80px;
+                    height: 80px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 0.75rem;
+                    text-align: center;
+                    color: var(--text-primary);
+                }
+                .flow-line {
+                    flex: 1;
+                    height: 2px;
+                    background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+                    align-self: center;
+                    position: relative;
+                    min-width: 50px;
+                }
+                .flow-line::after {
+                    content: '→';
+                    position: absolute;
+                    right: -5px;
+                    top: -10px;
+                    color: var(--accent-purple);
+                    font-size: 1.2rem;
+                }
+            </style>
+
+            <div class="metrics-row">
+                <div class="metric-card" style="--metric-color: #06b6d4;">
+                    <div class="metric-label">Active Flows</div>
+                    <div class="metric-value" id="netflow-active-count">0</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #8b5cf6;">
+                    <div class="metric-label">Packets Observed</div>
+                    <div class="metric-value" id="netflow-packets-count">0</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #22c55e;">
+                    <div class="metric-label">Total Bytes</div>
+                    <div class="metric-value" id="netflow-bytes-count">0</div>
+                </div>
+                <div class="metric-card" style="--metric-color: #f97316;">
+                    <div class="metric-label">Flows Exported</div>
+                    <div class="metric-value" id="netflow-exported-count">0</div>
+                </div>
+            </div>
+
+            <!-- Dynamic Update Indicator -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding: 10px 15px; background: var(--bg-tertiary); border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="width: 10px; height: 10px; background: #22c55e; border-radius: 50%; animation: pulse 2s ease-in-out infinite;"></span>
+                    <span style="color: var(--text-secondary); font-size: 0.85rem;">Auto-refreshing every 3s</span>
+                </div>
+                <div style="color: var(--text-secondary); font-size: 0.85rem;">
+                    Last update: <span id="netflow-last-refresh" style="color: var(--accent-cyan);">--:--:--</span>
+                </div>
+            </div>
+
+            <!-- NetFlow Status -->
+            <div class="section" style="margin-bottom: 20px;">
+                <div class="section-header">
+                    <h3>🌊 RFC 7011 IPFIX/NetFlow</h3>
+                    <span style="font-size: 0.75rem; color: #1a1a2e; background: #06b6d4; padding: 4px 8px; border-radius: 4px; font-weight: 600;">TRACKING</span>
+                </div>
+                <div style="padding: 15px; background: var(--bg-tertiary); border-radius: 8px;">
+                    <p style="color: var(--text-secondary); margin: 0 0 10px 0; font-size: 0.9rem;">
+                        Flow tracking across the agent network. Each agent exports flow data (source, destination, protocol, bytes, packets)
+                        for network visibility and traffic analysis.
+                    </p>
+                    <div id="netflow-exporter-status" style="color: var(--text-secondary); font-size: 0.85rem;">
+                        Loading exporter status...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Protocol Breakdown -->
+            <div class="section" style="margin-bottom: 20px;">
+                <div class="section-header">
+                    <h3>📊 Protocol Breakdown</h3>
+                </div>
+                <div id="netflow-protocol-breakdown" style="padding: 15px;">
+                    <div class="empty-state">Loading protocol data...</div>
+                </div>
+            </div>
+
+            <!-- Top Flows (Visual Cards) -->
+            <div class="section" style="margin-bottom: 20px;">
+                <div class="section-header">
+                    <h3>🏆 Top Flows by Traffic</h3>
+                    <span style="font-size: 0.75rem; color: var(--text-secondary);">Live updated</span>
+                </div>
+                <div id="netflow-top-flows" style="padding: 15px;">
+                    <div class="empty-state">Loading top flows...</div>
+                </div>
+            </div>
+
+            <!-- Active Flows Table -->
+            <div class="section">
+                <div class="section-header">
+                    <h3>🔄 Active Flows (Top 20 by Bytes)</h3>
+                </div>
+                <div class="table-container">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Source IP</th>
+                                <th>Dest IP</th>
+                                <th>Src Port</th>
+                                <th>Dst Port</th>
+                                <th>Protocol</th>
+                                <th>Bytes</th>
+                                <th>Packets</th>
+                                <th>Rate</th>
+                            </tr>
+                        </thead>
+                        <tbody id="netflow-flows-table">
+                            <tr><td colspan="8" class="empty-state">Loading flows...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>

@@ -362,7 +362,7 @@ let mcpConfigurations = {};
 let customMcps = [];
 
 // Mandatory MCP types (always included, can't be deselected)
-const MANDATORY_MCP_TYPES = ['gait', 'pyats', 'rfc', 'markmap', 'prometheus', 'grafana'];
+const MANDATORY_MCP_TYPES = ['gait', 'pyats', 'rfc', 'markmap', 'prometheus', 'grafana', 'subnet'];
 
 // Optional MCP types (can be enabled/disabled)
 const OPTIONAL_MCP_TYPES = ['servicenow', 'netbox', 'slack', 'github', 'smtp'];
@@ -1093,6 +1093,37 @@ async function buildAgentsFromNetBoxSite() {
         if (typeof renderLinkList === 'function') {
             renderLinkList();
         }
+
+        // IMPORTANT: Also save agents to the backend session so launch knows about them
+        console.log('[NetBox PULL] Saving agents to backend session...');
+        for (const agent of wizardState.agents.filter(a => a.source === 'netbox')) {
+            try {
+                const saveResponse = await fetch(`/api/wizard/session/${sessionId}/step3/agent`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: agent.id,
+                        name: agent.name,
+                        router_id: agent.router_id,
+                        protocols: agent.protocols || agent.protos || [],
+                        interfaces: agent.interfaces || agent.ifs || [],
+                        source: 'netbox',
+                        netbox_id: agent.netbox_id,
+                        netbox_url: agent.netbox_url
+                    })
+                });
+                if (saveResponse.ok) {
+                    console.log(`[NetBox PULL] Saved agent ${agent.name} to session`);
+                } else {
+                    console.warn(`[NetBox PULL] Failed to save agent ${agent.name}: ${saveResponse.status}`);
+                }
+            } catch (err) {
+                console.warn(`[NetBox PULL] Error saving agent ${agent.name}:`, err);
+            }
+        }
+
+        // Mark that this network was pulled from NetBox (skip duplicate check on deploy)
+        wizardState.pulledFromNetBox = true;
 
         console.log('[NetBox PULL] Import complete:', {
             devices: result.device_count,
@@ -3223,8 +3254,8 @@ async function nextStep(currentStep) {
                 overlay: {
                     enabled: true,
                     subnet: 'fd00:a510::/48',
-                    enable_nd: document.getElementById('enable-nd').checked,
-                    enable_routes: document.getElementById('enable-overlay-routes').checked
+                    enable_nd: true,  // Always enabled - SLAAC automatic
+                    enable_routes: true  // Always enabled - SLAAC automatic
                 },
                 docker_ipv6: {
                     enabled: isDockerIpv6,
@@ -3461,9 +3492,18 @@ async function launchNetwork() {
             console.log('[NetBox] Using URL:', netboxConfig.netbox_url);
             console.log('[NetBox] Using Site:', netboxConfig.site_name);
 
+            // Check if network was pulled from NetBox - if so, skip duplicate check and just sync
+            const pulledFromNetBox = wizardState.pulledFromNetBox ||
+                wizardState.agents.every(a => a.source === 'netbox');
+
             // Update progress overlay for NetBox
-            setDeployStatus('Registering in NetBox...', 'Checking for existing devices...');
-            updateDeployStep('netbox-check', 'active');
+            if (pulledFromNetBox) {
+                setDeployStatus('Syncing with NetBox...', 'Verifying devices match...');
+                updateDeployStep('netbox-check', 'skipped');
+            } else {
+                setDeployStatus('Registering in NetBox...', 'Checking for existing devices...');
+                updateDeployStep('netbox-check', 'active');
+            }
 
             // Build list of agents to check
             const agentsToRegister = [];
@@ -3474,36 +3514,43 @@ async function launchNetwork() {
                 }
             }
 
-            // Check for duplicates first
-            showAlert('Checking for existing devices in NetBox...', 'info');
-            const duplicateCheck = await checkNetBoxDuplicates(netboxConfig, agentsToRegister);
-
             let agentsToSkip = new Set();
             let shouldProceed = true;
 
-            if (duplicateCheck.status === 'ok' && duplicateCheck.duplicates_found > 0) {
-                console.log('[NetBox] Found duplicates:', duplicateCheck.duplicates);
-                const userChoice = await showNetBoxDuplicateModal(duplicateCheck.duplicates);
-                console.log('[NetBox] User choice for duplicates:', userChoice);
-
-                if (userChoice === 'cancel') {
-                    shouldProceed = false;
-                    showAlert('NetBox registration cancelled. Network still launched.', 'warning');
-                    // Progress overlay is already hidden, no need to update steps
-                } else if (userChoice === 'skip') {
-                    // Mark duplicate device names to skip
-                    duplicateCheck.duplicates.forEach(d => agentsToSkip.add(d.name));
-                    showAlert(`Skipping ${agentsToSkip.size} existing device(s)...`, 'info');
-                    // Steps already updated by closeNetBoxDuplicateModal
-                } else if (userChoice === 'update') {
-                    // User chose to update existing
-                    // Steps already updated by closeNetBoxDuplicateModal
-                }
-                // 'update' - proceed with registration (will update existing)
-            } else {
-                // No duplicates found
-                updateDeployStep('netbox-check', 'complete');
+            // Skip duplicate check if pulled from NetBox - devices already exist there
+            if (pulledFromNetBox) {
+                console.log('[NetBox] Skipping duplicate check - network was pulled from NetBox');
+                showAlert('Syncing with NetBox (pulled from existing site)...', 'info');
                 updateDeployStep('netbox-register', 'active');
+            } else {
+                // Check for duplicates first (only for manually created networks)
+                showAlert('Checking for existing devices in NetBox...', 'info');
+                const duplicateCheck = await checkNetBoxDuplicates(netboxConfig, agentsToRegister);
+
+                if (duplicateCheck.status === 'ok' && duplicateCheck.duplicates_found > 0) {
+                    console.log('[NetBox] Found duplicates:', duplicateCheck.duplicates);
+                    const userChoice = await showNetBoxDuplicateModal(duplicateCheck.duplicates);
+                    console.log('[NetBox] User choice for duplicates:', userChoice);
+
+                    if (userChoice === 'cancel') {
+                        shouldProceed = false;
+                        showAlert('NetBox registration cancelled. Network still launched.', 'warning');
+                        // Progress overlay is already hidden, no need to update steps
+                    } else if (userChoice === 'skip') {
+                        // Mark duplicate device names to skip
+                        duplicateCheck.duplicates.forEach(d => agentsToSkip.add(d.name));
+                        showAlert(`Skipping ${agentsToSkip.size} existing device(s)...`, 'info');
+                        // Steps already updated by closeNetBoxDuplicateModal
+                    } else if (userChoice === 'update') {
+                        // User chose to update existing
+                        // Steps already updated by closeNetBoxDuplicateModal
+                    }
+                    // 'update' - proceed with registration (will update existing)
+                } else {
+                    // No duplicates found
+                    updateDeployStep('netbox-check', 'complete');
+                    updateDeployStep('netbox-register', 'active');
+                }
             }
 
             if (shouldProceed) {
@@ -3906,6 +3953,7 @@ async function launchNetwork() {
                     for (const cable of (cablesResult.cables || []).slice(0, 10)) {
                         const statusIcon = cable.action === 'created' ? '✅' : '📎';
                         const statusText = cable.action === 'created' ? 'NEW' : 'EXISTS';
+                        const cableLink = cable.url ? `<a href="${cable.url}" target="_blank" style="color: #06b6d4; font-size: 0.7rem; text-decoration: none; margin-left: 8px;" title="View in NetBox">🔗 NetBox</a>` : '';
                         summaryHTML += `
                             <div style="background: #16213e; border: 1px solid #9333ea; border-radius: 6px; padding: 10px;">
                                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -3915,7 +3963,7 @@ async function launchNetwork() {
                                         ${cable.b_device}:${cable.b_interface}
                                     </span>
                                     <span style="font-size: 0.7rem; color: ${cable.action === 'created' ? '#4ade80' : '#888'};">
-                                        ${statusIcon} ${statusText}
+                                        ${statusIcon} ${statusText}${cableLink}
                                     </span>
                                 </div>
                             </div>

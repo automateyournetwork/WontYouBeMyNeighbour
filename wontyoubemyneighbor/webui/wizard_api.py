@@ -2321,19 +2321,23 @@ async def get_netbox_device_cables(netbox_url: str, api_token: str, device_name:
             }
 
         # Get interface connections
+        logger.info(f"[NetBox] Getting cable connections for device {device_name} (ID: {device['id']})")
         connections = await client.get_interface_connections(device["id"])
+        logger.info(f"[NetBox] Found {len(connections)} cable connections for {device_name}")
 
         await client.close()
 
-        # Format for display
+        # Format for display with NetBox URLs
         cables = []
         for conn in connections:
+            cable_id = conn.get("cable_id")
             cables.append({
                 "local_interface": conn.get("local_interface"),
                 "remote_device": conn.get("remote_device"),
                 "remote_interface": conn.get("remote_interface"),
-                "cable_id": conn.get("cable_id"),
-                "status": "connected"
+                "cable_id": cable_id,
+                "status": "connected",
+                "url": f"{netbox_url.rstrip('/')}/dcim/cables/{cable_id}/" if cable_id else None
             })
 
         return {

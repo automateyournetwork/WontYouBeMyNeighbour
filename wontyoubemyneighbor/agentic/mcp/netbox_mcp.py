@@ -844,11 +844,13 @@ class NetBoxClient:
 
                     if (a_iface_id in a_ids and b_iface_id in b_ids) or \
                        (a_iface_id in b_ids and b_iface_id in a_ids):
-                        # Cable already exists
+                        # Cable already exists - build URL to NetBox cable
+                        cable_url = f"{self.config.url.rstrip('/')}/dcim/cables/{cable['id']}/"
                         return {
                             "success": True,
                             "action": "exists",
                             "cable_id": cable["id"],
+                            "url": cable_url,
                             "a_device": a_device,
                             "a_interface": a_interface,
                             "b_device": b_device,
@@ -884,11 +886,13 @@ class NetBoxClient:
 
             if response.status_code in (200, 201):
                 result = response.json()
+                cable_url = f"{self.config.url.rstrip('/')}/dcim/cables/{result['id']}/"
                 logger.info(f"Created cable {result['id']}: {a_device}:{a_interface} <-> {b_device}:{b_interface}")
                 return {
                     "success": True,
                     "action": "created",
                     "cable_id": result["id"],
+                    "url": cable_url,
                     "a_device": a_device,
                     "a_interface": a_interface,
                     "b_device": b_device,
@@ -907,11 +911,13 @@ class NetBoxClient:
                     retry_response = await client.post("/api/dcim/cables/", json=payload)
                     if retry_response.status_code in (200, 201):
                         result = retry_response.json()
+                        cable_url = f"{self.config.url.rstrip('/')}/dcim/cables/{result['id']}/"
                         logger.info(f"Created cable after clearing conflicts: {result['id']}")
                         return {
                             "success": True,
                             "action": "created_after_cleanup",
                             "cable_id": result["id"],
+                            "url": cable_url,
                             "a_device": a_device,
                             "a_interface": a_interface,
                             "b_device": b_device,
@@ -1485,16 +1491,17 @@ class NetBoxClient:
             return {"error": f"Device {device_id} not found"}
 
         # Map NetBox device to agent config
+        # Use (x or {}) pattern because device.get("key", {}) returns None if key exists with None value
         agent_config = {
             "name": device.get("name", ""),
             "router_id": device.get("primary_ipv4") or self._extract_loopback_ip(device),
-            "site": device.get("site", {}).get("name", ""),
-            "role": device.get("role", {}).get("name", "Router"),
-            "manufacturer": device.get("device_type", {}).get("manufacturer", {}).get("name", ""),
-            "device_type": device.get("device_type", {}).get("model", ""),
-            "platform": device.get("platform", {}).get("name", "") if device.get("platform") else "",
+            "site": (device.get("site") or {}).get("name", ""),
+            "role": (device.get("role") or {}).get("name", "Router"),
+            "manufacturer": ((device.get("device_type") or {}).get("manufacturer") or {}).get("name", ""),
+            "device_type": (device.get("device_type") or {}).get("model", ""),
+            "platform": (device.get("platform") or {}).get("name", ""),
             "serial": device.get("serial", ""),
-            "status": device.get("status", {}).get("value", "active"),
+            "status": (device.get("status") or {}).get("value", "active"),
             "netbox_id": device.get("id"),
             "netbox_url": f"{self.base_url}/dcim/devices/{device.get('id')}/",
 
@@ -1512,11 +1519,11 @@ class NetBoxClient:
         for iface in device.get("interfaces", []):
             iface_config = {
                 "name": iface.get("name", ""),
-                "type": self._map_interface_type(iface.get("type", {}).get("value", "")),
+                "type": self._map_interface_type((iface.get("type") or {}).get("value", "")),
                 "enabled": iface.get("enabled", True),
-                "mac_address": iface.get("mac_address", ""),
+                "mac_address": iface.get("mac_address") or "",
                 "mtu": iface.get("mtu"),
-                "description": iface.get("description", ""),
+                "description": iface.get("description") or "",
                 "ip_addresses": []
             }
 
@@ -1524,9 +1531,9 @@ class NetBoxClient:
             for ip in iface.get("ip_addresses", []):
                 iface_config["ip_addresses"].append({
                     "address": ip.get("address", ""),
-                    "status": ip.get("status", {}).get("value", "active"),
-                    "primary": ip.get("id") == device.get("primary_ip4", {}).get("id") or
-                              ip.get("id") == device.get("primary_ip6", {}).get("id")
+                    "status": (ip.get("status") or {}).get("value", "active"),
+                    "primary": ip.get("id") == (device.get("primary_ip4") or {}).get("id") or
+                              ip.get("id") == (device.get("primary_ip6") or {}).get("id")
                 })
 
             agent_config["interfaces"].append(iface_config)
@@ -1565,8 +1572,8 @@ class NetBoxClient:
     def _suggest_protocols(self, device: Dict) -> List[Dict[str, Any]]:
         """Suggest protocols based on device role and tags"""
         protocols = []
-        role = device.get("role", {}).get("name", "").lower()
-        tags = [t.get("name", "").lower() for t in device.get("tags", [])]
+        role = (device.get("role") or {}).get("name", "").lower()
+        tags = [(t.get("name") or "").lower() for t in (device.get("tags") or [])]
 
         # OSPF for most routers
         if "router" in role or "ospf" in tags:
@@ -1592,6 +1599,54 @@ class NetBoxClient:
 
         return protocols
 
+    async def get_site_devices(self, site_name: str) -> List[Dict[str, Any]]:
+        """
+        Get all devices in a site.
+
+        Args:
+            site_name: Name of the site
+
+        Returns:
+            List of device dictionaries with full details
+        """
+        try:
+            client = await self._get_client()
+
+            # First, get the site ID by name (NetBox API requires site_id or slug, not name)
+            site_response = await client.get(
+                "/api/dcim/sites/",
+                params={"name": site_name}
+            )
+            if site_response.status_code != 200:
+                logger.error(f"Failed to look up site {site_name}: {site_response.status_code}")
+                return []
+
+            sites = site_response.json().get("results", [])
+            if not sites:
+                logger.error(f"Site '{site_name}' not found in NetBox")
+                return []
+
+            site_id = sites[0]["id"]
+            logger.info(f"Found site '{site_name}' with ID {site_id}")
+
+            # Now get devices using site_id
+            response = await client.get(
+                "/api/dcim/devices/",
+                params={"site_id": site_id, "limit": 500}
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Failed to get devices for site {site_name}: {response.status_code}")
+                return []
+
+            devices = response.json().get("results", [])
+            logger.info(f"Found {len(devices)} devices in site {site_name}")
+            return devices
+
+        except Exception as e:
+            logger.error(f"Error getting site devices: {e}")
+            return []
+
     async def get_site_cables(self, site_name: str) -> List[Dict[str, Any]]:
         """
         Get all cables connecting devices in a site.
@@ -1603,10 +1658,28 @@ class NetBoxClient:
             List of cable connections with endpoint details
         """
         try:
-            # Get all devices in the site first
-            devices_response = await self.client.get(
+            client = await self._get_client()
+
+            # First, get the site ID by name
+            site_response = await client.get(
+                "/api/dcim/sites/",
+                params={"name": site_name}
+            )
+            if site_response.status_code != 200:
+                logger.error(f"Failed to look up site {site_name}: {site_response.status_code}")
+                return []
+
+            sites = site_response.json().get("results", [])
+            if not sites:
+                logger.error(f"Site '{site_name}' not found in NetBox")
+                return []
+
+            site_id = sites[0]["id"]
+
+            # Get all devices in the site
+            devices_response = await client.get(
                 "/api/dcim/devices/",
-                params={"site": site_name, "limit": 500}
+                params={"site_id": site_id, "limit": 500}
             )
             if devices_response.status_code != 200:
                 return []
@@ -1616,7 +1689,7 @@ class NetBoxClient:
             device_names = {d["id"]: d["name"] for d in devices}
 
             # Get all cables
-            cables_response = await self.client.get(
+            cables_response = await client.get(
                 "/api/dcim/cables/",
                 params={"limit": 1000}
             )
@@ -1768,43 +1841,62 @@ class NetBoxClient:
         """
         connections = []
         try:
+            client = await self._get_client()
+
             # Get device interfaces
-            response = await self.client.get(
+            response = await client.get(
                 "/api/dcim/interfaces/",
                 params={"device_id": device_id, "limit": 100}
             )
             if response.status_code != 200:
+                logger.warning(f"Failed to get interfaces for device {device_id}: {response.status_code}")
                 return connections
 
             interfaces = response.json().get("results", [])
+            logger.info(f"[NetBox] Found {len(interfaces)} interfaces for device {device_id}")
+
+            # Count interfaces with cables
+            interfaces_with_cables = [i for i in interfaces if i.get("cable")]
+            logger.info(f"[NetBox] {len(interfaces_with_cables)} interfaces have cables attached")
 
             for iface in interfaces:
                 # Check if interface has a cable
-                if iface.get("cable"):
+                cable_info = iface.get("cable")
+                if cable_info:
+                    logger.debug(f"[NetBox] Interface {iface.get('name')} has cable: {cable_info}")
                     # Get cable trace to find far end
-                    trace_response = await self.client.get(
+                    trace_response = await client.get(
                         f"/api/dcim/interfaces/{iface['id']}/trace/"
                     )
                     if trace_response.status_code == 200:
                         trace = trace_response.json()
+                        logger.debug(f"[NetBox] Trace for {iface.get('name')}: {trace}")
                         # Trace returns path segments, last segment has far end
                         if trace and len(trace) > 0:
                             # Each trace segment has near_end and far_end
                             for segment in trace:
                                 far_end = segment.get("far_end")
                                 if far_end and far_end.get("device"):
-                                    connections.append({
+                                    conn = {
                                         "local_interface": iface.get("name"),
                                         "local_interface_id": iface.get("id"),
                                         "remote_device": far_end.get("device", {}).get("name"),
                                         "remote_device_id": far_end.get("device", {}).get("id"),
                                         "remote_interface": far_end.get("name"),
                                         "remote_interface_id": far_end.get("id"),
-                                        "cable_id": iface.get("cable", {}).get("id")
-                                    })
+                                        "cable_id": cable_info.get("id") if isinstance(cable_info, dict) else cable_info
+                                    }
+                                    connections.append(conn)
+                                    logger.info(f"[NetBox] Connection: {conn['local_interface']} -> {conn['remote_device']}:{conn['remote_interface']}")
+                    else:
+                        logger.warning(f"[NetBox] Trace failed for interface {iface.get('name')}: {trace_response.status_code}")
+
+            logger.info(f"[NetBox] Total connections found: {len(connections)}")
 
         except Exception as e:
             logger.error(f"Error getting interface connections for device {device_id}: {e}")
+            import traceback
+            traceback.print_exc()
 
         return connections
 

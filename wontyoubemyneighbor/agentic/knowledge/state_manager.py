@@ -62,6 +62,9 @@ class NetworkStateManager:
         # Current state caches
         self._current_ospf_state: Dict[str, Any] = {}
         self._current_bgp_state: Dict[str, Any] = {}
+
+        # Extended data from dashboard tabs (LLDP, NetBox, tests, etc.)
+        self._extended_data: Dict[str, Any] = {}
         self._current_isis_state: Dict[str, Any] = {}
         self._current_routing_table: List[Dict[str, Any]] = []
         self._interface_stats: Dict[str, Any] = {}
@@ -398,8 +401,31 @@ class NetworkStateManager:
             "bgp": self._current_bgp_state,
             "isis": self._current_isis_state,
             "routes": self._current_routing_table,
-            "metrics": self._compute_metrics()
+            "metrics": self._compute_metrics(),
+            # Extended data from dashboard tabs (populated by set_extended_data)
+            "lldp": self._extended_data.get("lldp", {}),
+            "lacp": self._extended_data.get("lacp", {}),
+            "netbox": self._extended_data.get("netbox", {}),
+            "test_results": self._extended_data.get("test_results", []),
+            "prometheus_metrics": self._extended_data.get("prometheus_metrics", {}),
         }
+
+    def set_extended_data(self, key: str, data: Any):
+        """
+        Store extended data from dashboard tabs for LLM context.
+
+        Called by API endpoints to cache data that the LLM can access.
+        """
+        if not hasattr(self, '_extended_data'):
+            self._extended_data = {}
+        self._extended_data[key] = data
+        logger.debug(f"Extended data updated: {key}")
+
+    def get_extended_data(self, key: str) -> Any:
+        """Get extended data by key"""
+        if not hasattr(self, '_extended_data'):
+            self._extended_data = {}
+        return self._extended_data.get(key)
 
     def get_state_summary(self) -> str:
         """

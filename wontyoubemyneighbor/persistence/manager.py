@@ -951,6 +951,19 @@ def create_default_mcps() -> List[TOONMCPConfig]:
             e=True  # Always enabled - provides agent dashboards
         ),
         TOONMCPConfig(
+            id="subnet",
+            t="subnet",
+            n="Subnet Calculator",
+            d="IPv4 and IPv6 subnet calculation and IP analysis",
+            url="https://github.com/automateyournetwork/NAF_AC4/tree/main/MCP/Lab02",
+            c={
+                "max_host_preview": 10,
+                "_config_fields": [],  # No config needed - built-in
+                "_requires_config": False
+            },
+            e=True  # Always enabled - foundational tool
+        ),
+        TOONMCPConfig(
             id="smtp",
             t="smtp",
             n="SMTP Email",

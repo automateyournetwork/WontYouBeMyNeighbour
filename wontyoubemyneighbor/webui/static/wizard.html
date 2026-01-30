@@ -588,36 +588,29 @@
                     </div>
                 </div>
 
-                <!-- ASI Overlay Network (Automatic - Always IPv6) -->
+                <!-- ASI Overlay Network (Fully Automatic via SLAAC) -->
                 <div style="background: rgba(74, 222, 128, 0.1); border: 1px solid #4ade80; border-radius: 8px; padding: 20px; margin-bottom: 25px;">
                     <h3 style="color: #4ade80; margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
                         <span style="background: #4ade80; color: #1a1a2e; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">AUTOMATIC</span>
                         ASI Agent Overlay Network (IPv6)
                     </h3>
                     <p style="color: #888; margin-bottom: 15px;">
-                        Every agent gets an IPv6 loopback address for visibility and management. This overlay network uses Neighbor Discovery (ND) for automatic agent-to-agent communication.
+                        Every agent automatically receives an IPv6 address via SLAAC (RFC 4862). No configuration required.
                     </p>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Overlay Subnet</label>
-                            <input type="text" value="fd00:a510::/48" disabled style="background: #1a2e1a; border-color: #4ade80;">
-                            <div class="hint">ULA (Unique Local Address) range for agent mesh</div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                        <div style="background: #1a2e1a; padding: 12px 15px; border-radius: 6px; border: 1px solid #4ade8040;">
+                            <div style="color: #888; font-size: 0.8rem; margin-bottom: 4px;">Overlay Subnet</div>
+                            <code style="color: #4ade80; font-size: 1rem;">fd00:a510::/48</code>
                         </div>
-                        <div class="form-group">
-                            <label>Agent Address Format</label>
-                            <input type="text" value="fd00:a510:0:{net}::{agent}/64" disabled style="background: #1a2e1a; border-color: #4ade80;">
-                            <div class="hint">Each agent gets a unique IPv6 (e.g., fd00:a510:0:1::1/64, fd00:a510:0:1::2/64)</div>
+                        <div style="background: #1a2e1a; padding: 12px 15px; border-radius: 6px; border: 1px solid #4ade8040;">
+                            <div style="color: #888; font-size: 0.8rem; margin-bottom: 4px;">Agent Address Format</div>
+                            <code style="color: #4ade80; font-size: 1rem;">fd00:a510:0:{net}::{agent}/64</code>
                         </div>
                     </div>
-                    <div style="display: flex; gap: 15px; margin-top: 10px;">
-                        <label style="display: flex; align-items: center; gap: 8px; color: #4ade80;">
-                            <input type="checkbox" id="enable-nd" checked>
-                            Enable Neighbor Discovery (ND)
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 8px; color: #4ade80;">
-                            <input type="checkbox" id="enable-overlay-routes" checked>
-                            Install kernel routes
-                        </label>
+                    <div style="margin-top: 12px; display: flex; gap: 20px; color: #4ade80; font-size: 0.85rem;">
+                        <span>✓ SLAAC auto-assignment</span>
+                        <span>✓ Neighbor Discovery</span>
+                        <span>✓ Agent-to-agent mesh</span>
                     </div>
                 </div>
 

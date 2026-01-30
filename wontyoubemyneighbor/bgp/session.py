@@ -486,6 +486,19 @@ class BGPSession:
         """
         msg_type = message.msg_type
 
+        # QoS Ingress Trust - trust BGP traffic from peer (TCP doesn't expose DSCP to app)
+        try:
+            import os
+            from agentic.protocols.qos import get_qos_manager
+            qos_agent_id = os.environ.get("ASI_AGENT_ID", "local")
+            qos_mgr = get_qos_manager(qos_agent_id)
+            if qos_mgr and qos_mgr.enabled:
+                qos_mgr.trust_ingress_protocol("bgp", "eth0")
+        except ImportError:
+            pass  # QoS module not available
+        except Exception as qos_err:
+            self.logger.debug(f"[QoS] BGP ingress trust error: {qos_err}")
+
         # Track individual message type counters for Prometheus
         if msg_type == MSG_OPEN:
             self.stats['open_recv'] += 1
