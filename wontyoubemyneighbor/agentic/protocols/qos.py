@@ -1322,7 +1322,7 @@ class QoSManager:
         # Initialize tracking if needed
         if not hasattr(self, '_last_protocol_stats'):
             self._last_protocol_stats = {
-                'ospf': 0, 'ospfv3': 0, 'bgp': 0, 'isis': 0, 'ldp': 0, 'lldp': 0, 'bfd': 0
+                'ospf': 0, 'ospfv3': 0, 'bgp': 0, 'isis': 0, 'ldp': 0, 'lldp': 0, 'bfd': 0, 'gre': 0
             }
 
         # Get current stats
@@ -1350,6 +1350,8 @@ class QoSManager:
                         self.record_lldp_packet(128, interface)
                     elif protocol == 'bfd':
                         self.record_bfd_packet(24, interface)
+                    elif protocol == 'gre':
+                        self.record_generic_packet("gre", 100, interface, dscp=48)
 
                 logger.debug(f"[QoS] Recorded {delta} {protocol.upper()} packets")
 

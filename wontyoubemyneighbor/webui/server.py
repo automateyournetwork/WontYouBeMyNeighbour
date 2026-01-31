@@ -5045,6 +5045,204 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             return {"success": False, "error": str(e)}
 
     # ==========================================================================
+    # BFD (Bidirectional Forwarding Detection) API Endpoints
+    # ==========================================================================
+
+    bfd_agent_id = os.environ.get("ASI_AGENT_ID", "local")
+
+    @app.get("/api/bfd/status")
+    async def api_get_bfd_status() -> Dict[str, Any]:
+        """Get BFD manager status"""
+        try:
+            from bfd import get_bfd_manager
+            manager = get_bfd_manager(bfd_agent_id)
+            if manager:
+                return manager.get_status()
+            else:
+                return {"enabled": False, "running": False, "sessions": []}
+        except ImportError as e:
+            return {"enabled": False, "error": f"BFD module not available: {e}"}
+        except Exception as e:
+            logger.error(f"BFD status error: {e}")
+            return {"enabled": False, "error": str(e)}
+
+    @app.get("/api/bfd/sessions")
+    async def api_get_bfd_sessions() -> Dict[str, Any]:
+        """Get all BFD sessions"""
+        try:
+            from bfd import get_bfd_manager
+            manager = get_bfd_manager(bfd_agent_id)
+            if manager:
+                return {
+                    "sessions": manager.list_sessions(),
+                    "total": manager.session_count,
+                    "up": manager.up_session_count
+                }
+            else:
+                return {"sessions": [], "total": 0, "up": 0}
+        except ImportError as e:
+            return {"sessions": [], "error": f"BFD module not available: {e}"}
+        except Exception as e:
+            logger.error(f"BFD sessions error: {e}")
+            return {"sessions": [], "error": str(e)}
+
+    @app.get("/api/bfd/session/{peer_address}")
+    async def api_get_bfd_session(peer_address: str) -> Dict[str, Any]:
+        """Get specific BFD session status"""
+        try:
+            from bfd import get_bfd_manager
+            manager = get_bfd_manager(bfd_agent_id)
+            if manager:
+                session = manager.get_session(peer_address)
+                if session:
+                    return {"found": True, "session": session.to_dict()}
+                else:
+                    return {"found": False, "error": f"No session to {peer_address}"}
+            else:
+                return {"found": False, "error": "BFD manager not initialized"}
+        except ImportError as e:
+            return {"error": f"BFD module not available: {e}"}
+        except Exception as e:
+            logger.error(f"BFD session error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/bfd/session")
+    async def api_create_bfd_session(
+        peer_address: str,
+        local_address: str = "",
+        protocol: str = "",
+        detect_mult: int = 3,
+        min_tx_us: int = 100000,
+        min_rx_us: int = 100000,
+        interface: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Create a new BFD session
+
+        Args:
+            peer_address: Remote peer IP address
+            local_address: Local IP address (optional)
+            protocol: Client protocol (ospf, bgp, isis, static)
+            detect_mult: Detection multiplier (default 3)
+            min_tx_us: Desired min TX interval in microseconds (default 100ms)
+            min_rx_us: Required min RX interval in microseconds (default 100ms)
+            interface: Interface name for single-hop BFD
+
+        Returns:
+            Session creation result
+        """
+        try:
+            from bfd import get_bfd_manager, BFDSessionConfig
+
+            manager = get_bfd_manager(bfd_agent_id)
+            if not manager:
+                return {"success": False, "error": "BFD manager not initialized"}
+
+            # Start manager if not running
+            if not manager.is_running:
+                await manager.start()
+
+            # Use protocol-specific timers if protocol specified
+            if protocol:
+                session = await manager.create_session_for_protocol(
+                    protocol=protocol,
+                    peer_address=peer_address,
+                    local_address=local_address,
+                    interface=interface
+                )
+            else:
+                config = BFDSessionConfig(
+                    remote_address=peer_address,
+                    local_address=local_address,
+                    interface=interface,
+                    desired_min_tx=min_tx_us,
+                    required_min_rx=min_rx_us,
+                    detect_mult=detect_mult
+                )
+                session = await manager.create_session(config)
+
+            return {
+                "success": True,
+                "session": session.to_dict(),
+                "message": f"BFD session created to {peer_address}"
+            }
+        except ImportError as e:
+            return {"success": False, "error": f"BFD module not available: {e}"}
+        except Exception as e:
+            logger.error(f"BFD create session error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/bfd/session/{peer_address}")
+    async def api_delete_bfd_session(peer_address: str) -> Dict[str, Any]:
+        """Delete a BFD session"""
+        try:
+            from bfd import get_bfd_manager
+            manager = get_bfd_manager(bfd_agent_id)
+            if not manager:
+                return {"success": False, "error": "BFD manager not initialized"}
+
+            result = await manager.delete_session(peer_address)
+            return {
+                "success": result,
+                "message": f"BFD session to {peer_address} {'deleted' if result else 'not found'}"
+            }
+        except ImportError as e:
+            return {"success": False, "error": f"BFD module not available: {e}"}
+        except Exception as e:
+            logger.error(f"BFD delete session error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/bfd/statistics")
+    async def api_get_bfd_statistics() -> Dict[str, Any]:
+        """Get BFD manager statistics"""
+        try:
+            from bfd import get_bfd_manager
+            manager = get_bfd_manager(bfd_agent_id)
+            if manager:
+                return {"statistics": manager.stats.to_dict()}
+            else:
+                return {"statistics": {}}
+        except ImportError as e:
+            return {"error": f"BFD module not available: {e}"}
+        except Exception as e:
+            logger.error(f"BFD statistics error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/bfd/start")
+    async def api_start_bfd() -> Dict[str, Any]:
+        """Start the BFD manager"""
+        try:
+            from bfd import get_bfd_manager
+            manager = get_bfd_manager(bfd_agent_id)
+            if manager:
+                await manager.start()
+                return {"success": True, "running": manager.is_running}
+            else:
+                return {"success": False, "error": "BFD manager not available"}
+        except ImportError as e:
+            return {"success": False, "error": f"BFD module not available: {e}"}
+        except Exception as e:
+            logger.error(f"BFD start error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.post("/api/bfd/stop")
+    async def api_stop_bfd() -> Dict[str, Any]:
+        """Stop the BFD manager"""
+        try:
+            from bfd import get_bfd_manager
+            manager = get_bfd_manager(bfd_agent_id)
+            if manager:
+                await manager.stop()
+                return {"success": True, "running": manager.is_running}
+            else:
+                return {"success": False, "error": "BFD manager not available"}
+        except ImportError as e:
+            return {"success": False, "error": f"BFD module not available: {e}"}
+        except Exception as e:
+            logger.error(f"BFD stop error: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ==========================================================================
     # MCP External Access API Endpoints
     # ==========================================================================
 

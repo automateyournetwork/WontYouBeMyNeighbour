@@ -293,6 +293,73 @@ class ComplianceChecker:
             tags=["configuration", "routing"]
         ))
 
+        # GRE Tunnel Rules
+        self._add_rule(ComplianceRule(
+            rule_id="TUN001",
+            name="GRE Tunnel MTU Configuration",
+            description="GRE tunnels should have MTU configured to prevent fragmentation",
+            category=ComplianceCategory.CONFIGURATION,
+            severity=ComplianceSeverity.MEDIUM,
+            remediation="Configure MTU on GRE tunnels to account for encapsulation overhead (typically 1400-1476)",
+            references=["RFC 2784", "RFC 2890"],
+            tags=["gre", "tunnel", "mtu", "configuration"]
+        ))
+
+        self._add_rule(ComplianceRule(
+            rule_id="TUN002",
+            name="GRE Tunnel Keepalives",
+            description="GRE tunnels should have keepalives enabled for failure detection",
+            category=ComplianceCategory.MONITORING,
+            severity=ComplianceSeverity.LOW,
+            remediation="Enable GRE keepalives with appropriate interval for tunnel health monitoring",
+            tags=["gre", "tunnel", "keepalive", "monitoring"]
+        ))
+
+        self._add_rule(ComplianceRule(
+            rule_id="TUN003",
+            name="GRE Key Authentication",
+            description="GRE tunnels should use key authentication for security",
+            category=ComplianceCategory.AUTHENTICATION,
+            severity=ComplianceSeverity.MEDIUM,
+            remediation="Configure GRE key on both tunnel endpoints to prevent unauthorized tunnel connections",
+            references=["RFC 2890"],
+            tags=["gre", "tunnel", "security", "authentication"]
+        ))
+
+        # BFD (Bidirectional Forwarding Detection) Rules
+        self._add_rule(ComplianceRule(
+            rule_id="BFD001",
+            name="BFD for Routing Protocols",
+            description="BFD should be enabled for all routing protocol neighbors for fast failure detection",
+            category=ComplianceCategory.ROUTING,
+            severity=ComplianceSeverity.MEDIUM,
+            remediation="Enable BFD for OSPF, BGP, and IS-IS neighbors to achieve sub-second failure detection",
+            references=["RFC 5880", "RFC 5882"],
+            tags=["bfd", "routing", "convergence", "availability"]
+        ))
+
+        self._add_rule(ComplianceRule(
+            rule_id="BFD002",
+            name="BFD Detection Timers",
+            description="BFD detection timers should be configured appropriately for the protocol",
+            category=ComplianceCategory.CONFIGURATION,
+            severity=ComplianceSeverity.LOW,
+            remediation="Configure BFD timers: 100ms TX/RX with detect-mult 3 for IGP (300ms detection), "
+                       "adjust for BGP and WAN links as needed",
+            references=["RFC 5880"],
+            tags=["bfd", "timers", "configuration"]
+        ))
+
+        self._add_rule(ComplianceRule(
+            rule_id="BFD003",
+            name="BFD Session Stability",
+            description="BFD sessions should be stable without frequent flaps",
+            category=ComplianceCategory.MONITORING,
+            severity=ComplianceSeverity.MEDIUM,
+            remediation="Investigate and resolve underlying causes of BFD session flapping (jitter, congestion, MTU)",
+            tags=["bfd", "stability", "monitoring"]
+        ))
+
         # Redundancy Rules
         self._add_rule(ComplianceRule(
             rule_id="RED001",
@@ -552,6 +619,12 @@ class ComplianceChecker:
             "MON003": self._check_ntp,
             "CFG001": self._check_interface_descriptions,
             "CFG002": self._check_hostname,
+            "TUN001": self._check_gre_mtu,
+            "TUN002": self._check_gre_keepalive,
+            "TUN003": self._check_gre_key,
+            "BFD001": self._check_bfd_enabled,
+            "BFD002": self._check_bfd_timers,
+            "BFD003": self._check_bfd_stability,
         }
 
         check_method = check_methods.get(rule.rule_id)
@@ -802,6 +875,165 @@ class ComplianceChecker:
                     "Hostname",
                     f"Hostname '{hostname}' is generic - use descriptive naming"
                 ))
+        return violations
+
+    def _check_gre_mtu(self, rule: ComplianceRule, agents: List[Dict]) -> List[ComplianceViolation]:
+        """Check GRE tunnel MTU configuration."""
+        violations = []
+        for agent in agents:
+            interfaces = agent.get("interfaces", [])
+            for iface in interfaces:
+                if isinstance(iface, dict) and iface.get("type") == "gre":
+                    mtu = iface.get("mtu", 0)
+                    # GRE overhead is ~24-28 bytes, MTU should be configured
+                    if mtu == 0 or mtu > 1476:
+                        violations.append(self._create_violation(
+                            rule,
+                            agent.get("name", "unknown"),
+                            f"GRE tunnel {iface.get('name', 'unknown')}",
+                            f"MTU {mtu} may cause fragmentation (recommended: 1400-1476)"
+                        ))
+        return violations
+
+    def _check_gre_keepalive(self, rule: ComplianceRule, agents: List[Dict]) -> List[ComplianceViolation]:
+        """Check GRE tunnel keepalive configuration."""
+        violations = []
+        for agent in agents:
+            interfaces = agent.get("interfaces", [])
+            for iface in interfaces:
+                if isinstance(iface, dict) and iface.get("type") == "gre":
+                    tun_config = iface.get("tun", {})
+                    keepalive = tun_config.get("ka", 0)
+                    if keepalive == 0:
+                        violations.append(self._create_violation(
+                            rule,
+                            agent.get("name", "unknown"),
+                            f"GRE tunnel {iface.get('name', 'unknown')}",
+                            "Keepalive not configured - tunnel failures may not be detected"
+                        ))
+        return violations
+
+    def _check_gre_key(self, rule: ComplianceRule, agents: List[Dict]) -> List[ComplianceViolation]:
+        """Check GRE tunnel key authentication."""
+        violations = []
+        for agent in agents:
+            interfaces = agent.get("interfaces", [])
+            for iface in interfaces:
+                if isinstance(iface, dict) and iface.get("type") == "gre":
+                    tun_config = iface.get("tun", {})
+                    key = tun_config.get("key")
+                    if key is None:
+                        violations.append(self._create_violation(
+                            rule,
+                            agent.get("name", "unknown"),
+                            f"GRE tunnel {iface.get('name', 'unknown')}",
+                            "GRE key not configured - tunnel may accept unauthorized traffic"
+                        ))
+        return violations
+
+    def _check_bfd_enabled(self, rule: ComplianceRule, agents: List[Dict]) -> List[ComplianceViolation]:
+        """Check BFD is enabled for routing protocols."""
+        violations = []
+        try:
+            from bfd import get_bfd_manager
+
+            for agent in agents:
+                agent_id = agent.get("name", agent.get("agent_id", "unknown"))
+                protocols = agent.get("protocols", [])
+
+                # Check if agent has routing protocols that should use BFD
+                routing_protocols = []
+                for proto in protocols:
+                    proto_type = proto.get("type", proto.get("p", "")).lower()
+                    if proto_type in ["ospf", "ospfv3", "bgp", "ibgp", "ebgp", "isis"]:
+                        routing_protocols.append(proto_type)
+
+                if routing_protocols:
+                    # Check if BFD is enabled for this agent
+                    manager = get_bfd_manager(agent_id)
+                    if not manager or not manager.is_running:
+                        violations.append(self._create_violation(
+                            rule,
+                            agent_id,
+                            "BFD Manager",
+                            f"BFD not enabled but routing protocols configured: {', '.join(routing_protocols)}"
+                        ))
+                    elif manager.session_count == 0:
+                        violations.append(self._create_violation(
+                            rule,
+                            agent_id,
+                            "BFD Sessions",
+                            f"No BFD sessions configured for protocols: {', '.join(routing_protocols)}"
+                        ))
+
+        except ImportError:
+            # BFD module not available - skip check
+            pass
+        return violations
+
+    def _check_bfd_timers(self, rule: ComplianceRule, agents: List[Dict]) -> List[ComplianceViolation]:
+        """Check BFD detection timers are appropriate."""
+        violations = []
+        try:
+            from bfd import get_bfd_manager
+
+            # Recommended max detection times (ms)
+            max_detection = {
+                "ospf": 900,
+                "bgp": 900,
+                "isis": 900,
+                "static": 3000,
+            }
+
+            for agent in agents:
+                agent_id = agent.get("name", agent.get("agent_id", "unknown"))
+                manager = get_bfd_manager(agent_id)
+
+                if manager and manager.is_running:
+                    for session in manager.list_sessions():
+                        protocol = session.get("client_protocol", "").lower()
+                        detection_ms = session.get("detection_time_ms", 0)
+                        max_ms = max_detection.get(protocol, 3000)
+
+                        if detection_ms > max_ms:
+                            violations.append(self._create_violation(
+                                rule,
+                                agent_id,
+                                f"BFD session to {session.get('remote_address', 'unknown')}",
+                                f"Detection time {detection_ms:.0f}ms exceeds recommended {max_ms}ms for {protocol}"
+                            ))
+
+        except ImportError:
+            pass
+        return violations
+
+    def _check_bfd_stability(self, rule: ComplianceRule, agents: List[Dict]) -> List[ComplianceViolation]:
+        """Check BFD session stability (no excessive flapping)."""
+        violations = []
+        try:
+            from bfd import get_bfd_manager
+
+            max_flaps = 5  # Threshold for excessive flapping
+
+            for agent in agents:
+                agent_id = agent.get("name", agent.get("agent_id", "unknown"))
+                manager = get_bfd_manager(agent_id)
+
+                if manager and manager.is_running:
+                    for session in manager.list_sessions():
+                        stats = session.get("statistics", {})
+                        down_transitions = stats.get("down_transitions", 0)
+
+                        if down_transitions > max_flaps:
+                            violations.append(self._create_violation(
+                                rule,
+                                agent_id,
+                                f"BFD session to {session.get('remote_address', 'unknown')}",
+                                f"Session has {down_transitions} down transitions - investigate instability"
+                            ))
+
+        except ImportError:
+            pass
         return violations
 
     def _generic_check(self, rule: ComplianceRule, agents: List[Dict]) -> List[ComplianceViolation]:

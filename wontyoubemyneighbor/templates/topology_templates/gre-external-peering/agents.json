@@ -1,0 +1,54 @@
+[
+  {
+    "id": "edge-router",
+    "n": "Edge Router (OSPF)",
+    "r": "10.255.255.1",
+    "ifs": [
+      {"id": "eth0", "n": "eth0", "t": "eth", "a": ["172.20.0.10/24"], "s": "up", "mtu": 1500, "l1": {"peer_agent": "core-router", "peer_if": "eth0", "subnet": "172.20.0.0/24"}},
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.255.255.1/32"], "s": "up"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.255.255.1", "a": "0.0.0.0", "loopback_ip": "10.255.255.1", "nets": ["172.20.0.0/24", "10.255.255.1/32"]}
+    ]
+  },
+  {
+    "id": "core-router",
+    "n": "Core Router (OSPF + GRE)",
+    "r": "10.255.255.99",
+    "ifs": [
+      {"id": "eth0", "n": "eth0", "t": "eth", "a": ["172.20.0.99/24"], "s": "up", "mtu": 1500, "l1": {"peer_agent": "edge-router", "peer_if": "eth0", "subnet": "172.20.0.0/24"}},
+      {"id": "eth1", "n": "eth1", "t": "eth", "a": ["172.20.1.99/24"], "s": "up", "mtu": 1500, "l1": {"peer_agent": "internal-router", "peer_if": "eth0", "subnet": "172.20.1.0/24"}},
+      {"id": "eth2", "n": "eth2", "t": "eth", "a": ["192.168.100.10/24"], "s": "up", "mtu": 1500, "description": "GRE underlay to external FRR"},
+      {"id": "gre0", "n": "gre0", "t": "gre", "a": ["10.255.0.1/30"], "s": "up", "mtu": 1400,
+        "tun": {
+          "tt": "gre",
+          "src": "192.168.100.10",
+          "dst": "192.168.100.20",
+          "key": 100,
+          "ka": 10,
+          "csum": false,
+          "seq": false,
+          "ttl": 255,
+          "tos": 192,
+          "desc": "GRE tunnel to external FRR router"
+        }
+      },
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.255.255.99/32"], "s": "up"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.255.255.99", "a": "0.0.0.0", "loopback_ip": "10.255.255.99", "nets": ["172.20.0.0/24", "172.20.1.0/24", "10.255.0.0/30", "10.255.255.99/32"]}
+    ]
+  },
+  {
+    "id": "internal-router",
+    "n": "Internal Router (OSPF)",
+    "r": "10.255.255.2",
+    "ifs": [
+      {"id": "eth0", "n": "eth0", "t": "eth", "a": ["172.20.1.2/24"], "s": "up", "mtu": 1500, "l1": {"peer_agent": "core-router", "peer_if": "eth1", "subnet": "172.20.1.0/24"}},
+      {"id": "lo0", "n": "lo0", "t": "lo", "a": ["10.255.255.2/32"], "s": "up"}
+    ],
+    "protos": [
+      {"p": "ospf", "r": "10.255.255.2", "a": "0.0.0.0", "loopback_ip": "10.255.255.2", "nets": ["172.20.1.0/24", "10.255.255.2/32"]}
+    ]
+  }
+]

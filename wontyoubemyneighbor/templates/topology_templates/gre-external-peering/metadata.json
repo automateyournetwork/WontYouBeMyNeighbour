@@ -1,0 +1,15 @@
+{
+  "id": "gre-external-peering",
+  "name": "GRE External Peering Lab",
+  "category": "lab-integration",
+  "agent_count": 3,
+  "protocols": ["ospf", "ibgp", "gre"],
+  "description": "OSPF core with GRE tunnel to external FRR router for lab integration testing",
+  "version": "1.0.0",
+  "tags": ["gre", "frr", "lab", "external", "tunnel"],
+  "requirements": {
+    "external_frr": true,
+    "docker": true
+  },
+  "diagram": "See README.md for network diagram"
+}

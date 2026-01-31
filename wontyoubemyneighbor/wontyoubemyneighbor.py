@@ -115,8 +115,9 @@ class WontYouBeMyNeighbor:
         # Extract interfaces from config (support both 'ifs' and 'interfaces' keys)
         raw_ifs = config.get('ifs') or config.get('interfaces', [])
         self.interfaces = []
+        self.gre_tunnels = []  # Store GRE tunnel configs for later initialization
         for iface in raw_ifs:
-            self.interfaces.append({
+            iface_config = {
                 'id': iface.get('id') or iface.get('n'),
                 'name': iface.get('n') or iface.get('name'),
                 'type': iface.get('t') or iface.get('type', 'eth'),
@@ -124,7 +125,85 @@ class WontYouBeMyNeighbor:
                 'status': iface.get('s') or iface.get('status', 'up'),
                 'mtu': iface.get('mtu', 1500),
                 'description': iface.get('description', '')
-            })
+            }
+            self.interfaces.append(iface_config)
+
+            # Check for GRE tunnel configuration
+            if iface_config['type'] == 'gre' and iface.get('tun'):
+                tun_config = iface.get('tun')
+                self.gre_tunnels.append({
+                    'name': iface_config['name'],
+                    'local_ip': tun_config.get('src', ''),
+                    'remote_ip': tun_config.get('dst', ''),
+                    'tunnel_ip': iface_config['addresses'][0] if iface_config['addresses'] else '',
+                    'key': tun_config.get('key'),
+                    'use_checksum': tun_config.get('csum', False),
+                    'use_sequence': tun_config.get('seq', False),
+                    'mtu': iface_config['mtu'],
+                    'keepalive_interval': tun_config.get('ka', 10),
+                    'description': tun_config.get('desc', '')
+                })
+
+    async def start_gre_tunnels(self):
+        """Initialize GRE tunnels from config"""
+        if not hasattr(self, 'gre_tunnels') or not self.gre_tunnels:
+            return
+
+        logger = logging.getLogger("WontYouBeMyNeighbor")
+        logger.info(f"Starting {len(self.gre_tunnels)} GRE tunnel(s)")
+
+        try:
+            from gre import configure_gre_manager, GRETunnelConfig
+
+            agent_id = os.environ.get('ASI_AGENT_ID', 'local')
+
+            for tun in self.gre_tunnels:
+                if not tun.get('remote_ip'):
+                    logger.warning(f"GRE tunnel {tun['name']} missing remote_ip, skipping")
+                    continue
+
+                # Get local IP from config or first non-GRE interface
+                local_ip = tun.get('local_ip')
+                if not local_ip:
+                    for iface in self.interfaces:
+                        if iface['type'] != 'gre' and iface['addresses']:
+                            local_ip = iface['addresses'][0].split('/')[0]
+                            break
+
+                if not local_ip:
+                    logger.warning(f"GRE tunnel {tun['name']} could not determine local_ip, skipping")
+                    continue
+
+                # Create or get GRE manager
+                manager = configure_gre_manager(agent_id, local_ip)
+                if not manager.running:
+                    await manager.start()
+
+                # Create tunnel config
+                config = GRETunnelConfig(
+                    name=tun['name'],
+                    local_ip=local_ip,
+                    remote_ip=tun['remote_ip'],
+                    tunnel_ip=tun.get('tunnel_ip', ''),
+                    key=tun.get('key'),
+                    use_checksum=tun.get('use_checksum', False),
+                    use_sequence=tun.get('use_sequence', False),
+                    mtu=tun.get('mtu', 1400),
+                    keepalive_interval=tun.get('keepalive_interval', 10),
+                    description=tun.get('description', '')
+                )
+
+                # Create the tunnel
+                tunnel = await manager.create_tunnel(config)
+                if tunnel:
+                    logger.info(f"GRE tunnel {tun['name']} started: {local_ip} -> {tun['remote_ip']}")
+                else:
+                    logger.error(f"Failed to create GRE tunnel {tun['name']}")
+
+        except ImportError as e:
+            logger.warning(f"GRE module not available: {e}")
+        except Exception as e:
+            logger.error(f"Error starting GRE tunnels: {e}")
 
     def load_config_from_env(self):
         """Load agent config from environment variable"""
@@ -1502,6 +1581,11 @@ async def run_unified_agent(args: argparse.Namespace):
 
         # Start forwarding monitor task
         tasks.append(asyncio.create_task(kernel_route_manager.monitor_forwarding(interval=30)))
+
+        # Initialize GRE tunnels if configured
+        if hasattr(asi_app, 'gre_tunnels') and asi_app.gre_tunnels:
+            logger.info(f"Initializing {len(asi_app.gre_tunnels)} GRE tunnel(s)...")
+            await asi_app.start_gre_tunnels()
 
         # Initialize OSPFv2 if requested
         if run_ospf:

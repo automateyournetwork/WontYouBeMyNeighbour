@@ -216,15 +216,15 @@ class IntentParser:
              "Configure QoS for {0}"),
 
             # Protocol
-            (re.compile(r'enable\s+(ospf|bgp|isis|mpls|vxlan|evpn)\s+(?:on|for)\s+(.+)', re.I),
+            (re.compile(r'enable\s+(ospf|bgp|isis|mpls|vxlan|evpn|gre|bfd)\s+(?:on|for)\s+(.+)', re.I),
              IntentType.PROTOCOL_ENABLE,
              "Enable {0} on {1}"),
 
-            (re.compile(r'disable\s+(ospf|bgp|isis|mpls|vxlan|evpn)\s+(?:on|for)\s+(.+)', re.I),
+            (re.compile(r'disable\s+(ospf|bgp|isis|mpls|vxlan|evpn|gre|bfd)\s+(?:on|for)\s+(.+)', re.I),
              IntentType.PROTOCOL_DISABLE,
              "Disable {0} on {1}"),
 
-            (re.compile(r'configure\s+(ospf|bgp|isis|mpls|vxlan|evpn)\s+(.+)', re.I),
+            (re.compile(r'configure\s+(ospf|bgp|isis|mpls|vxlan|evpn|gre|bfd)\s+(.+)', re.I),
              IntentType.PROTOCOL_CONFIGURE,
              "Configure {0} {1}"),
         ]
@@ -237,7 +237,7 @@ class IntentParser:
             "metric": re.compile(r'\b(?:metric|cost)\s*[=:]?\s*(\d+)\b', re.I),
             "bandwidth": re.compile(r'\b(\d+)\s*(?:g|gb|gbps|m|mb|mbps)\b', re.I),
             "interface": re.compile(r'\b(eth\d+|lo\d+|ge-\d+/\d+/\d+)\b', re.I),
-            "protocol": re.compile(r'\b(ospf|bgp|isis|mpls|ldp|vxlan|evpn|rip)\b', re.I),
+            "protocol": re.compile(r'\b(ospf|bgp|isis|mpls|ldp|vxlan|evpn|rip|gre|bfd)\b', re.I),
             "area": re.compile(r'\barea\s*(\d+(?:\.\d+\.\d+\.\d+)?)\b', re.I),
             "vni": re.compile(r'\bvni\s*(\d+)\b', re.I),
         }

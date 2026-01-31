@@ -253,6 +253,16 @@ class AgentDashboard {
             this.protocols.dns = status.dns;
         }
 
+        // Check for GRE interfaces
+        if (status.gre || this.hasGREInterfaces(status.interfaces)) {
+            this.protocols.gre = status.gre || this.extractGREData(status.interfaces);
+        }
+
+        // Check for BFD sessions
+        if (status.bfd) {
+            this.protocols.bfd = status.bfd;
+        }
+
         document.getElementById('active-protocols').textContent = Object.keys(this.protocols).length;
         document.getElementById('total-neighbors').textContent = totalNeighbors;
 
@@ -269,6 +279,8 @@ class AgentDashboard {
         this.updateVXLANData(status.vxlan);
         this.updateDHCPData(status.dhcp);
         this.updateDNSData(status.dns);
+        this.updateGREData(this.protocols.gre);
+        this.updateBFDData(this.protocols.bfd);
 
         // Update MCP data (Testing, GAIT, Markmap)
         if (status.testing) {
@@ -368,7 +380,9 @@ class AgentDashboard {
             mpls: 'MPLS',
             vxlan: 'VXLAN/EVPN',
             dhcp: 'DHCP',
-            dns: 'DNS'
+            dns: 'DNS',
+            gre: 'GRE',
+            bfd: 'BFD'
         };
 
         // Core MCP/feature tabs - always shown (LLDP is added separately after Interfaces)
@@ -2453,6 +2467,193 @@ class AgentDashboard {
                 }
                 queriesTable.innerHTML = html;
             }
+        }
+    }
+
+    // GRE Tunnel Methods
+    hasGREInterfaces(interfaces) {
+        if (!interfaces || !Array.isArray(interfaces)) return false;
+        return interfaces.some(iface => iface.type === 'gre' || iface.t === 'gre');
+    }
+
+    extractGREData(interfaces) {
+        if (!interfaces || !Array.isArray(interfaces)) return null;
+
+        const greInterfaces = interfaces.filter(iface =>
+            iface.type === 'gre' || iface.t === 'gre'
+        );
+
+        if (greInterfaces.length === 0) return null;
+
+        return {
+            tunnel_count: greInterfaces.length,
+            tunnels: greInterfaces.map(iface => ({
+                name: iface.name || iface.n || iface.id,
+                local_ip: iface.tun?.src || 'N/A',
+                remote_ip: iface.tun?.dst || 'N/A',
+                tunnel_ip: Array.isArray(iface.addresses || iface.a) ?
+                    (iface.addresses || iface.a)[0] : 'N/A',
+                key: iface.tun?.key,
+                mtu: iface.mtu || 1400,
+                state: iface.status || iface.s || 'up',
+                keepalive: iface.tun?.ka || 0
+            }))
+        };
+    }
+
+    updateGREData(gre) {
+        if (!gre) return;
+
+        // Update summary metrics
+        const tunnelCount = gre.tunnel_count || (gre.tunnels ? gre.tunnels.length : 0);
+        const greTunnelsEl = document.getElementById('gre-tunnels');
+        if (greTunnelsEl) greTunnelsEl.textContent = tunnelCount;
+
+        const tunnelsActive = gre.tunnels ?
+            gre.tunnels.filter(t => t.state === 'up').length : tunnelCount;
+        const greActiveEl = document.getElementById('gre-active');
+        if (greActiveEl) greActiveEl.textContent = tunnelsActive;
+
+        // Update tunnels table
+        const tunnelsTable = document.getElementById('gre-tunnels-table');
+        if (tunnelsTable && gre.tunnels) {
+            if (gre.tunnels.length === 0) {
+                tunnelsTable.innerHTML = '<tr><td colspan="7" class="empty-state">No GRE tunnels configured</td></tr>';
+            } else {
+                let html = '';
+                for (const tunnel of gre.tunnels) {
+                    const stateClass = tunnel.state === 'up' ? 'established' : 'down';
+                    const keyDisplay = tunnel.key !== null && tunnel.key !== undefined ?
+                        tunnel.key : '<span class="muted">none</span>';
+                    html += `
+                        <tr>
+                            <td><strong>${tunnel.name}</strong></td>
+                            <td>${tunnel.local_ip}</td>
+                            <td>${tunnel.remote_ip}</td>
+                            <td>${tunnel.tunnel_ip}</td>
+                            <td>${keyDisplay}</td>
+                            <td>${tunnel.mtu}</td>
+                            <td><span class="status-badge ${stateClass}">${tunnel.state.toUpperCase()}</span></td>
+                        </tr>
+                    `;
+                }
+                tunnelsTable.innerHTML = html;
+            }
+        }
+    }
+
+    // BFD (Bidirectional Forwarding Detection) Methods
+    updateBFDData(bfd) {
+        if (!bfd) return;
+
+        // Update summary metrics
+        const sessionCount = bfd.total || (bfd.sessions ? bfd.sessions.length : 0);
+        const bfdSessionsEl = document.getElementById('bfd-sessions');
+        if (bfdSessionsEl) bfdSessionsEl.textContent = sessionCount;
+
+        const upSessions = bfd.up || (bfd.sessions ?
+            bfd.sessions.filter(s => s.state === 'UP' || s.is_up).length : 0);
+        const bfdUpEl = document.getElementById('bfd-up');
+        if (bfdUpEl) bfdUpEl.textContent = upSessions;
+
+        // Update sessions table
+        const sessionsTable = document.getElementById('bfd-sessions-table');
+        if (sessionsTable && bfd.sessions) {
+            if (bfd.sessions.length === 0) {
+                sessionsTable.innerHTML = '<tr><td colspan="8" class="empty-state">No BFD sessions configured</td></tr>';
+            } else {
+                let html = '';
+                for (const session of bfd.sessions) {
+                    const stateClass = (session.state === 'UP' || session.is_up) ? 'established' : 'down';
+                    const detectionMs = session.detection_time_ms ?
+                        `${session.detection_time_ms.toFixed(1)}ms` : '-';
+                    const protocol = session.client_protocol || '-';
+                    html += `
+                        <tr>
+                            <td><strong>${session.remote_address}</strong></td>
+                            <td><span class="status-badge ${stateClass}">${session.state}</span></td>
+                            <td>${protocol.toUpperCase()}</td>
+                            <td>${session.local_discriminator || '-'}</td>
+                            <td>${session.remote_discriminator || '-'}</td>
+                            <td>${detectionMs}</td>
+                            <td>${session.detect_mult || 3}</td>
+                            <td>${session.statistics?.packets_sent || 0} / ${session.statistics?.packets_received || 0}</td>
+                        </tr>
+                    `;
+                }
+                sessionsTable.innerHTML = html;
+            }
+        }
+
+        // Update BFD statistics
+        if (bfd.statistics) {
+            const statsEl = document.getElementById('bfd-statistics');
+            if (statsEl) {
+                statsEl.innerHTML = `
+                    <div class="stat-item">
+                        <span class="stat-label">Packets Sent:</span>
+                        <span class="stat-value">${bfd.statistics.packets_sent || 0}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Packets Received:</span>
+                        <span class="stat-value">${bfd.statistics.packets_received || 0}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">State Changes:</span>
+                        <span class="stat-value">${bfd.statistics.state_changes || 0}</span>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    async fetchBFDStatus() {
+        try {
+            const response = await fetch('/api/bfd/status');
+            if (response.ok) {
+                const data = await response.json();
+                this.protocols.bfd = data;
+                this.updateBFDData(data);
+            }
+        } catch (error) {
+            console.log('Could not fetch BFD status:', error);
+        }
+    }
+
+    async createBFDSession(peerAddress, protocol = '', detectMult = 3) {
+        try {
+            const params = new URLSearchParams({
+                peer_address: peerAddress,
+                protocol: protocol,
+                detect_mult: detectMult
+            });
+            const response = await fetch(`/api/bfd/session?${params}`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            if (result.success) {
+                this.fetchBFDStatus();
+            }
+            return result;
+        } catch (error) {
+            console.error('Failed to create BFD session:', error);
+            return { success: false, error: error.message };
+        }
+    }
+
+    async deleteBFDSession(peerAddress) {
+        try {
+            const response = await fetch(`/api/bfd/session/${peerAddress}`, {
+                method: 'DELETE'
+            });
+            const result = await response.json();
+            if (result.success) {
+                this.fetchBFDStatus();
+            }
+            return result;
+        } catch (error) {
+            console.error('Failed to delete BFD session:', error);
+            return { success: false, error: error.message };
         }
     }
 
@@ -11681,6 +11882,7 @@ Uptime: ${Math.floor((stats.uptime_seconds || 0) / 60)} minutes
             netconf: '#14b8a6', restconf: '#14b8a6', snmp: '#6b7280',
             acl: '#ef4444', firewall: '#ef4444', bfd: '#facc15',
             sr_mpls: '#f97316', srv6: '#f97316', lacp: '#8b5cf6', lldp: '#06b6d4',
+            gre: '#a855f7',
         };
 
         let html = '';

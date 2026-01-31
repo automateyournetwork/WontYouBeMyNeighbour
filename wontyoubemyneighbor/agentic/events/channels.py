@@ -157,8 +157,8 @@ class ChannelManager:
         self.create_channel(
             name="protocol",
             channel_type=ChannelType.PROTOCOL,
-            description="Protocol events (OSPF, BGP, IS-IS)",
-            patterns=["ospf.*", "bgp.*", "isis.*"]
+            description="Protocol events (OSPF, BGP, IS-IS, GRE, BFD)",
+            patterns=["ospf.*", "bgp.*", "isis.*", "gre.*", "bfd.*"]
         )
 
         # Network channel
