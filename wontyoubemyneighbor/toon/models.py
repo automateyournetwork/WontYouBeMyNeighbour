@@ -41,6 +41,16 @@ class InterfaceType(Enum):
     LOOPBACK = "lo"
     VLAN = "vlan"
     TUNNEL = "tun"
+    GRE = "gre"  # GRE tunnel (RFC 2784/2890)
+
+
+class TunnelType(Enum):
+    """Tunnel encapsulation types"""
+    GRE = "gre"           # Generic Routing Encapsulation (RFC 2784)
+    GRE_TAP = "gretap"    # GRE with Ethernet (L2)
+    IPIP = "ipip"         # IP-in-IP encapsulation
+    VXLAN = "vxlan"       # VXLAN overlay
+    SIT = "sit"           # IPv6-in-IPv4 tunnel
 
 
 class MCPType(Enum):
@@ -69,6 +79,7 @@ class TOONInterface:
     - m: mac address
     - s: state (up/down)
     - mtu: maximum transmission unit
+    - tun: tunnel config (for tunnel interfaces)
     """
     id: str
     n: str  # name
@@ -77,12 +88,49 @@ class TOONInterface:
     m: Optional[str] = None  # mac
     s: str = "up"  # state
     mtu: int = 1500
+    tun: Optional[Dict[str, Any]] = None  # tunnel config
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TOONInterface":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class TOONTunnelConfig:
+    """
+    GRE/Tunnel interface configuration
+
+    Token-efficient keys:
+    - tt: tunnel type (gre, gretap, ipip, vxlan)
+    - src: source/local IP (physical interface)
+    - dst: destination/remote IP
+    - key: GRE key (optional, for traffic identification)
+    - csum: enable checksum
+    - seq: enable sequence numbers
+    - ka: keepalive interval (seconds, 0 to disable)
+    - ttl: TTL for outer packets
+    - tos: TOS/DSCP for outer packets
+    - desc: description
+    """
+    tt: str = "gre"  # tunnel type
+    src: str = ""  # source/local IP
+    dst: str = ""  # destination/remote IP
+    key: Optional[int] = None  # GRE key
+    csum: bool = False  # checksum
+    seq: bool = False  # sequence numbers
+    ka: int = 10  # keepalive interval
+    ttl: int = 255  # outer TTL
+    tos: int = 192  # outer TOS (CS6 for network control)
+    desc: str = ""  # description
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TOONTunnelConfig":
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 

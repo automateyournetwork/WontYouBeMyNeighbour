@@ -1958,13 +1958,16 @@ class AgentDashboard {
             }
 
             // Store data for markmap visualization
+            // API returns data under 'exporter' object, not directly
+            const exporter = data.exporter || {};
             this.netflowData = {
-                active_flows: data.active_flows || 0,
-                total_exported: data.total_exported || 0,
-                total_bytes: data.total_bytes || 0,
-                total_packets: data.total_packets || 0,
+                active_flows: exporter.active_flows || 0,
+                total_exported: exporter.total_exported || 0,
+                total_bytes: exporter.total_bytes || 0,
+                total_packets: exporter.total_packets || 0,
                 by_protocol: data.protocol_breakdown || {},
-                top_flows: data.top_flows || []
+                // top_flows is fetched separately by fetchNetFlowTopFlows()
+                top_flows: this.netflowData?.top_flows || []
             };
 
             this.displayNetFlowStatistics(data);
@@ -4020,10 +4023,17 @@ class AgentDashboard {
             md += `### Bytes Tracked: ${this._formatBytes(this.netflowData.total_bytes || 0)}\n`;
 
             // Flows by protocol
-            if (this.netflowData.by_protocol) {
+            if (this.netflowData.by_protocol && Object.keys(this.netflowData.by_protocol).length > 0) {
                 md += `### By Protocol\n`;
-                for (const [proto, count] of Object.entries(this.netflowData.by_protocol)) {
-                    md += `#### ${proto}: ${count} flows\n`;
+                for (const [proto, stats] of Object.entries(this.netflowData.by_protocol)) {
+                    // stats is an object with flows, packets, bytes properties
+                    const flows = stats?.flows || stats || 0;
+                    const bytes = stats?.bytes || 0;
+                    md += `#### ${proto}\n`;
+                    md += `##### Flows: ${typeof flows === 'number' ? flows : 0}\n`;
+                    if (bytes > 0) {
+                        md += `##### Bytes: ${this._formatBytes(bytes)}\n`;
+                    }
                 }
             }
 
@@ -4031,8 +4041,11 @@ class AgentDashboard {
             if (this.netflowData.top_flows && this.netflowData.top_flows.length > 0) {
                 md += `### Top Flows\n`;
                 for (const flow of this.netflowData.top_flows.slice(0, 3)) {
-                    md += `#### ${flow.src_ip} → ${flow.dst_ip}\n`;
-                    md += `##### Bytes: ${this._formatBytes(flow.bytes || 0)}\n`;
+                    const srcIp = flow.src_ip || flow.source_ip || '-';
+                    const dstIp = flow.dst_ip || flow.destination_ip || '-';
+                    const bytes = flow.bytes || flow.total_bytes || flow.byte_count || 0;
+                    md += `#### ${srcIp} → ${dstIp}\n`;
+                    md += `##### Bytes: ${this._formatBytes(bytes)}\n`;
                 }
             }
         }

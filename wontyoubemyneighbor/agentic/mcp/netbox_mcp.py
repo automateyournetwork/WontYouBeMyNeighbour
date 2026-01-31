@@ -2167,8 +2167,11 @@ async def _register_protocol_service(client: NetBoxClient, device_name: str,
                                       proto_type: str, proto_config: Dict) -> Optional[Dict]:
     """Register a protocol as a NetBox service"""
     # Protocol to service mapping
+    # Note: TOON uses "ibgp" and "ebgp" instead of just "bgp"
     service_map = {
         "bgp": {"name": "BGP", "protocol": "tcp", "port": 179},
+        "ibgp": {"name": "BGP", "protocol": "tcp", "port": 179},  # iBGP -> BGP service
+        "ebgp": {"name": "BGP", "protocol": "tcp", "port": 179},  # eBGP -> BGP service
         "ospf": {"name": "OSPF", "protocol": "tcp", "port": 89},  # OSPF uses IP protocol 89
         "ospfv3": {"name": "OSPFv3", "protocol": "tcp", "port": 89},
         "isis": {"name": "IS-IS", "protocol": "tcp", "port": 0},  # IS-IS is L2
@@ -2176,28 +2179,37 @@ async def _register_protocol_service(client: NetBoxClient, device_name: str,
         "rsvp": {"name": "RSVP", "protocol": "tcp", "port": 0},
     }
 
-    if proto_type not in service_map:
+    # Normalize proto_type for BGP variants
+    normalized_proto = proto_type.lower()
+    if normalized_proto not in service_map:
+        logger.warning(f"[NetBox] Unknown protocol type '{proto_type}' - skipping service registration")
         return None
 
-    service_info = service_map[proto_type]
+    service_info = service_map[normalized_proto]
 
     # Build description with protocol details
     description_parts = []
-    if proto_type == "bgp":
+    # Check for all BGP variants (bgp, ibgp, ebgp)
+    if normalized_proto in ["bgp", "ibgp", "ebgp"]:
         asn = proto_config.get("local_as", proto_config.get("asn", ""))
         if asn:
             description_parts.append(f"AS {asn}")
         peers = proto_config.get("peers", [])
         if peers:
             description_parts.append(f"{len(peers)} peer(s)")
-    elif proto_type in ["ospf", "ospfv3"]:
+        # Add BGP type indicator for iBGP/eBGP
+        if normalized_proto == "ibgp":
+            description_parts.append("iBGP")
+        elif normalized_proto == "ebgp":
+            description_parts.append("eBGP")
+    elif normalized_proto in ["ospf", "ospfv3"]:
         area = proto_config.get("area", proto_config.get("area_id", "0.0.0.0"))
         description_parts.append(f"Area {area}")
         router_id = proto_config.get("router_id", "")
         if router_id:
             description_parts.append(f"RID {router_id}")
 
-    description = " | ".join(description_parts) if description_parts else f"ASI Agent {proto_type.upper()}"
+    description = " | ".join(description_parts) if description_parts else f"ASI Agent {normalized_proto.upper()}"
 
     return await client.register_service(
         device_name=device_name,

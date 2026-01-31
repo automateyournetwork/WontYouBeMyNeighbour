@@ -2053,12 +2053,17 @@ function updateInterfaceName() {
     const subifIndexGroup = document.getElementById('subif-index-group');
     const interfaceModeGroup = document.getElementById('interface-mode-group');
     const allowedVlansGroup = document.getElementById('allowed-vlans-group');
+    const greConfigGroup = document.getElementById('gre-config-group');
     const parentHint = document.getElementById('parent-hint');
+    const ifAddressHint = document.getElementById('if-address-hint');
 
     // Hide all optional groups by default
-    [parentGroup, bondSelectGroup, lacpModeGroup, vlanIdGroup, subifIndexGroup, interfaceModeGroup, allowedVlansGroup].forEach(g => {
+    [parentGroup, bondSelectGroup, lacpModeGroup, vlanIdGroup, subifIndexGroup, interfaceModeGroup, allowedVlansGroup, greConfigGroup].forEach(g => {
         if (g) g.style.display = 'none';
     });
+
+    // Reset address hint
+    if (ifAddressHint) ifAddressHint.textContent = '';
 
     // Populate parent interface dropdown
     const parentSelect = document.getElementById('parent-interface');
@@ -2145,8 +2150,13 @@ function updateInterfaceName() {
             break;
 
         case 'gre':
+            // GRE Tunnel interface - show tunnel config
+            if (greConfigGroup) greConfigGroup.style.display = 'block';
+            if (ifAddressHint) ifAddressHint.textContent = 'Tunnel interface IP (e.g., 10.0.0.1/30 for P2P)';
             const greCounter = interfaceCounters['gre'] || 0;
             document.getElementById('if-name').value = `gre${greCounter}`;
+            // Set default MTU for GRE (1400 to account for overhead)
+            document.getElementById('if-mtu').value = '1400';
             break;
 
         case 'tun':
@@ -2275,12 +2285,43 @@ function addInterfaceToAgent() {
             break;
 
         case 'vxlan':
-        case 'gre':
         case 'tun':
         case 'bridge':
             // Increment counters for these types
             if (!interfaceCounters[ifType]) interfaceCounters[ifType] = 0;
             interfaceCounters[ifType]++;
+            break;
+
+        case 'gre':
+            // GRE Tunnel interface with tunnel configuration
+            const greLocalIp = document.getElementById('gre-local-ip')?.value?.trim() || '';
+            const greRemoteIp = document.getElementById('gre-remote-ip')?.value?.trim() || '';
+            const greKey = document.getElementById('gre-key')?.value?.trim();
+            const greKeepalive = parseInt(document.getElementById('gre-keepalive')?.value) || 10;
+            const greChecksum = document.getElementById('gre-checksum')?.checked || false;
+            const greSequence = document.getElementById('gre-sequence')?.checked || false;
+
+            // Validate required fields
+            if (!greRemoteIp) {
+                showAlert('Remote endpoint IP is required for GRE tunnel', 'error');
+                return;
+            }
+
+            // Add tunnel configuration to interface
+            interfaceConfig.tun = {
+                tt: 'gre',                           // tunnel type
+                src: greLocalIp,                     // source/local IP
+                dst: greRemoteIp,                    // destination/remote IP
+                key: greKey ? parseInt(greKey) : null,  // GRE key
+                csum: greChecksum,                   // checksum
+                seq: greSequence,                    // sequence numbers
+                ka: greKeepalive,                    // keepalive interval
+                ttl: 255,                            // outer TTL
+                tos: 192                             // CS6 for network control
+            };
+
+            if (!interfaceCounters['gre']) interfaceCounters['gre'] = 0;
+            interfaceCounters['gre']++;
             break;
 
         default:
@@ -2351,6 +2392,11 @@ function getInterfaceTypeDisplay(iface) {
         case 'vxlan':
             return 'VXLAN VTEP';
         case 'gre':
+            if (iface.tun) {
+                const dst = iface.tun.dst || 'N/A';
+                const key = iface.tun.key ? `, key=${iface.tun.key}` : '';
+                return `GRE Tunnel (→ ${dst}${key})`;
+            }
             return 'GRE Tunnel';
         case 'tun':
             return 'Tunnel';

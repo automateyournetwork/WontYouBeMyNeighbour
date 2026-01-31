@@ -1931,19 +1931,26 @@ async def register_agent_in_netbox(agent_id: str, request: NetBoxRegisterRequest
                 })
 
         # Convert protocols
+        # TOONProtocolConfig uses: p=protocol type, a=area, asn=AS number
         if agent.protos:
             for proto in agent.protos:
+                # Get protocol type - TOONProtocolConfig uses 'p', other formats use 't' or 'type'
+                proto_type = getattr(proto, 'p', None) or getattr(proto, 't', None) or getattr(proto, 'type', str(proto))
                 proto_dict = {
-                    "type": proto.t if hasattr(proto, 't') else str(proto),
+                    "type": proto_type,
                 }
                 # Add protocol-specific fields
-                if hasattr(proto, 'area'):
+                # TOONProtocolConfig uses 'a' for area
+                if hasattr(proto, 'a') and proto.a:
+                    proto_dict["area"] = proto.a
+                if hasattr(proto, 'area') and proto.area:
                     proto_dict["area"] = proto.area
-                if hasattr(proto, 'asn'):
+                if hasattr(proto, 'asn') and proto.asn:
                     proto_dict["local_as"] = proto.asn
-                if hasattr(proto, 'peers'):
+                if hasattr(proto, 'peers') and proto.peers:
                     proto_dict["peers"] = proto.peers
                 agent_config["protocols"].append(proto_dict)
+                logger.info(f"[NetBox Register] Adding protocol: type={proto_type}, dict={proto_dict}")
 
         # Register the agent with full config
         agent_name = agent.name or agent_id
@@ -2604,20 +2611,20 @@ async def import_agent_configuration(agent_id: str, request: AgentImportRequest)
 
         # Update protocols if present
         if "protocols" in config:
-            from persistence.manager import TOONProtocol
+            from toon.models import TOONProtocolConfig
             new_protos = []
             for proto_data in config["protocols"]:
-                proto = TOONProtocol(
-                    t=proto_data.get("type", proto_data.get("t", "")),
-                    e=proto_data.get("enabled", proto_data.get("e", True))
+                # TOONProtocolConfig uses: p=protocol type, r=router-id, a=area, asn=AS number
+                proto_type = proto_data.get("type", proto_data.get("t", proto_data.get("p", "")))
+                router_id = proto_data.get("router_id", proto_data.get("r", agent.r if hasattr(agent, 'r') else "1.1.1.1"))
+                proto = TOONProtocolConfig(
+                    p=proto_type,
+                    r=router_id,
+                    a=proto_data.get("area", proto_data.get("a")),
+                    asn=proto_data.get("asn", proto_data.get("local_as")),
+                    peers=proto_data.get("peers", []),
+                    nets=proto_data.get("nets", proto_data.get("networks", []))
                 )
-                # Add protocol-specific fields
-                if "area" in proto_data:
-                    proto.area = proto_data["area"]
-                if "asn" in proto_data or "local_as" in proto_data:
-                    proto.asn = proto_data.get("asn", proto_data.get("local_as"))
-                if "peers" in proto_data:
-                    proto.peers = proto_data["peers"]
                 new_protos.append(proto)
             agent.protos = new_protos
 

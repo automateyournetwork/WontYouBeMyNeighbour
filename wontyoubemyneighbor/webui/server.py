@@ -4831,6 +4831,220 @@ def create_webui_server(asi_app, agentic_bridge) -> FastAPI:
             return {"success": False, "error": str(e)}
 
     # ==========================================================================
+    # GRE Tunnel API Endpoints (RFC 2784/2890)
+    # ==========================================================================
+
+    gre_agent_id = os.environ.get("ASI_AGENT_ID", "local")
+
+    @app.get("/api/gre/status")
+    async def api_get_gre_status() -> Dict[str, Any]:
+        """Get GRE manager status"""
+        try:
+            from gre import get_gre_manager
+            manager = get_gre_manager(gre_agent_id)
+            if not manager:
+                return {"enabled": False, "error": "GRE manager not initialized"}
+            return {
+                "enabled": True,
+                **manager.get_status()
+            }
+        except ImportError as e:
+            return {"enabled": False, "error": f"GRE module not available: {e}"}
+        except Exception as e:
+            logger.error(f"GRE status error: {e}")
+            return {"enabled": False, "error": str(e)}
+
+    @app.get("/api/gre/tunnels")
+    async def api_get_gre_tunnels() -> Dict[str, Any]:
+        """Get all GRE tunnels"""
+        try:
+            from gre import get_gre_manager
+            manager = get_gre_manager(gre_agent_id)
+            if not manager:
+                return {"tunnels": [], "error": "GRE manager not initialized"}
+            return {
+                "tunnels": manager.list_tunnels(),
+                "count": manager.tunnel_count
+            }
+        except ImportError as e:
+            return {"tunnels": [], "error": f"GRE module not available: {e}"}
+        except Exception as e:
+            logger.error(f"GRE tunnels error: {e}")
+            return {"tunnels": [], "error": str(e)}
+
+    @app.get("/api/gre/tunnel/{name}")
+    async def api_get_gre_tunnel(name: str) -> Dict[str, Any]:
+        """Get specific GRE tunnel status"""
+        try:
+            from gre import get_gre_manager
+            manager = get_gre_manager(gre_agent_id)
+            if not manager:
+                return {"error": "GRE manager not initialized"}
+
+            tunnel = manager.get_tunnel(name)
+            if not tunnel:
+                return {"error": f"Tunnel '{name}' not found"}
+
+            return tunnel.get_status()
+        except ImportError as e:
+            return {"error": f"GRE module not available: {e}"}
+        except Exception as e:
+            logger.error(f"GRE tunnel error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/gre/tunnel")
+    async def api_create_gre_tunnel(
+        name: str,
+        remote_ip: str,
+        tunnel_ip: str = "",
+        local_ip: str = "",
+        key: Optional[int] = None,
+        use_checksum: bool = False,
+        use_sequence: bool = False,
+        mtu: int = 1400,
+        keepalive_interval: int = 10,
+        description: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Create a new GRE tunnel
+
+        Args:
+            name: Tunnel interface name (e.g., "gre0", "gre-to-cml")
+            remote_ip: Remote endpoint IP address
+            tunnel_ip: IP address for tunnel interface (with prefix, e.g., "10.0.0.1/30")
+            local_ip: Local endpoint IP (defaults to agent's primary IP)
+            key: Optional GRE key for traffic identification
+            use_checksum: Whether to calculate checksums
+            use_sequence: Whether to use sequence numbers
+            mtu: Tunnel MTU (default 1400)
+            keepalive_interval: Keepalive interval in seconds (0 to disable)
+            description: Optional description
+
+        Returns:
+            Tunnel status if successful
+        """
+        try:
+            from gre import get_gre_manager, configure_gre_manager, GRETunnelConfig
+
+            # Get or create manager
+            manager = get_gre_manager(gre_agent_id)
+            if not manager:
+                # Need to determine local IP
+                if not local_ip:
+                    # Try to get from agent config
+                    local_ip = os.environ.get("ASI_AGENT_IP", "0.0.0.0")
+
+                manager = configure_gre_manager(gre_agent_id, local_ip)
+                await manager.start()
+
+            # Use manager's local IP if not specified
+            if not local_ip:
+                local_ip = manager.local_ip
+
+            # Create tunnel config
+            config = GRETunnelConfig(
+                name=name,
+                local_ip=local_ip,
+                remote_ip=remote_ip,
+                tunnel_ip=tunnel_ip,
+                key=key,
+                use_checksum=use_checksum,
+                use_sequence=use_sequence,
+                mtu=mtu,
+                keepalive_interval=keepalive_interval,
+                description=description
+            )
+
+            # Create tunnel
+            tunnel = await manager.create_tunnel(config)
+            if not tunnel:
+                return {"success": False, "error": "Failed to create tunnel"}
+
+            return {
+                "success": True,
+                "tunnel": tunnel.get_status()
+            }
+
+        except ImportError as e:
+            return {"success": False, "error": f"GRE module not available: {e}"}
+        except Exception as e:
+            logger.error(f"GRE create tunnel error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/gre/tunnel/{name}")
+    async def api_delete_gre_tunnel(name: str) -> Dict[str, Any]:
+        """Delete a GRE tunnel"""
+        try:
+            from gre import get_gre_manager
+            manager = get_gre_manager(gre_agent_id)
+            if not manager:
+                return {"success": False, "error": "GRE manager not initialized"}
+
+            success = await manager.delete_tunnel(name)
+            return {"success": success}
+
+        except ImportError as e:
+            return {"success": False, "error": f"GRE module not available: {e}"}
+        except Exception as e:
+            logger.error(f"GRE delete tunnel error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.get("/api/gre/statistics")
+    async def api_get_gre_statistics() -> Dict[str, Any]:
+        """Get GRE tunnel statistics"""
+        try:
+            from gre import get_gre_manager
+            manager = get_gre_manager(gre_agent_id)
+            if not manager:
+                return {"error": "GRE manager not initialized"}
+            return manager.get_statistics()
+        except ImportError as e:
+            return {"error": f"GRE module not available: {e}"}
+        except Exception as e:
+            logger.error(f"GRE statistics error: {e}")
+            return {"error": str(e)}
+
+    @app.post("/api/gre/allowed-source")
+    async def api_add_gre_allowed_source(ip: str) -> Dict[str, Any]:
+        """Add an IP to the allowed GRE sources for passive tunnels"""
+        try:
+            from gre import get_gre_manager
+            manager = get_gre_manager(gre_agent_id)
+            if not manager:
+                return {"success": False, "error": "GRE manager not initialized"}
+
+            manager.add_allowed_source(ip)
+            return {
+                "success": True,
+                "allowed_sources": list(manager.allowed_sources)
+            }
+        except ImportError as e:
+            return {"success": False, "error": f"GRE module not available: {e}"}
+        except Exception as e:
+            logger.error(f"GRE add allowed source error: {e}")
+            return {"success": False, "error": str(e)}
+
+    @app.delete("/api/gre/allowed-source/{ip}")
+    async def api_remove_gre_allowed_source(ip: str) -> Dict[str, Any]:
+        """Remove an IP from the allowed GRE sources"""
+        try:
+            from gre import get_gre_manager
+            manager = get_gre_manager(gre_agent_id)
+            if not manager:
+                return {"success": False, "error": "GRE manager not initialized"}
+
+            manager.remove_allowed_source(ip)
+            return {
+                "success": True,
+                "allowed_sources": list(manager.allowed_sources)
+            }
+        except ImportError as e:
+            return {"success": False, "error": f"GRE module not available: {e}"}
+        except Exception as e:
+            logger.error(f"GRE remove allowed source error: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ==========================================================================
     # MCP External Access API Endpoints
     # ==========================================================================
 
