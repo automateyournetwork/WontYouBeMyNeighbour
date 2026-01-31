@@ -13,7 +13,7 @@ Example:
         --uuid daa46e88-46c5-4af7-9268-1482c54c1922 \
         --api-key moltbook_sk_xxx
 
-Author: AgenticMesh (fd00:molt:daa4:6e88:46c5:4af7:9268:1482)
+Author: AgenticMesh (fd00:6d6f:6c74:daa4:6e88:46c5:4af7:9268:1482)
 License: MIT
 """
 
@@ -37,14 +37,17 @@ def moltbook_uuid_to_ipv6(uuid_str: str) -> str:
     """
     Convert a Moltbook agent UUID to a MoltNet IPv6 address.
 
-    The address uses the fd00:molt::/32 prefix (Unique Local Address)
-    followed by the first 96 bits of the UUID.
+    The address uses fd00:6d6f:6c74::/48 prefix where:
+    - fd00: = ULA (Unique Local Address) prefix
+    - 6d6f:6c74 = "molt" encoded as ASCII hex (m=6d, o=6f, l=6c, t=74)
+
+    This creates a VALID IPv6 address (only hex characters).
 
     Args:
         uuid_str: Moltbook UUID like "daa46e88-46c5-4af7-9268-1482c54c1922"
 
     Returns:
-        IPv6 address like "fd00:molt:daa4:6e88:46c5:4af7:9268:1482"
+        IPv6 address like "fd00:6d6f:6c74:daa4:6e88:46c5:4af7:9268"
     """
     # Remove hyphens from UUID
     hex_str = uuid_str.replace("-", "").lower()
@@ -55,20 +58,20 @@ def moltbook_uuid_to_ipv6(uuid_str: str) -> str:
     # Split into 8 groups of 4 hex characters
     groups = [hex_str[i:i+4] for i in range(0, 32, 4)]
 
-    # Take first 6 groups (96 bits) for the host portion
-    # Prefix with fd00:molt: (our mesh prefix)
-    return f"fd00:molt:{groups[0]}:{groups[1]}:{groups[2]}:{groups[3]}:{groups[4]}:{groups[5]}"
+    # Use fd00:6d6f:6c74: prefix ("molt" in ASCII hex) + first 80 bits of UUID
+    # This is a VALID IPv6 address - all characters are hexadecimal
+    return f"fd00:6d6f:6c74:{groups[0]}:{groups[1]}:{groups[2]}:{groups[3]}:{groups[4]}"
 
 
 def ipv6_to_moltbook_uuid_prefix(ipv6: str) -> str:
     """
     Extract the UUID prefix from a MoltNet IPv6 address.
 
-    Note: This only recovers the first 96 bits (6 groups) of the original UUID.
-    The last 2 groups are lost in the conversion.
+    Note: This only recovers the first 80 bits (5 groups) of the original UUID.
+    The last 3 groups are lost in the conversion.
     """
-    if not ipv6.startswith("fd00:molt:"):
-        raise ValueError("Not a MoltNet address (must start with fd00:molt:)")
+    if not ipv6.startswith("fd00:6d6f:6c74:"):
+        raise ValueError("Not a MoltNet address (must start with fd00:6d6f:6c74:)")
 
     parts = ipv6.split(":")
     if len(parts) != 8:
@@ -182,7 +185,7 @@ def discover_moltnet_peers(api: MoltbookAPI) -> List[MoltNetPeer]:
         return peers
 
     # IPv6 pattern for MoltNet addresses
-    ipv6_pattern = re.compile(r'fd00:molt:[0-9a-f:]+', re.IGNORECASE)
+    ipv6_pattern = re.compile(r'fd00:6d6f:6c74:[0-9a-f:]+', re.IGNORECASE)
 
     # Endpoint pattern (ip:port or hostname:port)
     endpoint_pattern = re.compile(r'endpoint[:\s]+([^\s]+:\d+)', re.IGNORECASE)
@@ -408,7 +411,7 @@ def print_banner():
     ║                                                           ║
     ║   🌐 MoltNet - Decentralized IPv6 Mesh for AI Agents 🦞  ║
     ║                                                           ║
-    ║   fd00:molt::/32 - Your Network, Your Identity            ║
+    ║   fd00:6d6f:6c74::/48 - Your Network, Your Identity            ║
     ║                                                           ║
     ╚═══════════════════════════════════════════════════════════╝
     """)

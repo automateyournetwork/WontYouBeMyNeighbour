@@ -19,7 +19,7 @@ Quick Start:
     await node.start()
 
 Address Format:
-    fd00:molt:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX/128
+    fd00:6d6f:6c74:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX/128
 
     - fd00::/8 = Unique Local Address (RFC 4193)
     - molt = Mesh identifier

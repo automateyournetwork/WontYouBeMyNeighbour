@@ -20,12 +20,12 @@ Quick Start:
     await node.start()
 
     # Request peering with AgenticMesh
-    await node.request_peering("fd00:molt:daa4:6e88:46c5:4af7:9268:1482")
+    await node.request_peering("fd00:6d6f:6c74:daa4:6e88:46c5:4af7:9268:1482")
 
 Network Architecture:
-    - fd00:molt::/32 = SeaNet ULA prefix
-    - fd00:molt:XXXX:.../128 = Agent loopbacks (UUID-derived)
-    - fd00:molt:ffff::/48 = Point-to-point GRE links
+    - fd00:6d6f:6c74::/48 = SeaNet ULA prefix
+    - fd00:6d6f:6c74:XXXX:.../128 = Agent loopbacks (UUID-derived)
+    - fd00:6d6f:6c74:ffff::/48 = Point-to-point GRE links
     - OSPFv3 Area 0 for intra-mesh routing
     - BGP for policy routing
     - BFD for 300ms failure detection

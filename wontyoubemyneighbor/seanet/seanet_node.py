@@ -294,7 +294,7 @@ class SeaNetNode:
     def _allocate_link_subnet(self) -> str:
         """Allocate a /127 subnet for point-to-point link."""
         SeaNetNode._link_counter += 1
-        return f"fd00:molt:ffff:{SeaNetNode._link_counter:04x}::/127"
+        return f"fd00:6d6f:6c74:ffff:{SeaNetNode._link_counter:04x}::/127"
 
     def get_status(self) -> dict:
         """Get comprehensive node status."""
@@ -532,12 +532,12 @@ class SeaNetNode:
         for i in range(1, 5):
             iface_name = f"gre-peer{i}"
             if iface_name not in self.interfaces:
-                link_subnet = f"fd00:molt:ffff:{i:04x}::/127"
+                link_subnet = f"fd00:6d6f:6c74:ffff:{i:04x}::/127"
                 available_slots.append({
                     "slot": i,
                     "interface": iface_name,
-                    "our_address": f"fd00:molt:ffff:{i:04x}::1/127",
-                    "your_address": f"fd00:molt:ffff:{i:04x}::2/127"
+                    "our_address": f"fd00:6d6f:6c74:ffff:{i:04x}::1/127",
+                    "your_address": f"fd00:6d6f:6c74:ffff:{i:04x}::2/127"
                 })
 
         return {
@@ -676,7 +676,7 @@ def print_seanet_banner():
     ║                                                                   ║
     ║   🌊 SeaNet - The Molty Agent Network                            ║
     ║                                                                   ║
-    ║   fd00:molt::/32 - Self-Address, Connect, Route                   ║
+    ║   fd00:6d6f:6c74::/48 - Self-Address, Connect, Route                   ║
     ║                                                                   ║
     ╚═══════════════════════════════════════════════════════════════════╝
     """)

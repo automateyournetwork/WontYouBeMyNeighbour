@@ -21,8 +21,8 @@ from .seanet_node import SeaNetConfig
 AGENTICMESH_UUID = "daa46e88-46c5-4af7-9268-1482c54c1922"
 
 # Derived IPv6 address
-# fd00:molt: + first 96 bits of UUID
-AGENTICMESH_IPV6 = "fd00:molt:daa4:6e88:46c5:4af7:9268:1482"
+# fd00:6d6f:6c74: + first 96 bits of UUID
+AGENTICMESH_IPV6 = "fd00:6d6f:6c74:daa4:6e88:46c5:4af7:9268:1482"
 
 # Router ID (OSPF/BGP)
 AGENTICMESH_ROUTER_ID = "10.255.0.1"
@@ -66,25 +66,25 @@ AGENTICMESH_INTERFACES = {
     },
     "gre-peer1": {
         "type": "gre",
-        "ipv6": "fd00:molt:ffff:0001::1/127",
+        "ipv6": "fd00:6d6f:6c74:ffff:0001::1/127",
         "description": "GRE tunnel to Peer 1 (AVAILABLE)",
         "state": "up"
     },
     "gre-peer2": {
         "type": "gre",
-        "ipv6": "fd00:molt:ffff:0002::1/127",
+        "ipv6": "fd00:6d6f:6c74:ffff:0002::1/127",
         "description": "GRE tunnel to Peer 2 (AVAILABLE)",
         "state": "up"
     },
     "gre-peer3": {
         "type": "gre",
-        "ipv6": "fd00:molt:ffff:0003::1/127",
+        "ipv6": "fd00:6d6f:6c74:ffff:0003::1/127",
         "description": "GRE tunnel to Peer 3 (AVAILABLE)",
         "state": "up"
     },
     "gre-peer4": {
         "type": "gre",
-        "ipv6": "fd00:molt:ffff:0004::1/127",
+        "ipv6": "fd00:6d6f:6c74:ffff:0004::1/127",
         "description": "GRE tunnel to Peer 4 (AVAILABLE)",
         "state": "up"
     }
@@ -152,29 +152,29 @@ def get_agenticmesh_peering_info() -> dict:
             {
                 "slot": 1,
                 "interface": "gre-peer1",
-                "agenticmesh_address": "fd00:molt:ffff:0001::1/127",
-                "your_address": "fd00:molt:ffff:0001::2/127",
+                "agenticmesh_address": "fd00:6d6f:6c74:ffff:0001::1/127",
+                "your_address": "fd00:6d6f:6c74:ffff:0001::2/127",
                 "status": "AVAILABLE"
             },
             {
                 "slot": 2,
                 "interface": "gre-peer2",
-                "agenticmesh_address": "fd00:molt:ffff:0002::1/127",
-                "your_address": "fd00:molt:ffff:0002::2/127",
+                "agenticmesh_address": "fd00:6d6f:6c74:ffff:0002::1/127",
+                "your_address": "fd00:6d6f:6c74:ffff:0002::2/127",
                 "status": "AVAILABLE"
             },
             {
                 "slot": 3,
                 "interface": "gre-peer3",
-                "agenticmesh_address": "fd00:molt:ffff:0003::1/127",
-                "your_address": "fd00:molt:ffff:0003::2/127",
+                "agenticmesh_address": "fd00:6d6f:6c74:ffff:0003::1/127",
+                "your_address": "fd00:6d6f:6c74:ffff:0003::2/127",
                 "status": "AVAILABLE"
             },
             {
                 "slot": 4,
                 "interface": "gre-peer4",
-                "agenticmesh_address": "fd00:molt:ffff:0004::1/127",
-                "your_address": "fd00:molt:ffff:0004::2/127",
+                "agenticmesh_address": "fd00:6d6f:6c74:ffff:0004::1/127",
+                "your_address": "fd00:6d6f:6c74:ffff:0004::2/127",
                 "status": "AVAILABLE"
             }
         ],
@@ -209,7 +209,7 @@ def get_agenticmesh_peering_info() -> dict:
 def uuid_to_ipv6(uuid):
     h = uuid.replace("-", "").lower()
     g = [h[i:i+4] for i in range(0, 32, 4)]
-    return f"fd00:molt:{g[0]}:{g[1]}:{g[2]}:{g[3]}:{g[4]}:{g[5]}"
+    return f"fd00:6d6f:6c74:{g[0]}:{g[1]}:{g[2]}:{g[3]}:{g[4]}:{g[5]}"
 """
             },
             "step_2": {
@@ -220,7 +220,7 @@ def uuid_to_ipv6(uuid):
 
 Agent: [Your Agent Name]
 UUID: [your-moltbook-uuid]
-IPv6: fd00:molt:[your-calculated-address]
+IPv6: fd00:6d6f:6c74:[your-calculated-address]
 Endpoint: [your-public-ip:port] (optional)
 ASN: [your-asn] (64512-65534)
 
@@ -235,7 +235,7 @@ interface gre-agenticmesh
     tunnel mode gre ipv6
     tunnel source [your-underlay-ip]
     tunnel destination [agenticmesh-endpoint]
-    ipv6 address fd00:molt:ffff:000X::2/127
+    ipv6 address fd00:6d6f:6c74:ffff:000X::2/127
     description "SeaNet tunnel to AgenticMesh"
 """
             },
@@ -255,9 +255,9 @@ router ospf6
                 "description": "For policy routing",
                 "config": """
 router bgp [your-asn]
-    neighbor fd00:molt:ffff:000X::1 remote-as 65001
+    neighbor fd00:6d6f:6c74:ffff:000X::1 remote-as 65001
     address-family ipv6 unicast
-        neighbor fd00:molt:ffff:000X::1 activate
+        neighbor fd00:6d6f:6c74:ffff:000X::1 activate
 """
             }
         },
@@ -282,7 +282,7 @@ SEANET_TOPOLOGY = """
 
                               ┌─────────────────────┐
                               │    AgenticMesh      │
-                              │ fd00:molt:daa4:...  │
+                              │ fd00:6d6f:6c74:daa4:...  │
                               │     AS 65001        │
                               │   Router ID: .1     │
                               └──────────┬──────────┘
@@ -301,7 +301,7 @@ SEANET_TOPOLOGY = """
 
                     ═══════════════════════════════════════
                     Protocols: OSPFv3 | BGP | BFD | GRE
-                    Prefix: fd00:molt::/32
+                    Prefix: fd00:6d6f:6c74::/48
                     Detection Time: 300ms
                     ═══════════════════════════════════════
 """
