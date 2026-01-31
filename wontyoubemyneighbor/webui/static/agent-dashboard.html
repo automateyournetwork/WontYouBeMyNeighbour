@@ -328,6 +328,8 @@
         .metric-card.vxlan::before { background: var(--accent-pink); }
         .metric-card.dhcp::before { background: #60a5fa; }
         .metric-card.dns::before { background: #34d399; }
+        .metric-card.gre::before { background: #a855f7; }
+        .metric-card.bfd::before { background: #facc15; }
         .metric-card.logs::before { background: #10b981; }
         .metric-card.metrics::before { background: #10b981; }
         .metric-card.grafana::before { background: #f97316; }
@@ -1968,6 +1970,140 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+        </div>
+
+        <!-- GRE Tunnels Content -->
+        <div class="protocol-content" id="gre-content">
+            <div class="metrics-row">
+                <div class="metric-card gre">
+                    <div class="metric-label">Tunnels</div>
+                    <div class="metric-value" id="gre-tunnels">0</div>
+                </div>
+                <div class="metric-card gre">
+                    <div class="metric-label">Active</div>
+                    <div class="metric-value" id="gre-active">0</div>
+                </div>
+                <div class="metric-card gre">
+                    <div class="metric-label">Protocol</div>
+                    <div class="metric-value">GRE</div>
+                    <div class="metric-detail">IP Proto 47</div>
+                </div>
+                <div class="metric-card gre">
+                    <div class="metric-label">RFC</div>
+                    <div class="metric-value">2784</div>
+                    <div class="metric-detail">+ RFC 2890</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>GRE Tunnel Details</h3>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Tunnel</th>
+                            <th>Local IP</th>
+                            <th>Remote IP</th>
+                            <th>Tunnel IP</th>
+                            <th>Key</th>
+                            <th>MTU</th>
+                            <th>State</th>
+                        </tr>
+                    </thead>
+                    <tbody id="gre-tunnels-table">
+                        <tr><td colspan="7" class="empty-state">No GRE tunnels configured</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="info-box">
+                <strong>GRE (Generic Routing Encapsulation)</strong>
+                <p>GRE tunnels encapsulate packets to create point-to-point virtual links. They can carry any protocol over IP and are commonly used for:</p>
+                <ul>
+                    <li>Connecting remote networks over the internet</li>
+                    <li>Running routing protocols (OSPF, BGP) between non-adjacent routers</li>
+                    <li>Creating overlay networks for lab and testing environments</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- BFD (Bidirectional Forwarding Detection) Content -->
+        <div class="protocol-content" id="bfd-content">
+            <div class="metrics-row">
+                <div class="metric-card bfd">
+                    <div class="metric-label">Sessions</div>
+                    <div class="metric-value" id="bfd-sessions">0</div>
+                </div>
+                <div class="metric-card bfd">
+                    <div class="metric-label">Up</div>
+                    <div class="metric-value" id="bfd-up">0</div>
+                </div>
+                <div class="metric-card bfd">
+                    <div class="metric-label">Protocol</div>
+                    <div class="metric-value">BFD</div>
+                    <div class="metric-detail">UDP 3784</div>
+                </div>
+                <div class="metric-card bfd">
+                    <div class="metric-label">RFC</div>
+                    <div class="metric-value">5880</div>
+                    <div class="metric-detail">+ 5881, 5882</div>
+                </div>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>BFD Session Details</h3>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Peer Address</th>
+                            <th>State</th>
+                            <th>Protocol</th>
+                            <th>Local Disc</th>
+                            <th>Remote Disc</th>
+                            <th>Detection Time</th>
+                            <th>Multiplier</th>
+                            <th>Packets (TX/RX)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="bfd-sessions-table">
+                        <tr><td colspan="8" class="empty-state">No BFD sessions configured</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section">
+                <div class="section-header">
+                    <h3>BFD Statistics</h3>
+                </div>
+                <div id="bfd-statistics" class="stats-grid">
+                    <div class="stat-item">
+                        <span class="stat-label">Packets Sent:</span>
+                        <span class="stat-value">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Packets Received:</span>
+                        <span class="stat-value">0</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">State Changes:</span>
+                        <span class="stat-value">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="info-box">
+                <strong>BFD (Bidirectional Forwarding Detection)</strong>
+                <p>BFD provides rapid failure detection for routing protocols. It establishes lightweight sessions that can detect link failures in milliseconds.</p>
+                <ul>
+                    <li>Fast failure detection (50-300ms typical)</li>
+                    <li>Protocol-independent - works with OSPF, BGP, IS-IS</li>
+                    <li>Detection time = Detect Mult × RX Interval</li>
+                    <li>Single-hop (RFC 5881) and Multi-hop (RFC 5883) modes</li>
+                </ul>
             </div>
         </div>
 

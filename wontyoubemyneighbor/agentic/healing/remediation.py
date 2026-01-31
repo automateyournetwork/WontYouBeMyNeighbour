@@ -194,11 +194,47 @@ class RemediationEngine:
             action_id="interface_bounce",
             name="Interface Bounce",
             description="Administratively bounce interface",
-            event_types=["ospf_adjacency_down", "bgp_peer_down", "isis_adjacency_down"],
+            event_types=["ospf_adjacency_down", "bgp_peer_down", "isis_adjacency_down", "gre_tunnel_down", "bfd_session_down"],
             protocol="any",
             severity_threshold=8,
             auto_execute=False,  # Requires manual approval
             cooldown_seconds=300
+        ))
+
+        # GRE tunnel remediation
+        self.register_action(RemediationAction(
+            action_id="gre_tunnel_restart",
+            name="GRE Tunnel Restart",
+            description="Restart GRE tunnel endpoint",
+            event_types=["gre_tunnel_down", "gre_keepalive_timeout"],
+            protocol="gre",
+            severity_threshold=7,
+            auto_execute=True,
+            cooldown_seconds=60
+        ))
+
+        # BFD session remediation
+        self.register_action(RemediationAction(
+            action_id="bfd_session_reset",
+            name="BFD Session Reset",
+            description="Reset BFD session to peer",
+            event_types=["bfd_session_down", "bfd_detection_timeout"],
+            protocol="bfd",
+            severity_threshold=7,
+            auto_execute=True,
+            cooldown_seconds=30
+        ))
+
+        # BFD protocol notification
+        self.register_action(RemediationAction(
+            action_id="bfd_notify_protocol",
+            name="BFD Notify Protocol",
+            description="Notify client protocol of BFD failure for fast convergence",
+            event_types=["bfd_session_down"],
+            protocol="bfd",
+            severity_threshold=8,
+            auto_execute=True,
+            cooldown_seconds=10
         ))
 
     def register_action(self, action: RemediationAction) -> None:

@@ -1,0 +1,56 @@
+###############################################################################
+# External FRR Router for GRE Peering Test
+#
+# This runs a standalone FRRouting router that connects to the Agentic network
+# via GRE tunnel. Use this to prove GRE connectivity works.
+#
+# Network: 192.168.100.0/24 (GRE underlay)
+#   - Agentic Core Router: 192.168.100.10
+#   - External FRR Router: 192.168.100.20
+#
+# GRE Tunnel: 10.255.0.0/30
+#   - Agentic side: 10.255.0.1
+#   - FRR side: 10.255.0.2
+#
+# Usage:
+#   docker-compose up -d
+#   docker exec -it external-frr vtysh
+###############################################################################
+
+services:
+  external-frr:
+    image: frrouting/frr:latest
+    platform: linux/amd64
+    container_name: external-frr
+    hostname: external-frr
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.rp_filter=0
+      - net.ipv6.conf.all.forwarding=1
+    volumes:
+      - ./frr.conf:/etc/frr/frr.conf:ro
+      - ./daemons:/etc/frr/daemons:ro
+      - ./setup-gre.sh:/setup-gre.sh:ro
+    networks:
+      gre-underlay:
+        ipv4_address: 192.168.100.20
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        # Setup GRE tunnel
+        /setup-gre.sh
+        # Start FRR
+        /usr/lib/frr/docker-start
+    restart: unless-stopped
+
+networks:
+  gre-underlay:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 192.168.100.0/24
+          gateway: 192.168.100.1

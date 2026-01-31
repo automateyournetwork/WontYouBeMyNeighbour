@@ -203,7 +203,7 @@ def get_tests_for_agent(agent_config: Dict[str, Any]) -> List[TestSuite]:
         List of TestSuite objects applicable to this agent
     """
     from .common import connectivity_tests, interface_tests, resource_tests
-    from .protocols import ospf_tests, bgp_tests, isis_tests, vxlan_tests, mpls_tests
+    from .protocols import ospf_tests, bgp_tests, isis_tests, vxlan_tests, mpls_tests, gre_tests, bfd_tests
     from .services import dhcp_tests, dns_tests
 
     suites = []
@@ -230,6 +230,17 @@ def get_tests_for_agent(agent_config: Dict[str, Any]) -> List[TestSuite]:
 
     if "mpls" in protocols or "ldp" in protocols:
         suites.append(mpls_tests.get_suite(agent_config))
+
+    # Check for GRE interfaces (not in protocols, but in interfaces)
+    has_gre = any(iface.get("t") == "gre" for iface in agent_config.get("ifs", []))
+    if has_gre:
+        suites.append(gre_tests.get_suite(agent_config))
+
+    # BFD tests for any agent with routing protocols (OSPF, BGP, IS-IS)
+    routing_protocols = ["ospf", "ospfv3", "ibgp", "ebgp", "isis"]
+    has_routing = any(p in protocols for p in routing_protocols)
+    if has_routing:
+        suites.append(bfd_tests.get_suite(agent_config))
 
     if "dhcp" in protocols:
         suites.append(dhcp_tests.get_suite(agent_config))

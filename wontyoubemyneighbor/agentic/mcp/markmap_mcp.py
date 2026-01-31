@@ -131,6 +131,16 @@ class AgentStateCollector:
             elif proto_type in ["vxlan", "evpn"]:
                 state["vxlan"] = await self._collect_vxlan_state()
 
+        # Check for GRE interfaces (not in protocols, but in interfaces)
+        gre_interfaces = [i for i in self.interfaces if i.get("t") == "gre"]
+        if gre_interfaces:
+            state["gre"] = await self._collect_gre_state(gre_interfaces)
+
+        # Always try to collect BFD state (runs alongside any protocol)
+        bfd_state = await self._collect_bfd_state()
+        if bfd_state.get("enabled"):
+            state["bfd"] = bfd_state
+
         return state
 
     async def _collect_identity(self) -> Dict[str, Any]:
@@ -281,6 +291,72 @@ class AgentStateCollector:
             "remote_vteps": [],
         }
 
+    async def _collect_gre_state(self, gre_interfaces: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Collect GRE tunnel state"""
+        tunnels = []
+        for iface in gre_interfaces:
+            tun_config = iface.get("tun", {})
+            tunnels.append({
+                "name": iface.get("n", iface.get("id")),
+                "local_ip": tun_config.get("src", ""),
+                "remote_ip": tun_config.get("dst", ""),
+                "tunnel_ip": iface.get("a", ["N/A"])[0] if iface.get("a") else "N/A",
+                "key": tun_config.get("key"),
+                "mtu": iface.get("mtu", 1400),
+                "state": iface.get("s", "up"),
+                "keepalive": tun_config.get("ka", 10),
+                "checksum": tun_config.get("csum", False),
+                "sequence": tun_config.get("seq", False),
+            })
+
+        return {
+            "enabled": True,
+            "tunnel_count": len(tunnels),
+            "tunnels": tunnels,
+        }
+
+    async def _collect_bfd_state(self) -> Dict[str, Any]:
+        """Collect BFD session state"""
+        try:
+            from bfd import get_bfd_manager
+            agent_id = self.agent_config.get("id", "local")
+            manager = get_bfd_manager(agent_id)
+
+            if manager and manager.is_running:
+                sessions = []
+                for session in manager.list_sessions():
+                    sessions.append({
+                        "peer_address": session.get("remote_address", ""),
+                        "state": session.get("state", "DOWN"),
+                        "remote_state": session.get("remote_state", "DOWN"),
+                        "protocol": session.get("client_protocol", ""),
+                        "local_discriminator": session.get("local_discriminator", 0),
+                        "remote_discriminator": session.get("remote_discriminator", 0),
+                        "detect_mult": session.get("detect_mult", 3),
+                        "detection_time_ms": session.get("detection_time_ms", 0),
+                        "tx_interval_us": session.get("desired_min_tx_us", 100000),
+                        "rx_interval_us": session.get("required_min_rx_us", 100000),
+                        "is_up": session.get("is_up", False),
+                        "packets_sent": session.get("statistics", {}).get("packets_sent", 0),
+                        "packets_received": session.get("statistics", {}).get("packets_received", 0),
+                    })
+
+                return {
+                    "enabled": True,
+                    "running": manager.is_running,
+                    "session_count": manager.session_count,
+                    "up_count": manager.up_session_count,
+                    "sessions": sessions,
+                    "statistics": manager.stats.to_dict() if hasattr(manager, 'stats') else {},
+                }
+            else:
+                return {"enabled": False}
+        except ImportError:
+            return {"enabled": False, "error": "BFD module not available"}
+        except Exception as e:
+            logger.warning(f"Failed to collect BFD state: {e}")
+            return {"enabled": False, "error": str(e)}
+
 
 class MarkmapGenerator:
     """
@@ -390,6 +466,55 @@ class MarkmapGenerator:
                 lines.append(f"- Prefixes Received: {peer.get('prefixes_received', 0)}")
                 lines.append(f"- Prefixes Sent: {peer.get('prefixes_sent', 0)}")
                 lines.append(f"- Uptime: {peer.get('uptime', 'N/A')}")
+
+        # GRE State
+        gre = agent_state.get("gre", {})
+        if gre.get("enabled"):
+            lines.extend(["", "## GRE Tunnels"])
+            lines.append(f"- **Tunnel Count:** {gre.get('tunnel_count', 0)}")
+
+            lines.append("### Tunnel Details")
+            for tunnel in gre.get("tunnels", []):
+                lines.append(f"#### {tunnel.get('name', 'Unknown')}")
+                lines.append(f"- Local IP: {tunnel.get('local_ip', 'N/A')}")
+                lines.append(f"- Remote IP: {tunnel.get('remote_ip', 'N/A')}")
+                lines.append(f"- Tunnel IP: {tunnel.get('tunnel_ip', 'N/A')}")
+                if tunnel.get('key'):
+                    lines.append(f"- GRE Key: {tunnel.get('key')}")
+                lines.append(f"- MTU: {tunnel.get('mtu', 1400)}")
+                lines.append(f"- State: {tunnel.get('state', 'unknown').upper()}")
+                lines.append(f"- Keepalive: {tunnel.get('keepalive', 10)}s")
+                features = []
+                if tunnel.get('checksum'):
+                    features.append("Checksum")
+                if tunnel.get('sequence'):
+                    features.append("Sequence")
+                if features:
+                    lines.append(f"- Features: {', '.join(features)}")
+
+        # BFD State
+        bfd = agent_state.get("bfd", {})
+        if bfd.get("enabled"):
+            lines.extend(["", "## BFD Sessions"])
+            lines.append(f"- **Session Count:** {bfd.get('session_count', 0)}")
+            lines.append(f"- **Sessions Up:** {bfd.get('up_count', 0)}")
+
+            lines.append("### Session Details")
+            for session in bfd.get("sessions", []):
+                peer = session.get('peer_address', 'Unknown')
+                state = session.get('state', 'DOWN')
+                state_icon = "✓" if session.get('is_up') else "✗"
+                lines.append(f"#### {state_icon} {peer}")
+                lines.append(f"- State: {state}")
+                protocol = session.get('protocol', '')
+                if protocol:
+                    lines.append(f"- Protocol: {protocol.upper()}")
+                lines.append(f"- Detection Time: {session.get('detection_time_ms', 0):.1f}ms")
+                lines.append(f"- Multiplier: {session.get('detect_mult', 3)}")
+                tx_ms = session.get('tx_interval_us', 100000) / 1000
+                rx_ms = session.get('rx_interval_us', 100000) / 1000
+                lines.append(f"- TX/RX Interval: {tx_ms:.0f}ms / {rx_ms:.0f}ms")
+                lines.append(f"- Packets: {session.get('packets_sent', 0)} TX / {session.get('packets_received', 0)} RX")
 
         # Health
         health = agent_state.get("health", {})

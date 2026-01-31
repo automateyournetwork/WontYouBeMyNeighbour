@@ -404,7 +404,7 @@ class SSHServerProcess:
                 f"Connected: {session.connected_at.isoformat()}\n"
                 f"Commands: {session.commands_executed}"
             ), False
-        elif subcmd in ["ip", "route", "interface", "ospf", "bgp", "isis"]:
+        elif subcmd in ["ip", "route", "interface", "ospf", "bgp", "isis", "gre", "tunnel", "bfd"]:
             # Forward to chat handler for natural language processing
             if self.chat_handler:
                 full_cmd = " ".join(cmd_parts)

@@ -364,7 +364,8 @@ class FlowExporter:
         # Map protocol names to numbers
         protocol_map = {
             "ospf": 89, "bgp": 6, "isis": 124, "ldp": 6,
-            "bfd": 17, "lldp": 0, "icmp": 1, "tcp": 6, "udp": 17
+            "bfd": 17, "lldp": 0, "icmp": 1, "tcp": 6, "udp": 17,
+            "gre": 47
         }
         protocol_num = protocol_map.get(protocol_name.lower(), 0)
 

@@ -2,6 +2,14 @@
   "version": "1.0.0",
   "templates": [
     {
+      "id": "gre-external-peering",
+      "name": "GRE External Peering Lab",
+      "category": "lab-integration",
+      "agent_count": 3,
+      "protocols": ["ospf", "gre"],
+      "description": "OSPF core with GRE tunnel to external FRR router (Docker)"
+    },
+    {
       "id": "spine-leaf-datacenter",
       "name": "Spine-Leaf Data Center",
       "category": "datacenter",
@@ -59,6 +67,7 @@
     }
   ],
   "categories": {
+    "lab-integration": "External lab integration (CML, Containerlab, FRR)",
     "datacenter": "Data center and cloud infrastructure",
     "enterprise": "Enterprise campus and office networks",
     "service-provider": "ISP and carrier networks",

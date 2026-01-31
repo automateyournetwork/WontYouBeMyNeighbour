@@ -128,6 +128,14 @@ PROTOCOL_RFC_MAP: Dict[str, List[int]] = {
     "dhcp": [2131, 3315, 8415],  # DHCPv4, DHCPv6, DHCPv6 Failover
     "dns": [1035, 2181, 8499],  # DNS, DNS Clarifications, Terminology
 
+    # BFD (Bidirectional Forwarding Detection)
+    "bfd": [5880, 5881, 5882, 5883],  # BFD Base, Single-Hop, Generic App, Multi-Hop
+    "bfd-single-hop": [5880, 5881],
+    "bfd-multi-hop": [5880, 5883],
+
+    # GRE (Generic Routing Encapsulation)
+    "gre": [2784, 2890],  # GRE, Key/Sequence Extensions
+
     # General
     "snmp": [3411, 3412, 3414],  # SNMP Architecture
     "syslog": [5424, 5426],  # Syslog Protocol
@@ -229,6 +237,68 @@ RFC_SUMMARIES: Dict[int, Dict[str, str]] = {
         "key_sections": [
             "Section 3: IP Reachability TLV",
             "Section 4: Routing with Integrated IS-IS",
+        ]
+    },
+    5880: {
+        "title": "Bidirectional Forwarding Detection (BFD)",
+        "summary": "Defines BFD, a protocol for rapid detection of connectivity failures between "
+                   "adjacent forwarding engines. BFD provides sub-second failure detection independent "
+                   "of media, protocol, or routing protocol timers.",
+        "key_sections": [
+            "Section 4: BFD Control Packet Format",
+            "Section 6.8: State Machine (AdminDown, Down, Init, Up)",
+            "Section 6.8.6: Packet Reception",
+            "Section 6.8.7: Transmitting BFD Control Packets",
+        ]
+    },
+    5881: {
+        "title": "Bidirectional Forwarding Detection (BFD) for IPv4 and IPv6 (Single Hop)",
+        "summary": "Defines BFD procedures for single IP hop connections. Specifies use of "
+                   "UDP port 3784 for control packets. Requires TTL/hop limit of 255 for security.",
+        "key_sections": [
+            "Section 4: BFD Control Packets",
+            "Section 5: TTL/Hop Limit Issues",
+        ]
+    },
+    5882: {
+        "title": "Generic Application of Bidirectional Forwarding Detection (BFD)",
+        "summary": "Describes how to use BFD with various routing protocols including OSPF, "
+                   "IS-IS, BGP, and static routes. Provides guidance on integrating BFD.",
+        "key_sections": [
+            "Section 4.1: BFD for OSPF",
+            "Section 4.2: BFD for IS-IS",
+            "Section 4.3: BFD for BGP",
+            "Section 4.4: BFD for Static Routes",
+        ]
+    },
+    5883: {
+        "title": "Bidirectional Forwarding Detection (BFD) for Multihop Paths",
+        "summary": "Extends BFD for paths spanning multiple IP hops, such as EBGP multi-hop "
+                   "or MPLS LSP verification. Uses UDP port 4784.",
+        "key_sections": [
+            "Section 3: Use of the TTL/Hop Limit Field",
+            "Section 4: Demultiplexing",
+            "Section 5: Encapsulation",
+        ]
+    },
+    2784: {
+        "title": "Generic Routing Encapsulation (GRE)",
+        "summary": "Defines GRE, a protocol for encapsulating packets of one protocol inside "
+                   "packets of another protocol. IP protocol 47. Creates point-to-point tunnels.",
+        "key_sections": [
+            "Section 2: Structure of a GRE Encapsulated Packet",
+            "Section 2.1: GRE Header",
+            "Section 3: Protocol Type Field",
+        ]
+    },
+    2890: {
+        "title": "Key and Sequence Number Extensions to GRE",
+        "summary": "Extends GRE with optional key and sequence number fields. Key provides "
+                   "tunnel demultiplexing; sequence numbers enable ordered delivery detection.",
+        "key_sections": [
+            "Section 2: Extensions to GRE Header",
+            "Section 2.1: Key Field",
+            "Section 2.2: Sequence Number",
         ]
     },
 }
