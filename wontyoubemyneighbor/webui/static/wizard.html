@@ -917,11 +917,56 @@
                                     <input type="text" id="allowed-vlans" placeholder="100,200,300-400">
                                     <div class="hint">Comma-separated VLANs or ranges</div>
                                 </div>
+                                <!-- GRE Tunnel Configuration -->
+                                <div id="gre-config-group" style="display: none;">
+                                    <div style="background: #252545; padding: 10px; border-radius: 6px; margin: 10px 0; border-left: 3px solid #00bcd4;">
+                                        <h5 style="margin: 0 0 10px 0; color: #00bcd4;">GRE Tunnel Configuration (RFC 2784/2890)</h5>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label for="gre-local-ip">Local Endpoint IP</label>
+                                                <input type="text" id="gre-local-ip" placeholder="e.g., 192.168.1.1">
+                                                <div class="hint">Physical interface IP for tunnel source</div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="gre-remote-ip">Remote Endpoint IP</label>
+                                                <input type="text" id="gre-remote-ip" placeholder="e.g., 192.168.2.1">
+                                                <div class="hint">CML/CLAB router IP to peer with</div>
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label for="gre-key">GRE Key (Optional)</label>
+                                                <input type="number" id="gre-key" placeholder="e.g., 12345">
+                                                <div class="hint">Traffic flow identifier (RFC 2890)</div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="gre-keepalive">Keepalive Interval</label>
+                                                <input type="number" id="gre-keepalive" value="10" min="0" max="300">
+                                                <div class="hint">Seconds (0 to disable)</div>
+                                            </div>
+                                        </div>
+                                        <div class="form-row">
+                                            <div class="form-group">
+                                                <label>
+                                                    <input type="checkbox" id="gre-checksum"> Enable Checksum
+                                                </label>
+                                                <div class="hint">Calculate GRE checksums</div>
+                                            </div>
+                                            <div class="form-group">
+                                                <label>
+                                                    <input type="checkbox" id="gre-sequence"> Enable Sequence Numbers
+                                                </label>
+                                                <div class="hint">Add sequence numbers to packets</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                             <div class="form-row">
                                 <div class="form-group">
                                     <label for="if-address">IP Address (CIDR)</label>
                                     <input type="text" id="if-address" placeholder="e.g., 172.20.1.1/24">
+                                    <div class="hint" id="if-address-hint"></div>
                                 </div>
                                 <div class="form-group">
                                     <label for="if-mtu">MTU</label>

@@ -238,6 +238,18 @@ class BGPSession:
 
             self.logger.info(f"TCP connection established to {self.config.peer_ip}")
 
+            # Set DSCP for BGP traffic - RFC 4594 Network Control (CS6)
+            # DSCP CS6 = 48, TOS byte = DSCP << 2 = 192 (0xC0)
+            try:
+                import socket
+                sock = self.writer.get_extra_info('socket')
+                if sock:
+                    tos_byte = 192  # CS6 for Network Control (BGP)
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, tos_byte)
+                    self.logger.info(f"[QoS] Set BGP socket TOS=0x{tos_byte:02X} (DSCP CS6 - Network Control)")
+            except Exception as tos_err:
+                self.logger.warning(f"[QoS] Could not set TOS on BGP socket: {tos_err}")
+
             # Start message reader
             self.message_reader_task = asyncio.create_task(self._message_reader())
 
@@ -294,6 +306,17 @@ class BGPSession:
         # Accept the new connection
         self.reader = reader
         self.writer = writer
+
+        # Set DSCP for BGP traffic - RFC 4594 Network Control (CS6)
+        try:
+            import socket
+            sock = self.writer.get_extra_info('socket')
+            if sock:
+                tos_byte = 192  # CS6 for Network Control (BGP)
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, tos_byte)
+                self.logger.info(f"[QoS] Set accepted BGP socket TOS=0x{tos_byte:02X} (DSCP CS6)")
+        except Exception as tos_err:
+            self.logger.warning(f"[QoS] Could not set TOS on accepted BGP socket: {tos_err}")
 
         # Start message reader
         self.message_reader_task = asyncio.create_task(self._message_reader())

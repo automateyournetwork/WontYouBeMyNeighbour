@@ -65,6 +65,15 @@ class OSPFSocket:
             # Disable multicast loopback - don't receive our own packets
             self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
 
+            # Set DSCP for OSPF traffic - RFC 4594 Network Control (CS6)
+            # DSCP CS6 = 48, TOS byte = DSCP << 2 = 192 (0xC0)
+            try:
+                tos_byte = 192  # CS6 for Network Control (OSPF)
+                self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, tos_byte)
+                logger.info(f"[QoS] Set OSPF socket TOS=0x{tos_byte:02X} (DSCP CS6 - Network Control)")
+            except Exception as tos_err:
+                logger.warning(f"[QoS] Could not set TOS on OSPF socket: {tos_err}")
+
             logger.info(f"Opened OSPF socket on {self.interface} ({self.source_ip})")
             return True
 

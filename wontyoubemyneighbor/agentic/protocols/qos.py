@@ -945,12 +945,28 @@ class QoSManager:
         for _ in range(packet_count):
             self.trust_ingress(dscp.value, interface)
 
-        # Find service class
+        # Find service class and increment the matching rule's hit_count
+        matched_sc = ServiceClass.STANDARD
         for sc, config in self.service_classes.items():
             if config.dscp == dscp:
-                return sc, True
+                matched_sc = sc
+                break
 
-        return ServiceClass.STANDARD, False
+        # Also increment the matching classification rule's hit_count
+        # This ensures the dashboard shows correct counts for protocol-based traffic
+        protocol_lower = protocol.lower()
+        for rule in self.global_rules:
+            # Match by protocol name (ospf, bgp) or by service class
+            rule_proto = (rule.protocol or "").lower()
+            rule_name = (rule.name or "").lower()
+            if (protocol_lower in rule_name or
+                protocol_lower == rule_proto or
+                (protocol_lower == "bgp" and rule.dst_port == 179)):
+                rule.hit_count += packet_count
+                logger.debug(f"[QoS] Incremented rule '{rule.name}' hit_count by {packet_count} for {protocol}")
+                break
+
+        return matched_sc, matched_sc != ServiceClass.STANDARD
 
     def get_tos_from_ip_header(self, ip_header: bytes) -> int:
         """
